@@ -259,7 +259,7 @@ func TestGenesis_Predeployment(t *testing.T) {
 			&ethgo.CallMsg{
 				From:     ethgo.Address(senderAddr),
 				To:       &toAddress,
-				GasPrice: 100000000,
+				GasPrice: framework.TestGasPriceUint64(),
 				Value:    big.NewInt(0),
 				Data:     data,
 			},

@@ -3,7 +3,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"math/big"
 	"sync"
 	"testing"
 	"time"
@@ -107,7 +106,7 @@ func TestBroadcast(t *testing.T) {
 				To:       &receiverAddr,
 				Value:    framework.EthToWei(1),
 				Gas:      1000000,
-				GasPrice: big.NewInt(10000),
+				GasPrice: framework.TestGasPrice(),
 				Input:    []byte{},
 			}, senderKey)
 			if err != nil {

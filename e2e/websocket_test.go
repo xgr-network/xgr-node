@@ -115,7 +115,7 @@ func TestWS_Response(t *testing.T) {
 		_, err = srv.SendRawTx(ctx, &framework.PreparedTransaction{
 			From:     preminedAccounts[0].address,
 			To:       &preminedAccounts[1].address,
-			GasPrice: ethgo.Gwei(1),
+			GasPrice: framework.TestGasPrice(),
 			Gas:      1000000,
 			Value:    big.NewInt(10000),
 		}, preminedAccounts[0].key)
