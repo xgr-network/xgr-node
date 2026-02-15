@@ -77,7 +77,7 @@ func TestIbft_Transfer(t *testing.T) {
 			txn := &framework.PreparedTransaction{
 				From:     senderAddr,
 				To:       &receiverAddr,
-				GasPrice: ethgo.Gwei(2),
+				GasPrice: framework.TestGasPrice(),
 				Gas:      1000000,
 				Value:    framework.EthToWei(1),
 			}
@@ -141,7 +141,7 @@ func TestIbft_TransactionFeeRecipient(t *testing.T) {
 			txn := &framework.PreparedTransaction{
 				From:     senderAddr,
 				To:       &receiverAddr,
-				GasPrice: ethgo.Gwei(1),
+				GasPrice: framework.TestGasPrice(),
 				Gas:      1000000,
 				Value:    tc.txAmount,
 			}
@@ -150,7 +150,7 @@ func TestIbft_TransactionFeeRecipient(t *testing.T) {
 				// Deploy contract
 				deployTx := &framework.PreparedTransaction{
 					From:     senderAddr,
-					GasPrice: ethgo.Gwei(1), // fees should be greater than base fee
+					GasPrice: framework.TestGasPrice(), // fees should be greater than base fee
 					Gas:      1000000,
 					Value:    big.NewInt(0),
 					Input:    framework.MethodSig("setA1"),
@@ -160,6 +160,10 @@ func TestIbft_TransactionFeeRecipient(t *testing.T) {
 				receipt, err := srv.SendRawTx(ctx, deployTx, senderKey)
 				assert.NoError(t, err)
 				assert.NotNil(t, receipt)
+
+				if receipt == nil {
+					t.Fatalf("receipt not received")
+				}
 
 				contractAddr := types.Address(receipt.ContractAddress)
 				txn.To = &contractAddr

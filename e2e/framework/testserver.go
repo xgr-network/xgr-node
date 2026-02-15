@@ -559,7 +559,7 @@ func (t *TestServer) DeployContract(
 	receipt, err := t.SendRawTx(ctx, &PreparedTransaction{
 		From:     sender,
 		Gas:      DefaultGasLimit,
-		GasPrice: big.NewInt(DefaultGasPrice),
+		GasPrice: TestGasPrice(),
 		Input:    buf,
 	}, privateKey)
 	if err != nil {
@@ -604,7 +604,7 @@ func (t *Txn) Deploy(input []byte) *Txn {
 func (t *Txn) Transfer(to ethgo.Address, value *big.Int) *Txn {
 	t.raw.To = &to
 	t.raw.Value = value
-	t.raw.GasPrice = DefaultGasPrice
+	t.raw.GasPrice = TestGasPriceUint64()
 
 	return t
 }
@@ -899,7 +899,7 @@ func (t *TestServer) InvokeMethod(
 
 	receipt, err := t.SendRawTx(ctx, &PreparedTransaction{
 		Gas:      DefaultGasLimit,
-		GasPrice: big.NewInt(DefaultGasPrice),
+		GasPrice: TestGasPrice(),
 		To:       &contractAddress,
 		From:     fromAddress,
 		Input:    sig,

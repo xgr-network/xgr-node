@@ -62,7 +62,7 @@ func TestNewFilter_Logs(t *testing.T) {
 			ReferenceAddr: addr,
 			ReferenceKey:  key,
 			ToAddress:     castedContractAddr,
-			GasPrice:      big.NewInt(framework.DefaultGasPrice),
+			GasPrice:      framework.TestGasPrice(),
 			Input:         framework.MethodSig("setA1"),
 		})
 		if err != nil {
@@ -135,7 +135,7 @@ func TestNewFilter_Block(t *testing.T) {
 		if _, sendErr := srv.SendRawTx(ctx, &framework.PreparedTransaction{
 			From:     from,
 			To:       &to,
-			GasPrice: ethgo.Gwei(1),
+			GasPrice: framework.TestGasPrice(),
 			Gas:      1000000,
 			Value:    big.NewInt(10000),
 		}, fromKey); err != nil {
@@ -245,7 +245,7 @@ func TestFilterValue(t *testing.T) {
 			ReferenceAddr: addr,
 			ReferenceKey:  key,
 			ToAddress:     castedContractAddr,
-			GasPrice:      big.NewInt(framework.DefaultGasPrice),
+			GasPrice:      framework.TestGasPrice(),
 			Input:         framework.MethodSig("TriggerMyEvent"),
 		})
 

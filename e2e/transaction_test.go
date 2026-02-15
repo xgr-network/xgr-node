@@ -169,7 +169,7 @@ func TestEthTransfer(t *testing.T) {
 			txn := &framework.PreparedTransaction{
 				From:     testCase.sender,
 				To:       &testCase.recipient,
-				GasPrice: ethgo.Gwei(1),
+				GasPrice: framework.TestGasPrice(),
 				Gas:      1000000,
 				Value:    testCase.amount,
 			}
@@ -280,7 +280,7 @@ func generateStressTestTx(
 ) *types.Transaction {
 	t.Helper()
 
-	bigGasPrice := big.NewInt(framework.DefaultGasPrice)
+	bigGasPrice := framework.TestGasPrice()
 	signer := crypto.NewSigner(chain.AllForksEnabled.At(0), 100)
 
 	setNameMethod, ok := abis.StressTestABI.Methods["setName"]
@@ -396,7 +396,7 @@ func Test_TransactionIBFTLoop(t *testing.T) {
 
 		deployTx := &framework.PreparedTransaction{
 			From:     sender,
-			GasPrice: ethgo.Gwei(1),
+			GasPrice: framework.TestGasPrice(),
 			Gas:      framework.DefaultGasLimit,
 			Value:    big.NewInt(0),
 			Input:    buf,
