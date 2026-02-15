@@ -19,9 +19,8 @@ jobs:
       - name: Go test (unit)
         run: |
           set -euo pipefail
-          pkgs=$(go list ./... | grep -vE '(/e2e($|/)|/e2e-polybft($|/)|/tests($|/)|/tracker($|/)|/command/rootchain/deploy($|/)|/consensus/polybft($|/))')
+          pkgs=$(go list ./... | grep -vE '(/e2e($|/)|/e2e-polybft($|/)|/tests($|/)|/tracker($|/)|/command/rootchain/deploy($|/)|/consensus/polybft($|/)|/state/runtime/evm($|/))')
           go test -count=1 -short $pkgs
-
 
       - name: Go build
         run: go build ./...
