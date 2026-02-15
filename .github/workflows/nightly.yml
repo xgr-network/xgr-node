@@ -35,9 +35,9 @@ jobs:
           echo "$PWD/bin" >> $GITHUB_PATH
           xgrchain version || true
 
-      # E2E erst als nächster Step, wenn Build-Pfad stimmt
-      # - name: E2E
-      #   run: go test -count=1 -timeout 45m ./e2e/...
+      #E2E erst als nächster Step, wenn Build-Pfad stimmt
+      - name: E2E
+        run: go test -count=1 -timeout 45m ./e2e/...
 
       - name: Upload nightly binary
         uses: actions/upload-artifact@v4
