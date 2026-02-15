@@ -1,0 +1,67 @@
+{
+  "cors": true,
+  "defaultHeaders": {
+    "X-TestAPI": "xgr-dev"
+  },
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/fx/latest",
+      "mode": "first",
+      "responses": [
+        {
+          "status": 200,
+          "body": { "base": "EUR", "date": "2025-09-10", "rates": { "USD": 1.0875 } }
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/quote/AAPL",
+      "mode": "first",
+      "responses": [
+        {
+          "body": {
+            "quote": {
+              "symbol": "AAPL",
+              "price": { "value": "214.01", "ccy": "USD" },
+              "bid":   { "value": "213.98" },
+              "ask":   { "value": "214.04" },
+              "venues": [
+                { "id": "v1", "name": "XNAS", "price": { "value": "214.01" } },
+                { "id": "v2", "name": "BATS", "price": { "value": "214.02" } }
+              ],
+              "meta": { "ts": 1725882000 }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/risk/score",
+      "mode": "first",
+      "responses": [
+        { "body": { "score": "0.73" } }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/unstable",
+      "mode": "round-robin",
+      "responses": [
+        { "status": 200, "text": "ok-1" },
+        { "status": 503, "text": "temporary failure", "delayMs": 200 },
+        { "status": 200, "text": "ok-2" }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/slow",
+      "mode": "first",
+      "responses": [
+        { "status": 200, "body": { "ok": true }, "delayMs": 800 }
+      ]
+    }
+  ]
+}

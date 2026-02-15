@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+
+dp_error_flag=0
+
+# Check if jq is installed
+if [[ "$1" == "polybft" ]] && ! command -v jq >/dev/null 2>&1; then
+  echo "jq is not installed."
+  echo "Manual installation instructions: Visit https://jqlang.github.io/jq/ for more information."
+  dp_error_flag=1
+fi
+
+# Check if curl is installed
+if [[ "$1" == "polybft" ]] && ! command -v curl >/dev/null 2>&1; then
+  echo "curl is not installed."
+  echo "Manual installation instructions: Visit https://everything.curl.dev/get/ for more information."
+  dp_error_flag=1
+fi
+
+# Check if docker-compose is installed
+if [[ "$2" == "--docker" ]] && ! command -v docker-compose >/dev/null 2>&1; then
+  echo "docker-compose is not installed."
+  echo "Manual installation instructions: Visit https://docs.docker.com/compose/install/ for more information."
+  dp_error_flag=1
+fi
+
+# Stop script if any of the dependencies have failed
+if [[ "$dp_error_flag" -eq 1 ]]; then
+  echo "Missing dependencies. Please install them and run the script again."
+  exit 1
+fi
+
+function showhelp() {
+  echo "Usage: cluster {consensus} [{command}] [{flags}]"
+  echo "Consensus:"
+  echo "  ibft            Start Supernets test environment locally with ibft consensus"
+  echo "  polybft         Start Supernets test environment locally with polybft consensus"
+  echo "Commands:"
+  echo "  stop            Stop the running environment"
+  echo "  destroy         Destroy the running environment"
+  echo "  write-logs      Writes STDOUT and STDERR output to log file. Not applicable when using --docker flag."
+  echo "Flags:"
+  echo "  --docker        Run using Docker (requires docker-compose)."
+  echo "  --help          Display this help information"
+  echo "Examples:"
+  echo "  cluster polybft -- Run the script with the polybft consensus"
+  echo "  cluster polybft --docker -- Run the script with the polybft consensus using docker"
+  echo "  cluster polybft stop -- Stop the running environment"
+}
+
+function initIbftConsensus() {
+  echo "Running with ibft consensus"
+  ./xgrchain secrets init --insecure --data-dir test-chain- --num 4
+
+  node1_id=$(./xgrchain secrets output --data-dir test-chain-1 | grep Node | head -n 1 | awk -F ' ' '{print $4}')
+  node2_id=$(./xgrchain secrets output --data-dir test-chain-2 | grep Node | head -n 1 | awk -F ' ' '{print $4}')
+
+  genesis_params="--consensus ibft --validators-prefix test-chain- \
+    --bootnode /ip4/127.0.0.1/tcp/30301/p2p/$node1_id \
+    --bootnode /ip4/127.0.0.1/tcp/30302/p2p/$node2_id"
+}
+
+function initPolybftConsensus() {
+  echo "Running with polybft consensus"
+  genesis_params="--consensus polybft"
+
+  address1=$(./xgrchain polybft-secrets --insecure --data-dir test-chain-1 | grep Public | head -n 1 | awk -F ' ' '{print $5}')
+  address2=$(./xgrchain polybft-secrets --insecure --data-dir test-chain-2 | grep Public | head -n 1 | awk -F ' ' '{print $5}')
+  address3=$(./xgrchain polybft-secrets --insecure --data-dir test-chain-3 | grep Public | head -n 1 | awk -F ' ' '{print $5}')
+  address4=$(./xgrchain polybft-secrets --insecure --data-dir test-chain-4 | grep Public | head -n 1 | awk -F ' ' '{print $5}')
+}
+
+function createGenesis() {
+  ./xgrchain genesis $genesis_params \
+    --block-gas-limit 10000000 \
+    --premine 0x85da99c8a7c2c95964c8efd687e95e632fc533d6:1000000000000000000000 \
+    --premine 0x0000000000000000000000000000000000000000 \
+    --epoch-size 10 \
+    --reward-wallet 0xDEADBEEF:1000000 \
+    --native-token-config "XGR:XGR:18:true:$address1" \
+    --burn-contract 0:0x0000000000000000000000000000000000000000 \
+    --proxy-contracts-admin 0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed
+}
+
+function initRootchain() {
+  echo "Initializing rootchain"
+
+  if [ "$1" == "write-logs" ]; then
+    echo "Writing rootchain server logs to the file..."
+    ./xgrchain rootchain server 2>&1 | tee ./rootchain-server.log &
+  else
+    ./xgrchain rootchain server >/dev/null &
+  fi
+
+  set +e
+  while true; do
+    if curl -sSf -o /dev/null http://127.0.0.1:8545; then
+      break
+    fi
+    sleep 1
+  done
+  set -e
+
+  proxyContractsAdmin=0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed
+
+  ./xgrchain polybft stake-manager-deploy \
+    --jsonrpc http://127.0.0.1:8545 \
+    --proxy-contracts-admin ${proxyContractsAdmin} \
+    --test
+
+  stakeManagerAddr=$(cat genesis.json | jq -r '.params.engine.polybft.bridge.stakeManagerAddr')
+  stakeToken=$(cat genesis.json | jq -r '.params.engine.polybft.bridge.stakeTokenAddr')
+
+  ./xgrchain rootchain deploy \
+    --stake-manager ${stakeManagerAddr} \
+    --stake-token ${stakeToken} \
+    --proxy-contracts-admin ${proxyContractsAdmin} \
+    --test
+
+  customSupernetManagerAddr=$(cat genesis.json | jq -r '.params.engine.polybft.bridge.customSupernetManagerAddr')
+  supernetID=$(cat genesis.json | jq -r '.params.engine.polybft.supernetID')
+
+  ./xgrchain rootchain fund \
+    --stake-token ${stakeToken} \
+    --mint \
+    --addresses ${address1},${address2},${address3},${address4} \
+    --amounts 1000000000000000000000000,1000000000000000000000000,1000000000000000000000000,1000000000000000000000000
+
+  ./xgrchain polybft whitelist-validators \
+    --addresses ${address1},${address2},${address3},${address4} \
+    --supernet-manager ${customSupernetManagerAddr} \
+    --private-key aa75e9a7d427efc732f8e4f1a5b7646adcc61fd5bae40f80d13c8419c9f43d6d \
+    --jsonrpc http://127.0.0.1:8545
+
+  counter=1
+  while [ $counter -le 4 ]; do
+    echo "Registering validator: ${counter}"
+
+    ./xgrchain polybft register-validator \
+      --supernet-manager ${customSupernetManagerAddr} \
+      --data-dir test-chain-${counter} \
+      --jsonrpc http://127.0.0.1:8545
+
+    ./xgrchain polybft stake \
+      --data-dir test-chain-${counter} \
+      --amount 1000000000000000000000000 \
+      --supernet-id ${supernetID} \
+      --stake-manager ${stakeManagerAddr} \
+      --stake-token ${stakeToken} \
+      --jsonrpc http://127.0.0.1:8545
+
+    ((counter++))
+  done
+
+  ./xgrchain polybft supernet \
+    --private-key aa75e9a7d427efc732f8e4f1a5b7646adcc61fd5bae40f80d13c8419c9f43d6d \
+    --supernet-manager ${customSupernetManagerAddr} \
+    --finalize-genesis-set \
+    --enable-staking \
+    --jsonrpc http://127.0.0.1:8545
+}
+
+function startNodes() {
+  if [ "$2" == "write-logs" ]; then
+    echo "Writing validators logs to the files..."
+  fi
+
+  for i in {1..4}; do
+    data_dir="./test-chain-$i"
+    grpc_port=$((10000 * $i))
+    libp2p_port=$((30300 + $i))
+    jsonrpc_port=$((10000 * $i + 2))
+
+    log_file="./validator-$i.log"
+
+    relayer_arg=""
+    # Start relayer only if running polybft and for the 1st node
+    if [ "$1" == "polybft" ] && [ $i -eq 1 ]; then
+      relayer_arg="--relayer"
+    fi
+
+    if [ "$2" == "write-logs" ]; then
+      if [ ! -f "$log_file" ]; then
+        touch "$log_file"
+      fi
+
+      ./xgrchain server --data-dir "$data_dir" --chain genesis.json \
+        --grpc-address ":$grpc_port" --libp2p ":$libp2p_port" --jsonrpc ":$jsonrpc_port" \
+        --num-block-confirmations 2 $relayer_arg \
+        --log-level DEBUG 2>&1 | tee $log_file &
+    else
+      ./xgrchain server --data-dir "$data_dir" --chain genesis.json \
+        --grpc-address ":$grpc_port" --libp2p ":$libp2p_port" --jsonrpc ":$jsonrpc_port" \
+        --num-block-confirmations 2 $relayer_arg \
+        --log-level DEBUG &
+    fi
+
+  done
+
+  wait
+}
+
+function startServerFromDockerCompose() {
+  if [ "$1" != "polybft" ]; then
+    export EDGE_CONSENSUS="$1"
+  fi
+
+  docker-compose -f ./docker/local/docker-compose.yml up -d --build
+}
+
+function destroyDockerEnvironment() {
+  docker-compose -f ./docker/local/docker-compose.yml down -v
+}
+
+function stopDockerEnvironment() {
+  docker-compose -f ./docker/local/docker-compose.yml stop
+}
+
+set -e
+
+# Show help if help flag is entered or no arguments are provided
+if [[ "$1" == "--help" ]] || [[ $# -eq 0 ]]; then
+  showhelp
+  exit 0
+fi
+
+# Reset test-dirs
+rm -rf test-chain-*
+rm -f genesis.json
+
+# Build binary
+go build -o xgrchain .
+
+# If --docker flag is set run docker environment otherwise run from binary
+case "$2" in
+"--docker")
+  # cluster {consensus} --docker destroy
+  if [ "$3" == "destroy" ]; then
+    destroyDockerEnvironment
+    echo "Docker $1 environment destroyed!"
+    exit 0
+  # cluster {consensus} --docker stop
+  elif [ "$3" == "stop" ]; then
+    stopDockerEnvironment
+    echo "Docker $1 environment stopped!"
+    exit 0
+  fi
+
+  # cluster {consensus} --docker
+  echo "Running $1 docker environment..."
+  startServerFromDockerCompose $1
+  echo "Docker $1 environment deployed."
+  exit 0
+  ;;
+# cluster {consensus}
+*)
+  echo "Running $1 environment from local binary..."
+  # Initialize ibft or polybft consensus
+  if [ "$1" == "ibft" ]; then
+    # Initialize ibft consensus
+    initIbftConsensus
+    # Create genesis file and start the server from binary
+    createGenesis
+    startNodes $1 $2
+    exit 0
+  elif [ "$1" == "polybft" ]; then
+    # Initialize polybft consensus
+    initPolybftConsensus
+    # Create genesis file and start the server from binary
+    createGenesis
+    initRootchain $2
+    startNodes $1 $2
+    exit 0
+  else
+    echo "Unsupported consensus mode. Supported modes are: ibft and polybft."
+    showhelp
+    exit 1
+  fi
+  ;;
+esac

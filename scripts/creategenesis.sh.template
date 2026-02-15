@@ -1,0 +1,113 @@
+#!/bin/bash
+
+# Zielpfad für die generierte Genesis-Datei
+GENESIS_PATH="./genesis.json"
+
+# Chain-Konfiguration
+CHAIN_ID=1879
+BLOCK_TIME="2s"
+BLOCK_GAS_LIMIT=60000000
+EPOCH_SIZE=500
+GENESIS_FILE="./genesis.json"
+BASE_FEE_CONFIG="1000000000:2:8"  # 1 Gwei, EM=2, Denom=8
+NATIVE_TOKEN_CONFIG="XGR:XGR:18:true:0xf864A48F5896d57a45659c374c774a73c856fE79"
+REWARD_WALLET="0xf864A48F5896d57a45659c374c774a73c856fE79:1"
+PROXY_CONTRACTS_ADMIN="0xf864A48F5896d57a45659c374c774a73c856fE79"
+
+# EngineRegistry config (goes into genesis.json -> .params.*)
+# If you deploy deterministically (same deployer EOA, nonce=0), this can be the same across dev/test/main.
+ENGINE_REGISTRY_ADDRESS="${ENGINE_REGISTRY_ADDRESS:-0xf88a0f893b6922bfc9607ff02193398dfd6e380b}"
+# Optional bootstrap engine EOA during phase where registry code-size == 0 (zero-address => deny-all)
+BOOTSTRAP_ENGINE_EOA="${BOOTSTRAP_ENGINE_EOA:-0x0000000000000000000000000000000000000000}"
+
+
+# Bootnode des Mainnodes (z. B. für P2P-Einstieg)
+BOOTNODE="/ip4/87.106.1.148/tcp/1478/p2p/16Uiu2HAmJCya1mAgB3jpqD7Rr7deCrqrdrcuVHHapnDhLNUwW1bq"
+
+# Premine-Adressen mit Ziel-Balances
+declare -A PREMINES_BALANCES=(
+  ["0x0000000000000000000000000000000000000000"]="0"
+  ["0x00000000000000000000000000000000000000e1"]="1"
+  ["0xff7d5A232D9113c6e0F640dea0Bb8CE30Dc5C24D"]="3141592653580000000000000000"
+  ["0x54947fD5eFB247EfcF4f060CDc0277fD193eAD97"]="1380649000000000000000000000"
+  ["0x1fDBf766fa364fb04b2b4a8587cA6CA930850098"]="2103833846420000000000000000"
+)
+
+# Alte Genesis-Datei löschen, falls vorhanden
+[ -f "$GENESIS_PATH" ] && rm "$GENESIS_PATH"
+
+# Kommandokonstruktion
+CMD="xgrchain genesis \
+  --consensus ibft \
+  --chain-id ${CHAIN_ID} \
+  --block-time ${BLOCK_TIME} \
+  --block-gas-limit ${BLOCK_GAS_LIMIT} \
+  --epoch-size ${EPOCH_SIZE} \
+  --base-fee-config ${BASE_FEE_CONFIG} \
+  --native-token-config \"${NATIVE_TOKEN_CONFIG}\" \
+  --reward-wallet ${REWARD_WALLET} \
+  --proxy-contracts-admin ${PROXY_CONTRACTS_ADMIN} \
+  --bootnode ${BOOTNODE} \
+  --name xgrchain \
+  --dir ${GENESIS_PATH}"
+
+# Premine-Adressen anhängen
+for PREMINE in "${!PREMINES_BALANCES[@]}"; do
+  CMD+=" --premine ${PREMINE}"
+done
+
+# Optional: Validators-Verzeichnis anhängen, falls vorhanden
+VALIDATORS_DIR="$HOME/xgrchain/validators"
+if [ -d "$VALIDATORS_DIR" ]; then
+  CMD+=" --validators-path $VALIDATORS_DIR"
+  CMD+=" --validators-prefix validator-"
+  CMD+=" --min-validator-count 4"
+  CMD+=" --max-validator-count 4"
+fi
+
+echo ""
+echo "👉 FINALER GENESIS-BEFEHL:"
+echo $CMD
+echo "🚀 Generiere Genesis-Datei via CLI ..."
+eval $CMD
+GENESIS_EXIT_CODE=$?
+
+if [ $GENESIS_EXIT_CODE -ne 0 ]; then
+  echo "❌ Fehler beim Erstellen der Genesis-Datei. Vorgang abgebrochen."
+  exit 1
+fi
+
+echo "✅ Genesis-Datei erfolgreich erstellt."
+sleep 1  # oder: sync
+
+# Post-Processing via jq:
+#  1) Set .params.engineRegistryAddress (+ optional .params.bootstrapEngineEOA)
+#  2) Fix balances in .genesis.alloc
+#  3) Mirror .genesis.alloc to top-level .alloc
+if command -v jq &> /dev/null; then
+  JQ_SCRIPT=""
+
+  # Inject EngineRegistryAddress into params
+  if [[ -n "${ENGINE_REGISTRY_ADDRESS}" ]]; then
+    JQ_SCRIPT+=".params.engineRegistryAddress = \"${ENGINE_REGISTRY_ADDRESS}\" | "
+  fi
+
+  # Optional BootstrapEngineEOA
+  if [[ -n "${BOOTSTRAP_ENGINE_EOA}" && "${BOOTSTRAP_ENGINE_EOA}" != "0x0000000000000000000000000000000000000000" ]]; then
+    JQ_SCRIPT+=".params.bootstrapEngineEOA = \"${BOOTSTRAP_ENGINE_EOA}\" | "
+  fi
+
+  # Balances im INNEREN alloc-Block (.genesis.alloc) auf Zielwerte setzen
+  for ADDR in "${!PREMINES_BALANCES[@]}"; do
+    JQ_SCRIPT+=".genesis.alloc[\"$ADDR\"].balance = \"${PREMINES_BALANCES[$ADDR]}\" | "
+  done
+  # Spiegeln: .genesis.alloc -> .alloc
+  JQ_SCRIPT+=".alloc = .genesis.alloc"
+
+  jq "$JQ_SCRIPT" "$GENESIS_PATH" > tmp.json && mv tmp.json "$GENESIS_PATH"
+  echo "✅ Params + Balances + alloc Spiegelung wurden gesetzt."
+else
+  echo "⚠️  jq ist nicht installiert. Balance-Korrektur wurde übersprungen."
+fi
+
+echo "✅ Fertig. Genesis-Datei: $GENESIS_PATH"
