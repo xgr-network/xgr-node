@@ -1,0 +1,31 @@
+name: CI (Integration)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: true
+
+      - name: Build xgrchain binary
+        run: |
+          set -euo pipefail
+          go build -o ./bin/xgrchain .
+          echo "$PWD/bin" >> $GITHUB_PATH
+          which xgrchain
+          xgrchain version || true
+
+      - name: E2E (go tests)
+        run: |
+          set -euo pipefail
+          go test -count=1 -timeout 30m ./e2e/...
