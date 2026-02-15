@@ -1,0 +1,22 @@
+name: CI (PR)
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Go test
+        run: go test ./...
+
+      - name: Go build
+        run: go build ./...
