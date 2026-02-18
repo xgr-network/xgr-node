@@ -1,0 +1,219 @@
+name: Nightly (execution-spec-tests)
+
+on:
+  workflow_dispatch:
+    inputs:
+      fork:
+        description: "EEST fork (test selection ruleset)"
+        required: true
+        default: "Shanghai"
+      tests_path:
+        description: "Path inside execution-spec-tests repo (run a subset first)"
+        required: true
+        default: "./tests/"
+      pytest_k:
+        description: "Optional pytest -k filter (e.g. exclude withdrawals)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 3 * * 0"
+
+concurrency:
+  group: eest-main
+  cancel-in-progress: true
+
+jobs:
+  eest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: true
+
+      - name: Install deps (jq, curl, perl)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq curl perl
+
+      - name: CI patch: MinBaseFee -> 1 (temporary)
+        run: |
+          set -euo pipefail
+          test -f chain/params.go
+          perl -pi -e 's/(MinBaseFee\s+uint64\s*=\s*)[0-9_]+/${1}1/' chain/params.go
+          echo "Patched MinBaseFee line:"
+          grep -n "MinBaseFee" chain/params.go
+
+      - name: Build xgrchain
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          go build -trimpath -o ./bin/xgrchain .
+          chmod +x ./bin/xgrchain
+          echo "${GITHUB_WORKSPACE}/bin" >> "$GITHUB_PATH"
+          xgrchain version || xgrchain --version || true
+
+      # Seed key for EEST tx signing (must be prefunded in genesis)
+      - name: Generate ephemeral EEST seed key (PK + address)
+        run: |
+          set -euo pipefail
+          cat > /tmp/keygen.go <<'GO'
+          package main
+          import (
+            "encoding/hex"
+            "fmt"
+            "github.com/ethereum/go-ethereum/crypto"
+          )
+          func main() {
+            k, err := crypto.GenerateKey()
+            if err != nil { panic(err) }
+            pk := crypto.FromECDSA(k)
+            addr := crypto.PubkeyToAddress(k.PublicKey)
+            fmt.Printf("SEED_KEY=0x%s\n", hex.EncodeToString(pk))
+            fmt.Printf("SEED_ADDR=%s\n", addr.Hex())
+          }
+          GO
+          out="$(go run /tmp/keygen.go)"
+          echo "$out"
+          echo "$out" >> "$GITHUB_ENV"
+
+      # Validator secrets for sealing blocks (independent from EEST seed key)
+      - name: Create IBFT validator secrets (single node) + derive bootnode
+        run: |
+          set -euo pipefail
+          rm -rf ./validator-1
+          mkdir -p ./validator-1
+
+          OUT="$(xgrchain secrets init --data-dir ./validator-1 --insecure --json)"
+          echo "$OUT" | jq . || true
+
+          # bombproof: works for object or array (and future nesting)
+          NODE_ID="$(echo "$OUT" | jq -r '.. | .node_id? // .nodeID? // empty' | head -n 1)"
+
+          if [ -z "$NODE_ID" ] || [ "$NODE_ID" = "null" ]; then
+            echo "ERROR: could not determine node_id for bootnode"
+            echo "Raw output:"
+            echo "$OUT"
+            echo "Files under validator-1:"
+            find ./validator-1 -maxdepth 4 -type f -print
+            exit 1
+          fi
+
+          BOOTNODE="/ip4/127.0.0.1/tcp/1478/p2p/${NODE_ID}"
+          echo "BOOTNODE=${BOOTNODE}"
+          echo "BOOTNODE=${BOOTNODE}" >> "$GITHUB_ENV"
+
+      - name: Generate genesis (IBFT + premine EEST seed + forks@0)
+        env:
+          CHAIN_ID: "100"
+          PREMINE_WEI: "1000000000000000000000000000" # 1e27 wei
+        run: |
+          set -euo pipefail
+
+          xgrchain genesis \
+            --consensus ibft \
+            --chain-id "${CHAIN_ID}" \
+            --block-time 1s \
+            --block-gas-limit 60000000 \
+            --base-fee-config 1000000000:2:8 \
+            --bootnode "${BOOTNODE}" \
+            --premine "${SEED_ADDR}:${PREMINE_WEI}" \
+            --validators-path ./ \
+            --validators-prefix validator- \
+            --min-validator-count 1 \
+            --max-validator-count 1 \
+            --name eest \
+            --dir ./genesis-eest.json
+
+          test -s ./genesis-eest.json
+
+          # Force all fork blocks to 0 and mirror alloc (matches your example style)
+          jq '
+            (.params.forks |= with_entries(.value |= (if (.block? != null) then (.block=0) else . end))) |
+            (.alloc = .genesis.alloc)
+          ' ./genesis-eest.json > ./genesis-eest.tmp && mv ./genesis-eest.tmp ./genesis-eest.json
+
+      - name: Start local node (JSON-RPC)
+        run: |
+          set -euo pipefail
+
+          xgrchain server \
+            --data-dir ./validator-1 \
+            --chain ./genesis-eest.json \
+            --grpc-address 127.0.0.1:9632 \
+            --libp2p 127.0.0.1:1478 \
+            --jsonrpc 127.0.0.1:8545 \
+            --price-limit 0 \
+            --seal \
+            --log-level INFO \
+            --log-to node.log &
+
+          # wait for RPC
+          for i in {1..90}; do
+            curl -sS -X POST http://127.0.0.1:8545 \
+              -H 'content-type: application/json' \
+              --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' >/dev/null \
+              && break
+            sleep 1
+          done
+
+          echo "chainId:"
+          curl -sS -X POST http://127.0.0.1:8545 \
+            -H 'content-type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' | cat
+
+          echo "blockNumber:"
+          curl -sS -X POST http://127.0.0.1:8545 \
+            -H 'content-type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' | cat
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Clone execution-spec-tests
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/ethereum/execution-spec-tests.git eest
+          cd eest
+          uv --version
+
+      - name: Run EEST (execute remote)
+        env:
+          FORK: ${{ inputs.fork }}
+          TESTS_PATH: ${{ inputs.tests_path }}
+          PYTEST_K: ${{ inputs.pytest_k }}
+          RPC: "http://127.0.0.1:8545"
+          CHAIN_ID: "100"
+        run: |
+          set -euo pipefail
+          cd eest
+
+          extra_args=()
+          if [ -n "${PYTEST_K}" ]; then
+            extra_args+=(-k "${PYTEST_K}")
+          fi
+
+          uv run execute remote \
+            --fork "${FORK}" \
+            --rpc-endpoint "${RPC}" \
+            --rpc-seed-key "${SEED_KEY}" \
+            --rpc-chain-id "${CHAIN_ID}" \
+            "${TESTS_PATH}" \
+            "${extra_args[@]}"
+
+      - name: Upload node log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eest-node-log
+          path: node.log
+          retention-days: 14

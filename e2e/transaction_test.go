@@ -246,7 +246,7 @@ func getCount(
 			From:     ethgo.Address(from),
 			To:       &contractAddress,
 			Data:     selector,
-			GasPrice: 100000000,
+			GasPrice: framework.TestGasPriceUint64(),
 			Value:    big.NewInt(0),
 		},
 		ethgo.Latest,
@@ -309,6 +309,7 @@ func generateStressTestTx(
 
 	if txNum%2 == 0 {
 		unsignedTx.Type = types.DynamicFeeTx
+		unsignedTx.ChainID = big.NewInt(100)
 		unsignedTx.GasFeeCap = bigGasPrice
 		unsignedTx.GasTipCap = bigGasPrice
 	} else {

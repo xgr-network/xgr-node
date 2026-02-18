@@ -1,0 +1,224 @@
+# Makefile (XGRChain)
+# - lean: only build / test / lint / proto / contracts / deploy
+# - engine mode:
+#     make xgr-build               # default: stub
+#     make xgr-build embedded      # embedded + build tag
+#     make xgr-deploy-all          # default: stub
+#     make xgr-deploy-all embedded # embedded + build tag
+
+SHELL := /bin/bash
+
+# -----------------------------
+# TOOLING CHECKS
+# -----------------------------
+.PHONY: check-git check-go check-protoc check-lint check-npm
+
+check-git:
+	@command -v git >/dev/null || (echo "git is not installed. Please install and try again."; exit 1)
+
+check-go:
+	@command -v go >/dev/null || (echo "go is not installed. Please install and try again."; exit 1)
+
+check-protoc:
+	@command -v protoc >/dev/null || (echo "protoc is not installed. Please install and try again."; exit 1)
+
+check-lint:
+	@command -v golangci-lint >/dev/null || (echo "golangci-lint is not installed. Please install and try again."; exit 1)
+
+check-npm:
+	@command -v npm >/dev/null || (echo "npm is not installed. Please install and try again."; exit 1)
+
+# -----------------------------
+# SUBMODULES
+# -----------------------------
+.PHONY: download-submodules
+download-submodules: check-git
+	git submodule init
+	git submodule update
+
+# -----------------------------
+# PROTO / CODEGEN
+# -----------------------------
+.PHONY: protoc
+protoc: check-protoc
+	protoc --go_out=. --go-grpc_out=. -I . -I=./validate --validate_out="lang=go:." \
+		./server/proto/*.proto \
+		./network/proto/*.proto \
+		./txpool/proto/*.proto \
+		./consensus/ibft/**/*.proto \
+		./consensus/polybft/**/*.proto
+
+# -----------------------------
+# LINT / TEST
+# -----------------------------
+.PHONY: lint test fuzz-test test-e2e test-e2e-polybft test-property-polybft
+
+lint: check-lint
+	golangci-lint run --config .golangci.yml
+
+test: check-go
+	go test -race -shuffle=on -coverprofile coverage.out -timeout 20m `go list ./... | grep -v e2e`
+
+fuzz-test: check-go
+	./scripts/fuzzAll
+
+test-e2e: check-go
+	go build -race -o artifacts/polygon-edge .
+	env EDGE_BINARY=${PWD}/artifacts/polygon-edge go test -v -timeout=30m ./e2e/...
+
+test-e2e-polybft: check-go
+	go build -o artifacts/polygon-edge .
+	env EDGE_BINARY=${PWD}/artifacts/polygon-edge E2E_TESTS=true E2E_LOGS=true \
+	go test -v -timeout=1h30m ./e2e-polybft/e2e/...
+
+test-property-polybft: check-go
+	go build -o artifacts/polygon-edge .
+	env EDGE_BINARY=${PWD}/artifacts/polygon-edge E2E_TESTS=true E2E_LOGS=true \
+	go test -v -timeout=30m ./e2e-polybft/property/... -rapid.checks=10
+
+# -----------------------------
+# CONTRACTS / BINDINGS
+# -----------------------------
+.PHONY: compile-core-contracts generate-smart-contract-bindings
+
+compile-core-contracts: check-npm
+	cd core-contracts && npm install && npm run compile
+	$(MAKE) generate-smart-contract-bindings
+
+generate-smart-contract-bindings: check-go
+	go run ./consensus/polybft/contractsapi/artifacts-gen/main.go
+	go run ./consensus/polybft/contractsapi/bindings-gen/main.go
+
+# -----------------------------
+# LICENSES
+# -----------------------------
+.PHONY: generate-bsd-licenses
+generate-bsd-licenses: check-git
+	./generate_dependency_licenses.sh BSD-3-Clause,BSD-2-Clause > ./licenses/bsd_licenses.json
+
+# -----------------------------
+# XGRCHAIN CUSTOM BUILD & DEPLOY
+# -----------------------------
+BINARY_NAME := xgrchain
+BUILD_DIR := bin
+BUILD_PATH := $(BUILD_DIR)/$(BINARY_NAME)
+PKG_PATH := github.com/xgr-network/xgr-node/versioning
+
+GENESIS_SRC := $(shell pwd)/genesis.json
+GENESIS_DEST := ~/xgrchain/genesis.json
+
+MAIN_NODE := 87.106.3.182
+REMOTE_NODES := \
+	xgradmin@87.106.3.183 \
+	xgradmin@87.106.3.180 \
+	xgradmin@87.106.3.177
+
+# Engine selection via extra goal token:
+#   make xgr-build              -> ENGINE=stub
+#   make xgr-build embedded     -> ENGINE=embedded
+#   make xgr-build stub         -> ENGINE=stub
+ENGINE ?= stub
+ENGINE_GOAL := $(filter embedded stub,$(MAKECMDGOALS))
+ifneq ($(ENGINE_GOAL),)
+ENGINE := $(ENGINE_GOAL)
+endif
+
+.PHONY: embedded stub
+embedded stub:
+	@:
+
+XGR_ENGINE_MODE := $(ENGINE)
+ENGINE_TAGS := $(if $(filter embedded,$(ENGINE)),-tags engine_embedded,)
+
+.PHONY: xgr-build
+xgr-build: check-go check-git
+	@echo "🔨 Building $(BINARY_NAME) [engine=$(ENGINE)]..."
+	@mkdir -p $(BUILD_DIR)
+	@COMMIT=$$(git rev-parse --short HEAD) && \
+	BRANCH=$$(git rev-parse --abbrev-ref HEAD) && \
+	TIME=$$(date -u +"%Y-%m-%dT%H:%M:%SZ") && \
+	VERSION="v1.0-$$(date +%Y%m%d)-$$COMMIT" && \
+	echo "📦 Version: $$VERSION" && \
+	GOOS=linux GOARCH=amd64 \
+	XGR_ENGINE_MODE=$(XGR_ENGINE_MODE) \
+	go build $(ENGINE_TAGS) -o $(BUILD_PATH) \
+		-ldflags "-X $(PKG_PATH).Version=$$VERSION -X $(PKG_PATH).Commit=$$COMMIT -X $(PKG_PATH).Branch=$$BRANCH -X $(PKG_PATH).BuildTime=$$TIME" \
+		main.go && \
+	echo "✅ Build complete: $(BUILD_PATH)"
+
+BUILD_PATH_DEBUG := $(BUILD_DIR)/$(BINARY_NAME).debug
+
+.PHONY: xgr-build-debug
+xgr-build-debug: check-go check-git
+	@echo "🪲 Building $(BINARY_NAME) (DEBUG -N -l) [engine=$(ENGINE)]..."
+	@mkdir -p $(BUILD_DIR)
+	@COMMIT=$$(git rev-parse --short HEAD) && \
+	BRANCH=$$(git rev-parse --abbrev-ref HEAD) && \
+	TIME=$$(date -u +"%Y-%m-%dT%H:%M:%SZ") && \
+	VERSION="v1.0-$$(date +%Y%m%d)-$$COMMIT" && \
+	echo "📦 Version: $$VERSION" && \
+	GOOS=linux GOARCH=amd64 \
+	XGR_ENGINE_MODE=$(XGR_ENGINE_MODE) \
+	go build $(ENGINE_TAGS) \
+		-gcflags="all=-N -l" \
+		-o "$(BUILD_PATH_DEBUG)" \
+		-ldflags "-X $(PKG_PATH).Version=$$VERSION -X $(PKG_PATH).Commit=$$COMMIT -X $(PKG_PATH).Branch=$$BRANCH -X $(PKG_PATH).BuildTime=$$TIME" \
+		main.go && \
+	echo "✅ Debug build complete: $(BUILD_PATH_DEBUG)"
+
+.PHONY: xgr-install-local
+xgr-install-local:
+	@echo "📦 Installing locally on MAIN_NODE ($(MAIN_NODE))..."
+	sudo mkdir -p /usr/local/bin
+	sudo cp $(BUILD_PATH) /usr/local/bin/$(BINARY_NAME)
+	sudo chmod +x /usr/local/bin/$(BINARY_NAME)
+	mkdir -p ~/xgrchain
+	cp $(GENESIS_SRC) $(GENESIS_DEST)
+	@echo "✅ Genesis-Datei wurde in $(GENESIS_DEST) kopiert"
+	@echo "✅ Installed locally"
+
+.PHONY: xgr-deploy-remote
+xgr-deploy-remote:
+	@echo "🚀 Deploying to remote validator nodes..."
+	@for host in $(REMOTE_NODES); do \
+		echo "→ Copying binary to $$host..."; \
+		scp $(BUILD_PATH) $$host:/tmp/$(BINARY_NAME); \
+		ssh -tt $$host "sudo mv /tmp/$(BINARY_NAME) /usr/local/bin/$(BINARY_NAME) && sudo chmod +x /usr/local/bin/$(BINARY_NAME)"; \
+		echo "→ Copying genesis file to $$host..."; \
+		scp $(GENESIS_SRC) $$host:/tmp/genesis-mainnet.json; \
+		ssh -tt $$host "mkdir -p ~/xgrchain && mv /tmp/genesis-mainnet.json $(GENESIS_DEST)"; \
+		echo "   ✅ Deployed to $$host"; \
+	done
+
+.PHONY: xgr-deploy-all
+xgr-deploy-all: xgr-build xgr-install-local xgr-deploy-remote
+
+# -----------------------------
+# HELP
+# -----------------------------
+.PHONY: help
+help:
+	@echo "Available targets:"
+	@printf "  %-28s - %s\n" "download-submodules" "Initialize and update Git submodules"
+	@printf "  %-28s - %s\n" "protoc" "Compile Protocol Buffers files"
+	@printf "  %-28s - %s\n" "lint" "Run linters on the codebase"
+	@printf "  %-28s - %s\n" "test" "Run unit tests"
+	@printf "  %-28s - %s\n" "fuzz-test" "Run fuzz tests"
+	@printf "  %-28s - %s\n" "test-e2e" "Run end-to-end tests"
+	@printf "  %-28s - %s\n" "test-e2e-polybft" "Run end-to-end tests for PolyBFT"
+	@printf "  %-28s - %s\n" "test-property-polybft" "Run property tests for PolyBFT"
+	@printf "  %-28s - %s\n" "compile-core-contracts" "Compile core contracts"
+	@printf "  %-28s - %s\n" "generate-smart-contract-bindings" "Generate smart contract bindings"
+	@printf "  %-28s - %s\n" "generate-bsd-licenses" "Generate BSD licenses JSON"
+	@printf "  %-28s - %s\n" "xgr-build" "Build xgrchain (default engine=stub)"
+	@printf "  %-28s - %s\n" "xgr-build-debug" "Build xgrchain debug (-N -l)"
+	@printf "  %-28s - %s\n" "xgr-install-local" "Install binary + genesis locally"
+	@printf "  %-28s - %s\n" "xgr-deploy-remote" "Deploy binary + genesis to validator nodes"
+	@printf "  %-28s - %s\n" "xgr-deploy-all" "Build + install local + deploy remote"
+	@echo ""
+	@echo "Engine mode usage:"
+	@echo "  make xgr-build              # stub (default)"
+	@echo "  make xgr-build embedded     # embedded + -tags engine_embedded"
+	@echo "  make xgr-deploy-all         # stub (default)"
+	@echo "  make xgr-deploy-all embedded"
+

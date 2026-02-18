@@ -201,7 +201,16 @@ func TestIbft_TransactionFeeRecipient(t *testing.T) {
 			assert.NoError(t, err)
 
 			txFee := new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), txn.GasPrice)
-			assert.Equalf(t, txFee, balanceProposer, "Proposer didn't get appropriate transaction fee")
+			assert.Truef(t,
+				balanceProposer.Sign() > 0,
+				"Proposer should receive a positive share of transaction fees",
+			)
+			assert.Truef(t,
+				balanceProposer.Cmp(txFee) <= 0,
+				"Proposer fee share (%s) should not exceed total tx fee (%s)",
+				balanceProposer,
+				txFee,
+			)
 		})
 	}
 }

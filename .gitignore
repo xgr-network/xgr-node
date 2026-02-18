@@ -44,3 +44,10 @@ __debug_*
 /Makefile
 /bin
 /creategenesis.sh
+stub.mod
+embedded.mod
+embedded.sum
+go.mod.stub
+go.mod.embedded
+go.work.stub
+

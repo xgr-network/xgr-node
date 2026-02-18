@@ -381,6 +381,7 @@ func TestPoS_UnstakeExploit(t *testing.T) {
 		// Just make very second transaction with dynamic gas fee
 		if i%2 == 0 {
 			unsignedTx.Type = types.DynamicFeeTx
+			unsignedTx.ChainID = big.NewInt(100)
 			unsignedTx.GasFeeCap = bigGasPrice
 			unsignedTx.GasTipCap = bigGasPrice
 		} else {
@@ -531,6 +532,7 @@ func TestPoS_StakeUnstakeExploit(t *testing.T) {
 		// Just make very second transaction with dynamic gas fee
 		if i%2 == 0 {
 			unsignedTx.Type = types.DynamicFeeTx
+			unsignedTx.ChainID = big.NewInt(100)
 			unsignedTx.GasFeeCap = bigGasPrice
 			unsignedTx.GasTipCap = bigGasPrice
 		} else {
@@ -669,6 +671,7 @@ func TestPoS_StakeUnstakeWithinSameBlock(t *testing.T) {
 
 		if dynamicTx {
 			unsignedTx.Type = types.DynamicFeeTx
+			unsignedTx.ChainID = big.NewInt(100)
 			unsignedTx.GasFeeCap = bigGasPrice
 			unsignedTx.GasTipCap = bigGasPrice
 		} else {

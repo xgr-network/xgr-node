@@ -1,8 +1,9 @@
 module github.com/xgr-network/xgr-node
 // NOTE:
 // xgrchain must build standalone even if the private ../xgrEngine repo is absent.
-// Therefore, we always replace xgrEngine with a repo-local stub module.
-// Internal builds can still swap this replace to a real engine repo if needed.
+// Therefore, we replace xgrEngine with a repo-local stub module by default.
+// For embedded engine builds (-tags engine_embedded), override this replace to the
+// real private engine module (for example ../xgrEngine or a workspace override).
 
 go 1.23.4
 
@@ -38,6 +39,7 @@ require (
 	github.com/syndtr/goleveldb v1.0.1-0.20220721030215-126854af5e6d
 	github.com/umbracle/fastrlp v0.1.1-0.20230504065717-58a1b8a9929d
 	github.com/umbracle/go-eth-bn256 v0.0.0-20230125114011-47cb310d9b0b
+	github.com/xgr-network/xgrEngine v0.0.0-00010101000000-000000000000
 	golang.org/x/crypto v0.40.0
 	google.golang.org/grpc v1.63.2
 	google.golang.org/protobuf v1.34.0
@@ -257,3 +259,5 @@ require (
 	google.golang.org/api v0.177.0 // indirect
 	gotest.tools/v3 v3.0.2 // indirect
 )
+
+replace github.com/xgr-network/xgrEngine => ./xgrEngine
