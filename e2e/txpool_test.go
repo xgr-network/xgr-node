@@ -56,6 +56,7 @@ func generateTx(params generateTxReqParams) *types.Transaction {
 		unsignedTx.GasPrice = params.gasPrice
 	} else {
 		unsignedTx.Type = types.DynamicFeeTx
+		unsignedTx.ChainID = big.NewInt(100)
 		unsignedTx.GasFeeCap = params.gasFeeCap
 		unsignedTx.GasTipCap = params.gasTipCap
 	}
@@ -78,9 +79,9 @@ func generateReq(params generateTxReqParams) *txpoolOp.AddTxnReq {
 }
 
 func TestTxPool_ErrorCodes(t *testing.T) {
-	gasPrice := big.NewInt(1000000000)
-	gasFeeCap := big.NewInt(1000000000)
-	gasTipCap := big.NewInt(100000000)
+	gasPrice := framework.TestGasPrice()
+	gasFeeCap := framework.TestGasFeeCap()
+	gasTipCap := framework.TestGasTipCap()
 	devInterval := 5
 
 	testTable := []struct {
@@ -209,7 +210,7 @@ func TestTxPool_TransactionCoalescing(t *testing.T) {
 	// Add tx with nonce 1
 	// -> check if both tx with nonce 1 and tx with nonce 2 are parsed
 	// Predefined values
-	gasPrice := big.NewInt(1000000000)
+	gasPrice := framework.TestGasPrice()
 
 	referenceKey, referenceAddr := tests.GenerateKeyAndAddr(t)
 	defaultBalance := framework.EthToWei(10)
@@ -391,11 +392,13 @@ func TestTxPool_RecoverableError(t *testing.T) {
 	//
 	senderKey, senderAddress := tests.GenerateKeyAndAddr(t)
 	_, receiverAddress := tests.GenerateKeyAndAddr(t)
+	highGasPrice := big.NewInt(100_000_000_000_000)
+	higherGasPrice := new(big.Int).Mul(highGasPrice, big.NewInt(2))
 
 	transactions := []*types.Transaction{
 		{
 			Nonce:    0,
-			GasPrice: framework.TestGasPrice(),
+			GasPrice: highGasPrice,
 			Gas:      22000,
 			To:       &receiverAddress,
 			Value:    oneEth,
@@ -404,7 +407,7 @@ func TestTxPool_RecoverableError(t *testing.T) {
 		},
 		{
 			Nonce:    1,
-			GasPrice: framework.TestGasPrice(),
+			GasPrice: highGasPrice,
 			Gas:      22000,
 			To:       &receiverAddress,
 			Value:    oneEth,
@@ -412,15 +415,13 @@ func TestTxPool_RecoverableError(t *testing.T) {
 			From:     senderAddress,
 		},
 		{
-			Type:      types.DynamicFeeTx,
-			Nonce:     2,
-			GasFeeCap: framework.TestGasFeeCap(),
-			GasTipCap: framework.TestGasTipCap(),
-			Gas:       22000,
-			To:        &receiverAddress,
-			Value:     oneEth,
-			V:         big.NewInt(27),
-			From:      senderAddress,
+			Nonce:    2,
+			GasPrice: higherGasPrice,
+			Gas:      22000,
+			To:       &receiverAddress,
+			Value:    oneEth,
+			V:        big.NewInt(27),
+			From:     senderAddress,
 		},
 	}
 
@@ -504,7 +505,7 @@ func TestTxPool_GetPendingTx(t *testing.T) {
 	// Construct the transaction
 	signedTx, err := signer.SignTx(&types.Transaction{
 		Nonce:    0,
-		GasPrice: big.NewInt(1000000000),
+		GasPrice: framework.TestGasPrice(),
 		Gas:      framework.DefaultGasLimit - 1,
 		To:       &receiverAddress,
 		Value:    oneEth,

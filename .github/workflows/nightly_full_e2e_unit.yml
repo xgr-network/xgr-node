@@ -31,11 +31,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p bin
-          go build -o ./bin/xgrchain .
-          echo "$PWD/bin" >> $GITHUB_PATH
-          xgrchain version || true
+          go build -trimpath -o ./bin/xgrchain .
+          chmod +x ./bin/xgrchain || true
+          file ./bin/xgrchain
+          file ./bin/xgrchain | grep -qE 'ELF .* executable' || (echo "ERROR: not an executable" && exit 1)
+          ./bin/xgrchain version || ./bin/xgrchain --version || true
 
-      #E2E erst als nächster Step, wenn Build-Pfad stimmt
+          # make it visible for e2e which execs "xgrchain" from PATH
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+          
       - name: E2E
         run: go test -count=1 -timeout 45m ./e2e/...
 

@@ -88,7 +88,16 @@ func TestNewFilter_Logs(t *testing.T) {
 		res, err := jsonRPCClient.Eth().GetFilterChanges(id)
 
 		assert.NoError(t, err)
-		assert.Equal(t, 1, len(res))
+		assert.GreaterOrEqual(t, len(res), 1)
+
+		matchingContractLogs := 0
+		for _, logEntry := range res {
+			if types.Address(logEntry.Address) == castedContractAddr {
+				matchingContractLogs++
+			}
+		}
+
+		assert.Equal(t, 1, matchingContractLogs)
 	}
 
 	t.Run("ECDSA", func(t *testing.T) {

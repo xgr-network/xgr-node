@@ -5,5 +5,12 @@ private `xgrEngine` repository is not present.
 
 It provides minimal stub packages for import resolution.
 
-Internal builds may replace `github.com/xgr-network/xgrEngine` with the real engine repo
-using a different `replace` directive.
+## Important: embedded builds
+
+The stub package under `jsonrpc/xgr` is compiled only when **not** using
+`-tags engine_embedded`.
+
+This means:
+- default / stub builds work standalone with this local module
+- embedded builds require the real private `xgrEngine` module (for example via a
+  different `replace` directive or a workspace override)

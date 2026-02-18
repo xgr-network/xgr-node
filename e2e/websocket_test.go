@@ -8,7 +8,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
-	"github.com/umbracle/ethgo"
 	"github.com/xgr-network/xgr-node/e2e/framework"
 	"github.com/xgr-network/xgr-node/helper/common"
 	"github.com/xgr-network/xgr-node/jsonrpc"
