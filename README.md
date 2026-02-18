@@ -29,6 +29,25 @@ If you are looking for the higher-level project documentation, see the main **XG
 
 ---
 
+## Chain Configuration
+
+This repository contains reference genesis files under `genesis/`.
+
+- **Mainnet genesis:** `genesis/mainnet/genesis.json`
+
+If you are running a local/dev network, prefer generating a fresh genesis via the CLI tooling in this repository rather than editing files manually.
+
+---
+
+## Quick Links
+
+- Project Specs / Standards (XGR): https://github.com/xgr-network/XGR
+- Website: https://xgr.network
+- Testnet Faucet: https://faucet.xgr.network
+- Explorer: https://explorer.xgr.network
+
+---
+
 ## License / Upstream Notice
 
 This project builds on prior open-source work.
