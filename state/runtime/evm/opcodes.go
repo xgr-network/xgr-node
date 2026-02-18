@@ -11,30 +11,6 @@ const (
 	// MCOPY copies memory regions efficiently (EIP-5656)
 	MCOPY = 0x5e
 
-	// TLOAD reads from transient storage (EIP-1153)
-	TLOAD = 0x5c
-
-	// TSTORE writes to transient storage (EIP-1153)
-	TSTORE = 0x5d
-
-	// RJUMP performs relative jump (EIP-4200)
-	RJUMP = 0xe0
-
-	// RJUMPI performs conditional relative jump (EIP-4200)
-	RJUMPI = 0xe1
-
-	// RJUMPV performs computed relative jump (EIP-4200)
-	RJUMPV = 0xe2
-
-	// CALLF performs subroutine call into a code section (EIP-4750)
-	CALLF = 0xe3
-
-	// RETF returns from a CALLF (EIP-4750)
-	RETF = 0xe4
-
-	// JUMPF performs jump into a code section (EIP-5450)
-	JUMPF = 0xe5
-
 	// PUSH0 pushes the constant value 0 onto the stack
 	PUSH0 = 0x5f
 
@@ -366,15 +342,7 @@ var opCodeToString = map[OpCode]string{
 	CHAINID:        "CHAINID",
 	SELFBALANCE:    "SELFBALANCE",
 	PUSH0:          "PUSH0",
-	TLOAD:          "TLOAD",
-	TSTORE:         "TSTORE",
 	MCOPY:          "MCOPY",
-	RJUMP:          "RJUMP",
-	RJUMPI:         "RJUMPI",
-	RJUMPV:         "RJUMPV",
-	CALLF:          "CALLF",
-	RETF:           "RETF",
-	JUMPF:          "JUMPF",
 }
 
 func opCodesToString(from, to OpCode, str string) {

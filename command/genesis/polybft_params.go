@@ -155,11 +155,7 @@ func (p *genesisParams) generatePolyBftChainConfig(o command.OutputFormatter) er
 		ProxyContractsAdmin:      types.StringToAddress(p.proxyContractsAdmin),
 	}
 
-	// Disable london hardfork if burn contract address is not provided
-	enabledForks := chain.AllForksEnabled
-	if !p.isBurnContractEnabled() {
-		enabledForks.RemoveFork(chain.London)
-	}
+	enabledForks := chain.AllForksEnabled.Copy()
 
 	chainConfig := &chain.Chain{
 		Name: p.name,
