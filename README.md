@@ -31,11 +31,9 @@ If you are looking for the higher-level project documentation, see the main **XG
 
 ## Chain Configuration
 
-This repository contains reference genesis files under `genesis/`.
+Chain configuration (including reference genesis files) is maintained in the **XGR** repository:
 
-- **Mainnet genesis:** `genesis/mainnet/genesis.json`
-
-If you are running a local/dev network, prefer generating a fresh genesis via the CLI tooling in this repository rather than editing files manually.
+- https://github.com/xgr-network/XGR
 
 ---
 
