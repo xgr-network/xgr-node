@@ -396,11 +396,7 @@ func (p *genesisParams) generateGenesis() error {
 }
 
 func (p *genesisParams) initGenesisConfig() error {
-	// Disable london hardfork if burn contract address is not provided
-	enabledForks := chain.AllForksEnabled
-	if !p.isBurnContractEnabled() {
-		enabledForks.RemoveFork(chain.London)
-	}
+	enabledForks := chain.AllForksEnabled.Copy()
 
 	chainConfig := &chain.Chain{
 		Name: p.name,

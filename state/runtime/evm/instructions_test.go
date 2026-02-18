@@ -102,11 +102,80 @@ func TestMStore(t *testing.T) {
 	assert.Len(t, s.memory, 1024+32)
 }
 
+func TestMcopy(t *testing.T) {
+	t.Run("copies requested range", func(t *testing.T) {
+		s, closeFn := getState()
+		defer closeFn()
+
+		s.gas = 1000
+		s.memory = []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee}
+
+		s.push(big.NewInt(3)) // length
+		s.push(big.NewInt(1)) // src
+		s.push(big.NewInt(0)) // dest
+
+		opMcopy(s)
+
+		assert.Equal(t, []byte{0xbb, 0xcc, 0xdd, 0xdd, 0xee}, s.memory)
+	})
+
+	t.Run("handles overlapping copies like memmove", func(t *testing.T) {
+		s, closeFn := getState()
+		defer closeFn()
+
+		s.gas = 1000
+		s.memory = []byte{0x01, 0x02, 0x03, 0x04}
+
+		s.push(big.NewInt(3)) // length
+		s.push(big.NewInt(0)) // src
+		s.push(big.NewInt(1)) // dest
+
+		opMcopy(s)
+
+		assert.Equal(t, []byte{0x01, 0x01, 0x02, 0x03}, s.memory)
+	})
+
+	t.Run("expands memory as needed", func(t *testing.T) {
+		s, closeFn := getState()
+		defer closeFn()
+
+		s.gas = 1000
+		s.memory = []byte{0x10, 0x20}
+
+		s.push(big.NewInt(2)) // length
+		s.push(big.NewInt(0)) // src
+		s.push(big.NewInt(4)) // dest
+
+		opMcopy(s)
+
+		assert.Len(t, s.memory, 32)
+		assert.Equal(t, []byte{0x10, 0x20}, s.memory[4:6])
+	})
+
+	t.Run("fails with out of gas when copy cannot be charged", func(t *testing.T) {
+		s, closeFn := getState()
+		defer closeFn()
+
+		s.gas = 3
+		s.memory = []byte{0x01, 0x02, 0x03, 0x04}
+
+		s.push(big.NewInt(64)) // length
+		s.push(big.NewInt(0))  // src
+		s.push(big.NewInt(0))  // dest
+
+		opMcopy(s)
+
+		assert.True(t, s.stop)
+		assert.ErrorIs(t, s.err, errOutOfGas)
+	})
+}
+
 type mockHostForInstructions struct {
 	mockHost
 	nonce       uint64
 	code        []byte
 	callxResult *runtime.ExecutionResult
+	txContext   runtime.TxContext
 }
 
 func (m *mockHostForInstructions) GetNonce(types.Address) uint64 {
@@ -119,6 +188,14 @@ func (m *mockHostForInstructions) Callx(*runtime.Contract, runtime.Host) *runtim
 
 func (m *mockHostForInstructions) GetCode(addr types.Address) []byte {
 	return m.code
+}
+
+func (m *mockHostForInstructions) GetTxContext() runtime.TxContext {
+	if m.txContext.AccessList == nil {
+		m.txContext.AccessList = runtime.NewAccessList()
+	}
+
+	return m.txContext
 }
 
 var (
@@ -679,7 +756,7 @@ func Test_opCall(t *testing.T) {
 			contract: &runtime.Contract{
 				Static: true,
 			},
-			config: allEnabledForks,
+			config: chain.AllForksEnabled.RemoveFork(chain.EIP2929).At(0),
 			initState: &state{
 				gas: 1000,
 				sp:  6,

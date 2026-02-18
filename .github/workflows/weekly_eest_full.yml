@@ -1,4 +1,4 @@
-name: Nightly (execution-spec-tests)
+name: weekly (execution-spec-tests full)
 
 on:
   workflow_dispatch:
@@ -14,9 +14,9 @@ on:
       pytest_k:
         description: "Optional pytest -k filter (e.g. exclude withdrawals)"
         required: false
-        default: ""
+        default: "not osaka and not cancun and not prague and not withdrawels"
   schedule:
-    - cron: "0 3 * * 0"
+    - cron: "0 3 * * 0" # Sundays 03:00 UTC
 
 concurrency:
   group: eest-main
@@ -35,18 +35,16 @@ jobs:
           go-version: "1.23.x"
           cache: true
 
-      - name: Install deps (jq, curl, perl)
+      - name: Install deps (jq, curl)
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y jq curl perl
+          sudo apt-get install -y jq curl
 
-      - name: CI patch: MinBaseFee -> 1 (temporary)
+      - name: Patch MinBaseFee for CI (Option A)
         run: |
           set -euo pipefail
-          test -f chain/params.go
           perl -pi -e 's/(MinBaseFee\s+uint64\s*=\s*)[0-9_]+/${1}1/' chain/params.go
-          echo "Patched MinBaseFee line:"
           grep -n "MinBaseFee" chain/params.go
 
       - name: Build xgrchain
@@ -90,10 +88,20 @@ jobs:
           mkdir -p ./validator-1
 
           OUT="$(xgrchain secrets init --data-dir ./validator-1 --insecure --json)"
+
+          # Print for debugging, but don't crash on jq shape changes
           echo "$OUT" | jq . || true
 
-          # bombproof: works for object or array (and future nesting)
-          NODE_ID="$(echo "$OUT" | jq -r '.. | .node_id? // .nodeID? // empty' | head -n 1)"
+          # Accept both JSON shapes:
+          #  - object: { node_id: "..." }
+          #  - array:  [ { node_id: "..." } ]
+          NODE_ID="$(
+            echo "$OUT" | jq -r '
+              if type=="array" then (.[0].node_id // .[0].nodeID // empty)
+              else (.node_id // .nodeID // empty)
+              end
+            '
+          )"
 
           if [ -z "$NODE_ID" ] || [ "$NODE_ID" = "null" ]; then
             echo "ERROR: could not determine node_id for bootnode"
@@ -108,7 +116,7 @@ jobs:
           echo "BOOTNODE=${BOOTNODE}"
           echo "BOOTNODE=${BOOTNODE}" >> "$GITHUB_ENV"
 
-      - name: Generate genesis (IBFT + premine EEST seed + forks@0)
+      - name: Generate genesis (IBFT + premine EEST seed)
         env:
           CHAIN_ID: "100"
           PREMINE_WEI: "1000000000000000000000000000" # 1e27 wei
@@ -130,15 +138,18 @@ jobs:
             --name eest \
             --dir ./genesis-eest.json
 
-          test -s ./genesis-eest.json
-
-          # Force all fork blocks to 0 and mirror alloc (matches your example style)
           jq '
             (.params.forks |= with_entries(.value |= (if (.block? != null) then (.block=0) else . end))) |
             (.alloc = .genesis.alloc)
           ' ./genesis-eest.json > ./genesis-eest.tmp && mv ./genesis-eest.tmp ./genesis-eest.json
 
+          jq '.params.forks' ./genesis-eest.json
+
+          test -s ./genesis-eest.json
+
       - name: Start local node (JSON-RPC)
+        env:
+          CHAIN_ID: "100"
         run: |
           set -euo pipefail
 

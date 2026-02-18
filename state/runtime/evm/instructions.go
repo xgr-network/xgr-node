@@ -22,26 +22,7 @@ var (
 	wordSize = big.NewInt(32)
 )
 
-// new Opcodes after londen fork
-func opTload(c *state) {
-	key := c.pop()
-	val, ok := c.transientStorage[key.Text(16)]
-	if !ok {
-		val = new(big.Int)
-	}
-	c.push(val)
-}
-
-func opTstore(c *state) {
-	key := c.pop()
-	val := c.pop()
-
-	// Key in string umwandeln (z. B. hex)
-	keyStr := key.Text(16)
-
-	c.transientStorage[keyStr] = val
-}
-
+// MCOPY (EIP-5656)
 func opMcopy(c *state) {
 	destOffset := c.pop()
 	srcOffset := c.pop()
@@ -51,83 +32,23 @@ func opMcopy(c *state) {
 		return
 	}
 
-	dest := int(destOffset.Uint64())
-	src := int(srcOffset.Uint64())
-	size := int(length.Uint64())
-
-	requiredSize := int(dest + size)
-	if alt := int(src + size); alt > requiredSize {
-		requiredSize = alt
-	}
-	if len(c.memory) < requiredSize {
-		newMem := make([]byte, requiredSize)
-		copy(newMem, c.memory)
-		c.memory = newMem
-	}
-	copy(c.memory[dest:], c.memory[src:src+size])
-}
-
-func opRjump(c *state) {
-	offset := int64(c.pop().Int64())
-	target := int(c.pc) + int(offset)
-	c.pc = uint64(target)
-}
-
-func opRjumpi(c *state) {
-	offset := int64(c.pop().Int64())
-	condition := c.pop().Sign() != 0 // true, wenn NICHT null
-
-	if condition {
-		target := int(c.pc) + int(offset)
-		c.pc = uint64(target)
-	}
-}
-
-func opRjumpv(c *state) {
-	count := int(c.pop().Uint64())
-	index := int(c.pop().Uint64())
-
-	offsets := make([]int64, count)
-	for i := 0; i < count; i++ {
-		offsets[i] = int64(c.pop().Int64())
-	}
-
-	if index < 0 || index >= count {
-		c.exit(errInvalidJump)
+	if !c.allocateMemory(destOffset, length) {
 		return
 	}
 
-	target := int(c.pc) + int(offsets[index])
-	c.pc = uint64(target)
-}
-
-func opCallf(c *state) {
-	target := int(c.pop().Uint64())
-	// alten PC als Frame speichern
-	frame := &stackFrame{
-		pc: c.pc,
-	}
-	// Frame auf Stack schieben
-	c.stackFrames = append(c.stackFrames, frame)
-	// PC auf neues Ziel setzen
-	c.pc = uint64(target)
-}
-
-func opRetf(c *state) {
-	n := len(c.stackFrames)
-	if n == 0 {
-		c.exit(errInvalidJump)
+	if !c.allocateMemory(srcOffset, length) {
 		return
 	}
-	frame := c.stackFrames[n-1]
-	c.stackFrames = c.stackFrames[:n-1]
 
-	c.pc = frame.pc
-}
+	size := length.Uint64()
+	if !c.consumeGas(((size + 31) / 32) * copyGas) {
+		return
+	}
 
-func opJumpf(c *state) {
-	target := int(c.pop().Uint64())
-	c.pc = uint64(target)
+	dest := destOffset.Uint64()
+	src := srcOffset.Uint64()
+
+	copy(c.memory[dest:dest+size], c.memory[src:src+size])
 }
 
 func opAdd(c *state) {

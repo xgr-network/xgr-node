@@ -62,21 +62,7 @@ func init() {
 	register(SHR, handler{opShr, 2, 3})
 	register(SAR, handler{opSar, 2, 3})
 
-	// transient storage (EIP-1153)
-	register(TLOAD, handler{opTload, 1, 3})
-	register(TSTORE, handler{opTstore, 2, 5})
-
-	// relative jumps (EIP-4200)
-	register(RJUMP, handler{opRjump, 1, 2})
-	register(RJUMPI, handler{opRjumpi, 2, 3})
-	register(RJUMPV, handler{opRjumpv, 2, 5})
-
-	// functions (EIP-2315, 4750)
-	register(CALLF, handler{opCallf, 1, 25})
-	register(RETF, handler{opRetf, 0, 1})
-	register(JUMPF, handler{opJumpf, 1, 3})
-
-	// push0 and other standard stack ops
+	// push0 and standard stack ops
 	register(PUSH0, handler{opPush0, 0, 2})
 	registerRange(PUSH1, PUSH32, opPush, 3)
 	registerRange(DUP1, DUP16, opDup, 3)
@@ -100,7 +86,7 @@ func init() {
 	register(MLOAD, handler{opMload, 1, 3})
 	register(MSTORE, handler{opMStore, 2, 3})
 	register(MSTORE8, handler{opMStore8, 2, 3})
-	register(MCOPY, handler{opMcopy, 3, 3}) // doppelt für Lesbarkeit
+	register(MCOPY, handler{opMcopy, 3, 3})
 
 	// storage
 	register(SLOAD, handler{opSload, 1, 0})
