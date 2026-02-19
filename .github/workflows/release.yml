@@ -47,6 +47,10 @@ jobs:
           TAG="${{ github.event.inputs.release_tag }}"
           if [ -z "$TAG" ]; then echo "release_tag required"; exit 1; fi
           if [[ "$TAG" != v* ]]; then echo "release_tag must start with v (got: $TAG)"; exit 1; fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([\-+].*)?$ ]]; then
+            echo "release_tag should look like vX.Y.Z (got: $TAG)"
+            exit 1
+          fi
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
 
   integration:
@@ -65,6 +69,12 @@ jobs:
         with:
           go-version: "1.23.x"
           cache: true
+
+      - name: Go env
+        run: |
+          set -euo pipefail
+          go version
+          go env | sort
 
       - name: Go test (unit, full)
         run: |
@@ -95,13 +105,56 @@ jobs:
           chmod +x "./bin/${OUT}"
           printf "%s\n" "${VERSION}" > ./bin/version.txt
 
+          test -x "./bin/${OUT}"
+          ls -lah "./bin/${OUT}" ./bin/version.txt
+          file "./bin/${OUT}" || true
+
           echo "$PWD/bin" >> "$GITHUB_PATH"
           "./bin/${OUT}" version || true
 
-      - name: E2E
+      - name: E2E (watchdog + heartbeat)
         run: |
           set -euo pipefail
-          go test -v -count=1 -timeout 40m ./e2e/...
+
+          echo "Starting E2E..."
+          ( go test -count=1 -timeout 40m ./e2e/... ) &
+          pid=$!
+          echo "E2E pid=$pid"
+
+          # Heartbeat up to 45m
+          for i in $(seq 1 2700); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "E2E finished, waiting..."
+              wait "$pid"
+              exit $?
+            fi
+
+            if [ $((i % 60)) -eq 0 ]; then
+              echo "[heartbeat] $(date -u +'%Y-%m-%dT%H:%M:%SZ') e2e still running..."
+              echo "== xgrchain (non-zombie) =="
+              ps -eo pid,ppid,state,etimes,cmd | awk '$0 ~ /xgrchain/ && $3 != "Z"' | grep -v awk || true
+              echo "== xgrchain (zombies) =="
+              ps -eo pid,ppid,state,cmd | awk '$0 ~ /xgrchain/ && $3 == "Z"' | grep -v awk || true
+              echo "== ports :12000-:12030 =="
+              ss -ltnp | awk '$4 ~ /:120(0[0-9]|1[0-9]|2[0-9]|30)$/ {print}' || true
+              echo "== tmp dirs (latest) =="
+              ls -1dt /tmp/polygon-edge-e2e-* 2>/dev/null | head -n 3 || true
+            fi
+
+            sleep 1
+          done
+
+          echo "ERROR: E2E exceeded watchdog (45m) - killing..."
+          kill "$pid" || true
+          sleep 2
+          kill -9 "$pid" || true
+          exit 1
+
+      - name: Cleanup stray xgrchain
+        if: always()
+        run: |
+          set -euo pipefail
+          pkill -9 xgrchain || true
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
@@ -124,24 +177,27 @@ jobs:
       RPC: "http://127.0.0.1:8545"
       CHAIN_ID: "100"
     steps:
-      # identisch zu nightly.yml (du kannst den Block 1:1 übernehmen)
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.23.x"
           cache: true
+
       - name: Install deps (jq, curl)
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y jq curl
+
       - name: Patch MinBaseFee for CI (EEST)
         run: |
           set -euo pipefail
           perl -pi -e 's/(MinBaseFee\s+uint64\s*=\s*)[0-9_]+/${1}1/' chain/params.go
           grep -n "MinBaseFee" chain/params.go
+
       - name: Build xgrchain (for local EEST node)
         run: |
           set -euo pipefail
@@ -149,6 +205,8 @@ jobs:
           go build -trimpath -o ./bin/xgrchain .
           chmod +x ./bin/xgrchain
           echo "${GITHUB_WORKSPACE}/bin" >> "$GITHUB_PATH"
+          ./bin/xgrchain version || true
+
       - name: Generate ephemeral EEST seed key (PK + address)
         run: |
           set -euo pipefail
@@ -171,6 +229,7 @@ jobs:
           out="$(go run /tmp/keygen.go)"
           echo "$out"
           echo "$out" >> "$GITHUB_ENV"
+
       - name: Create IBFT validator secrets (single node) + derive bootnode
         run: |
           set -euo pipefail
@@ -191,6 +250,7 @@ jobs:
             exit 1
           fi
           echo "BOOTNODE=/ip4/127.0.0.1/tcp/1478/p2p/${NODE_ID}" >> "$GITHUB_ENV"
+
       - name: Generate genesis (IBFT + premine EEST seed)
         env:
           PREMINE_WEI: "1000000000000000000000000000"
@@ -210,14 +270,17 @@ jobs:
             --max-validator-count 1 \
             --name eest \
             --dir ./genesis-eest.json
+
           jq '
             (.params.forks |= with_entries(.value |= (if (.block? != null) then (.block=0) else . end))) |
             (.alloc = .genesis.alloc)
           ' ./genesis-eest.json > ./genesis-eest.tmp && mv ./genesis-eest.tmp ./genesis-eest.json
           test -s ./genesis-eest.json
-      - name: Start local node (JSON-RPC)
+
+      - name: Start local node (JSON-RPC) + RPC sanity
         run: |
           set -euo pipefail
+
           xgrchain server \
             --data-dir ./validator-1 \
             --chain ./genesis-eest.json \
@@ -228,21 +291,54 @@ jobs:
             --seal \
             --log-level INFO \
             --log-to node.log &
-          for i in {1..90}; do
-            curl -sS -X POST http://127.0.0.1:8545 \
+          echo $! > /tmp/eest-node.pid
+
+          rpc_call() {
+            local method="$1"
+            local params="${2:-[]}"
+            curl -sS -X POST "${RPC}" \
               -H 'content-type: application/json' \
-              --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' >/dev/null && break
+              --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}"
+          }
+
+          # RPC up?
+          for i in {1..120}; do
+            if rpc_call eth_chainId | jq -e .result >/dev/null 2>&1; then
+              break
+            fi
             sleep 1
           done
+
+          echo "eth_chainId=$(rpc_call eth_chainId | jq -r .result)"
+          echo "eth_blockNumber=$(rpc_call eth_blockNumber | jq -r .result)"
+
+          # Ensure blocks move (sealing actually happens)
+          last="$(rpc_call eth_blockNumber | jq -r .result)"
+          for i in {1..40}; do
+            sleep 1
+            cur="$(rpc_call eth_blockNumber | jq -r .result)"
+            if [ "$cur" != "$last" ]; then
+              echo "block advanced: ${last} -> ${cur}"
+              exit 0
+            fi
+          done
+
+          echo "ERROR: blockNumber did not advance within 40s (sealing issue). Dumping log:"
+          tail -n 200 node.log || true
+          exit 1
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Setup uv
         uses: astral-sh/setup-uv@v7
+
       - name: Clone execution-spec-tests
         run: |
           set -euo pipefail
           git clone --depth 1 https://github.com/ethereum/execution-spec-tests.git eest
+
       - name: Run EEST (execute remote)
         run: |
           set -euo pipefail
@@ -258,6 +354,7 @@ jobs:
             --rpc-chain-id "${CHAIN_ID}" \
             "${TESTS_PATH}" \
             "${extra_args[@]}"
+
       - name: Upload node log
         if: always()
         uses: actions/upload-artifact@v4
@@ -271,7 +368,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     needs: [integration]
-    # Achtung: auf GitHub-hosted max ~6h hart. Wenn Genesis->Head länger: wird gekillt. :contentReference[oaicite:1]{index=1}
     env:
       REF_RPC: "https://rpc1.xgr.network"
       GENESIS_URL: "https://raw.githubusercontent.com/xgr-network/XGR/main/genesis/mainnet/genesis.json"
@@ -303,6 +399,8 @@ jobs:
           mkdir -p bin
           cp "$BIN" ./bin/xgrchain
           chmod +x ./bin/xgrchain
+          ./bin/xgrchain version || true
+          file ./bin/xgrchain || true
 
       - name: Fetch mainnet genesis.json
         run: |
@@ -325,19 +423,171 @@ jobs:
             --price-limit 0 \
             --log-level WARN \
             --log-to fork-gate-node.log &
-          for i in {1..120}; do
+          echo $! > /tmp/forkgate.pid
+
+          for i in {1..180}; do
             curl -sS -X POST "${LOCAL_RPC}" \
               -H 'content-type: application/json' \
-              --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' >/dev/null && break
+              --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+              | jq -e .result >/dev/null 2>&1 && break
             sleep 1
           done
 
-      - name: Fork parity check
+          echo "LOCAL eth_chainId=$(curl -sS -X POST "${LOCAL_RPC}" -H 'content-type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' | jq -r .result)"
+          echo "REF   eth_chainId=$(curl -sS -X POST "${REF_RPC}"  -H 'content-type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' | jq -r .result)"
+
+      - name: Fork parity check (sync + blockhash every N blocks)
         run: |
           set -euo pipefail
-          # -> hier kommt DEIN bestehendes ForkGate-Script 1:1 rein
-          echo "TODO: paste your fork parity script here"
-          exit 1
+
+          rpc() {
+            local url="$1"
+            local method="$2"
+            local params="${3:-[]}"
+            curl -sS -X POST "${url}" \
+              -H 'content-type: application/json' \
+              --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}"
+          }
+
+          hex_to_dec() {
+            local h="$1"
+            h="${h#0x}"
+            if [ -z "$h" ] || [ "$h" = "null" ]; then echo ""; return 1; fi
+            echo $((16#$h))
+          }
+
+          dec_to_hex() {
+            printf "0x%x" "$1"
+          }
+
+          # Determine remote head
+          remoteHeadHex="$(rpc "${REF_RPC}" eth_blockNumber | jq -r .result)"
+          remoteHead="$(hex_to_dec "${remoteHeadHex}")"
+          if [ -z "${remoteHead}" ]; then
+            echo "ERROR: cannot read remote head"
+            rpc "${REF_RPC}" eth_blockNumber | jq .
+            exit 1
+          fi
+
+          headLag="${HEAD_LAG}"
+          if ! [[ "$headLag" =~ ^[0-9]+$ ]]; then headLag=20; fi
+
+          if [ -n "${MAX_BLOCK_INPUT}" ]; then
+            if ! [[ "${MAX_BLOCK_INPUT}" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: fork_gate_max_block must be decimal (got: ${MAX_BLOCK_INPUT})"
+              exit 1
+            fi
+            maxBlock="${MAX_BLOCK_INPUT}"
+          else
+            if [ "${remoteHead}" -le "${headLag}" ]; then
+              maxBlock=0
+            else
+              maxBlock=$((remoteHead - headLag))
+            fi
+          fi
+
+          step="${STEP}"
+          if ! [[ "$step" =~ ^[0-9]+$ ]] || [ "$step" -le 0 ]; then step=1000; fi
+
+          echo "Remote head: ${remoteHead} (hex ${remoteHeadHex})"
+          echo "Max block : ${maxBlock} (remoteHead - lag=${headLag}, unless overridden)"
+          echo "Step      : ${step}"
+
+          # Sync wait
+          startTs="$(date +%s)"
+          lastBlock=-1
+          lastProgressTs="$(date +%s)"
+
+          while true; do
+            now="$(date +%s)"
+            if [ $((now - startTs)) -ge "${SYNC_TIMEOUT_SEC}" ]; then
+              echo "ERROR: sync timeout after ${SYNC_TIMEOUT_SEC}s"
+              echo "== local status =="
+              rpc "${LOCAL_RPC}" eth_syncing | jq . || true
+              rpc "${LOCAL_RPC}" eth_blockNumber | jq . || true
+              echo "== processes =="
+              ps -ef | grep -E '[x]grchain' || true
+              echo "== ports =="
+              ss -ltnp | grep -E ':(8545|9632|1478)\b' || true
+              echo "== last log =="
+              tail -n 200 fork-gate-node.log || true
+              exit 1
+            fi
+
+            localHex="$(rpc "${LOCAL_RPC}" eth_blockNumber | jq -r .result)"
+            localDec="$(hex_to_dec "${localHex}" || true)"
+            if [ -z "${localDec}" ]; then
+              echo "WARN: cannot read local blockNumber yet"
+              sleep "${SYNC_POLL_SEC}"
+              continue
+            fi
+
+            if [ "${localDec}" -ne "${lastBlock}" ]; then
+              lastBlock="${localDec}"
+              lastProgressTs="$(date +%s)"
+            fi
+
+            if [ $(( (now - startTs) % 60 )) -lt "${SYNC_POLL_SEC}" ]; then
+              syncing="$(rpc "${LOCAL_RPC}" eth_syncing | jq -r '.result | (if type=="boolean" then tostring else "true" end)' || true)"
+              echo "[sync] t=$((now-startTs))s local=${localDec} max=${maxBlock} syncing=${syncing}"
+            fi
+
+            # If no progress for 10 minutes -> fail fast with diagnostics
+            if [ $((now - lastProgressTs)) -ge 600 ]; then
+              echo "ERROR: no sync progress for 600s (stalled)."
+              rpc "${LOCAL_RPC}" eth_syncing | jq . || true
+              rpc "${LOCAL_RPC}" net_peerCount | jq . || true
+              tail -n 200 fork-gate-node.log || true
+              exit 1
+            fi
+
+            if [ "${localDec}" -ge "${maxBlock}" ]; then
+              echo "Synced enough: local=${localDec} >= max=${maxBlock}"
+              break
+            fi
+
+            sleep "${SYNC_POLL_SEC}"
+          done
+
+          # Parity check
+          echo "Starting parity check..."
+          for ((b=0; b<=maxBlock; b+=step)); do
+            hb="$(dec_to_hex "${b}")"
+            rHash="$(rpc "${REF_RPC}"   eth_getBlockByNumber "[\"${hb}\", false]" | jq -r .result.hash)"
+            lHash="$(rpc "${LOCAL_RPC}" eth_getBlockByNumber "[\"${hb}\", false]" | jq -r .result.hash)"
+
+            if [ -z "${rHash}" ] || [ "${rHash}" = "null" ]; then
+              echo "ERROR: remote block ${b} (${hb}) missing hash"
+              rpc "${REF_RPC}" eth_getBlockByNumber "[\"${hb}\", false]" | jq .
+              exit 1
+            fi
+            if [ -z "${lHash}" ] || [ "${lHash}" = "null" ]; then
+              echo "ERROR: local block ${b} (${hb}) missing hash"
+              rpc "${LOCAL_RPC}" eth_getBlockByNumber "[\"${hb}\", false]" | jq .
+              echo "== last log =="
+              tail -n 200 fork-gate-node.log || true
+              exit 1
+            fi
+
+            if [ "${rHash}" != "${lHash}" ]; then
+              echo "ERROR: HASH MISMATCH at block ${b} (${hb})"
+              echo "  remote: ${rHash}"
+              echo "  local : ${lHash}"
+              echo "== remote block =="
+              rpc "${REF_RPC}"   eth_getBlockByNumber "[\"${hb}\", false]" | jq .
+              echo "== local block =="
+              rpc "${LOCAL_RPC}" eth_getBlockByNumber "[\"${hb}\", false]" | jq .
+              echo "== last log =="
+              tail -n 200 fork-gate-node.log || true
+              exit 1
+            fi
+
+            if [ $((b % (step*10) )) -eq 0 ]; then
+              echo "[parity] ok up to block ${b} (${hb}) hash=${lHash}"
+            fi
+          done
+
+          echo "ForkGate PASS (0..${maxBlock} step=${step})"
 
       - name: Upload fork gate node log
         if: always()
@@ -363,6 +613,8 @@ jobs:
           set -euo pipefail
           cd dist
           sha256sum * > sha256sums.txt
+          ls -lah
+          cat sha256sums.txt
 
       - name: Fail if tag already exists
         uses: actions/github-script@v7
@@ -381,14 +633,13 @@ jobs:
               core.info(`tag does not exist yet: ${tag}`);
             }
 
-      - name: Create Release (creates tag implicitly on this commit)
+      - name: Create Release (creates tag on this commit)
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ needs.meta.outputs.version }}
           name: ${{ needs.meta.outputs.version }}
           prerelease: false
           allowUpdates: false
-          immutableCreate: true
           makeLatest: true
           commit: ${{ github.sha }}
           body: |
