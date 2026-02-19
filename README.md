@@ -29,6 +29,23 @@ If you are looking for the higher-level project documentation, see the main **XG
 
 ---
 
+## Chain Configuration
+
+Chain configuration (including reference genesis files) is maintained in the **XGR** repository:
+
+- https://github.com/xgr-network/XGR
+
+---
+
+## Quick Links
+
+- Project Specs / Standards (XGR): https://github.com/xgr-network/XGR
+- Website: https://xgr.network
+- Testnet Faucet: https://faucet.xgr.network
+- Explorer: https://explorer.xgr.network
+
+---
+
 ## License / Upstream Notice
 
 This project builds on prior open-source work.
