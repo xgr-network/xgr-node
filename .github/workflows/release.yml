@@ -101,7 +101,7 @@ jobs:
       - name: E2E
         run: |
           set -euo pipefail
-          go -v test -count=1 -timeout 45m ./e2e/...
+          go test -v -count=1 -timeout 40m ./e2e/...
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
