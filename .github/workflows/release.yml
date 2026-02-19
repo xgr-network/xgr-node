@@ -504,7 +504,48 @@ jobs:
           echo "Remote head: ${remoteHead} (hex ${remoteHeadHex})"
           echo "Max block : ${maxBlock} (remoteHead - lag=${headLag}, unless overridden)"
           echo "Step      : ${step}"
+          check_block() {
+            local b="$1"
+            local hb
+            hb="$(dec_to_hex "${b}")"
 
+            rHash="$(rpc "${REF_RPC}"   eth_getBlockByNumber "[\"${hb}\", false]" | jq -r .result.hash)"
+            lHash="$(rpc "${LOCAL_RPC}" eth_getBlockByNumber "[\"${hb}\", false]" | jq -r .result.hash)"
+
+            if [ -z "${rHash}" ] || [ "${rHash}" = "null" ]; then
+              echo "ERROR: remote block ${b} (${hb}) missing hash"
+              rpc "${REF_RPC}" eth_getBlockByNumber "[\"${hb}\", false]" | jq .
+             exit 1
+            fi
+            if [ -z "${lHash}" ] || [ "${lHash}" = "null" ]; then
+              echo "ERROR: local block ${b} (${hb}) missing hash"
+              rpc "${LOCAL_RPC}" eth_getBlockByNumber "[\"${hb}\", false]" | jq .
+              echo "== last log =="
+              tail -n 200 fork-gate-node.log || true
+              exit 1
+            fi
+
+           if [ "${rHash}" != "${lHash}" ]; then
+              echo "ERROR: HASH MISMATCH at block ${b} (${hb})"
+              echo "  remote: ${rHash}"
+              echo "  local : ${lHash}"
+              echo "== remote block =="
+              rpc "${REF_RPC}"   eth_getBlockByNumber "[\"${hb}\", false]" | jq .
+              echo "== local block =="
+              rpc "${LOCAL_RPC}" eth_getBlockByNumber "[\"${hb}\", false]" | jq .
+              echo "== last log =="
+              tail -n 200 fork-gate-node.log || true
+              exit 1
+            fi
+
+            # sparsam loggen
+            if [ "${b}" -eq 0 ] || [ $((b % (step*10) )) -eq 0 ] || [ "${b}" -eq "${maxBlock}" ]; then
+              echo "[parity] ok block ${b} (${hb}) hash=${lHash}"
+            fi
+          }
+
+          nextCheck=0
+          lastChecked=-1
           # Sync wait
           startTs="$(date +%s)"
           lastBlock=-1
@@ -553,50 +594,24 @@ jobs:
               exit 1
             fi
 
+            # Compare *as we sync*: every N blocks (step)
+            while [ "${nextCheck}" -le "${maxBlock}" ] && [ "${localDec}" -ge "${nextCheck}" ]; do
+              check_block "${nextCheck}"
+              lastChecked="${nextCheck}"
+              nextCheck=$((nextCheck + step))
+            done
+
             if [ "${localDec}" -ge "${maxBlock}" ]; then
+              # always check exact maxBlock too (even if not aligned)
+              if [ "${lastChecked}" -lt "${maxBlock}" ]; then
+                check_block "${maxBlock}"
+                lastChecked="${maxBlock}"
+              fi
               echo "Synced enough: local=${localDec} >= max=${maxBlock}"
               break
             fi
 
             sleep "${SYNC_POLL_SEC}"
-          done
-
-          # Parity check
-          echo "Starting parity check..."
-          for ((b=0; b<=maxBlock; b+=step)); do
-            hb="$(dec_to_hex "${b}")"
-            rHash="$(rpc "${REF_RPC}"   eth_getBlockByNumber "[\"${hb}\", false]" | jq -r .result.hash)"
-            lHash="$(rpc "${LOCAL_RPC}" eth_getBlockByNumber "[\"${hb}\", false]" | jq -r .result.hash)"
-
-            if [ -z "${rHash}" ] || [ "${rHash}" = "null" ]; then
-              echo "ERROR: remote block ${b} (${hb}) missing hash"
-              rpc "${REF_RPC}" eth_getBlockByNumber "[\"${hb}\", false]" | jq .
-              exit 1
-            fi
-            if [ -z "${lHash}" ] || [ "${lHash}" = "null" ]; then
-              echo "ERROR: local block ${b} (${hb}) missing hash"
-              rpc "${LOCAL_RPC}" eth_getBlockByNumber "[\"${hb}\", false]" | jq .
-              echo "== last log =="
-              tail -n 200 fork-gate-node.log || true
-              exit 1
-            fi
-
-            if [ "${rHash}" != "${lHash}" ]; then
-              echo "ERROR: HASH MISMATCH at block ${b} (${hb})"
-              echo "  remote: ${rHash}"
-              echo "  local : ${lHash}"
-              echo "== remote block =="
-              rpc "${REF_RPC}"   eth_getBlockByNumber "[\"${hb}\", false]" | jq .
-              echo "== local block =="
-              rpc "${LOCAL_RPC}" eth_getBlockByNumber "[\"${hb}\", false]" | jq .
-              echo "== last log =="
-              tail -n 200 fork-gate-node.log || true
-              exit 1
-            fi
-
-            if [ $((b % (step*10) )) -eq 0 ]; then
-              echo "[parity] ok up to block ${b} (${hb}) hash=${lHash}"
-            fi
           done
 
           echo "ForkGate PASS (0..${maxBlock} step=${step})"
