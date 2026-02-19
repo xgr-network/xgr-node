@@ -89,10 +89,7 @@ jobs:
           ./bin/xgrchain-nightly-linux-amd64 version || true
 
       - name: E2E
-        run: |
-          set -euo pipefail
-          # falls mehrere e2e-packages parallel Ports clobbern: serialisieren
-          go test -v -count=1 -timeout 40m ./e2e/...
+        run: go test -count=1 -timeout 40m ./e2e/...
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
