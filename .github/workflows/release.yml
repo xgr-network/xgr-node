@@ -538,10 +538,8 @@ jobs:
               exit 1
             fi
 
-            # sparsam loggen
-            if [ "${b}" -eq 0 ] || [ $((b % (step*10) )) -eq 0 ] || [ "${b}" -eq "${maxBlock}" ]; then
-              echo "[parity] ok block ${b} (${hb}) hash=${lHash}"
-            fi
+            # log every check (i.e. every step)
+            echo "[parity] ok block ${b} (${hb}) hash=${lHash}"
           }
 
           nextCheck=0
