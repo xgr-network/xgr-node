@@ -104,10 +104,13 @@ jobs:
 
           chmod +x "./bin/${OUT}"
           printf "%s\n" "${VERSION}" > ./bin/version.txt
-
+          # stable name for e2e harness (expects `xgrchain` in PATH)
+          ln -sf "${OUT}" "./bin/xgrchain"
+          chmod +x "./bin/xgrchain"
           test -x "./bin/${OUT}"
-          ls -lah "./bin/${OUT}" ./bin/version.txt
+          ls -lah "./bin/${OUT}" "./bin/xgrchain" ./bin/version.txt
           file "./bin/${OUT}" || true
+          "./bin/xgrchain" version || true
 
           echo "$PWD/bin" >> "$GITHUB_PATH"
           "./bin/${OUT}" version || true
