@@ -33,6 +33,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
     steps:
       - id: v
+        shell: bash
         run: |
           set -euo pipefail
           SHA="${GITHUB_SHA::7}"
@@ -56,13 +57,24 @@ jobs:
           go-version: "1.23.x"
           cache: true
 
+      - name: Go env (debug)
+        shell: bash
+        run: |
+          set -euo pipefail
+          go version
+          go env | sort
+          uname -a
+          df -h
+
       - name: Go test (unit, full)
+        shell: bash
         run: |
           set -euo pipefail
           pkgs=$(go list ./... | grep -vE '(/e2e($|/)|/e2e-polybft($|/)|/tests($|/)|/tracker($|/)|/command/rootchain/deploy($|/)|/consensus/polybft($|/)|/state/runtime/evm($|/))')
           go test -count=1 $pkgs
 
-      - name: Build node binary (nightly, constant filename)
+      - name: Build node binary (nightly, constant filename + canonical xgrchain)
+        shell: bash
         env:
           VERSION: ${{ needs.meta.outputs.version }}
         run: |
@@ -77,19 +89,93 @@ jobs:
           TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           PKG="github.com/xgr-network/xgrchain/versioning"
 
-          # build once
-          go build -trimpath -o "./bin/xgrchain-nightly-linux-amd64" \
+          # Build canonical name FIRST (E2E expects this!)
+          go build -trimpath -o "./bin/xgrchain" \
             -ldflags "-X ${PKG}.Version=${VERSION} -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=${BRANCH} -X ${PKG}.BuildTime=${TIME}" \
             .
 
-          chmod +x ./bin/xgrchain-nightly-linux-amd64
+          # Constant nightly asset name for release overwrite
+          cp "./bin/xgrchain" "./bin/xgrchain-nightly-linux-amd64"
+
+          chmod +x ./bin/xgrchain ./bin/xgrchain-nightly-linux-amd64
           printf "%s\n" "${VERSION}" > ./bin/version.txt
 
           echo "$PWD/bin" >> "$GITHUB_PATH"
-          ./bin/xgrchain-nightly-linux-amd64 version || true
 
-      - name: E2E
-        run: go test -count=1 -timeout 40m ./e2e/...
+          echo "== BIN DIR =="
+          ls -lah bin
+          echo "== FILE INFO =="
+          file ./bin/xgrchain ./bin/xgrchain-nightly-linux-amd64 || true
+          echo "== SHA256 =="
+          sha256sum ./bin/xgrchain ./bin/xgrchain-nightly-linux-amd64 ./bin/version.txt
+
+          echo "== VERSION CHECK =="
+          # fail-fast if binary is broken
+          if ./bin/xgrchain version 2>/dev/null; then
+            :
+          elif ./bin/xgrchain --version 2>/dev/null; then
+            :
+          else
+            echo "ERROR: xgrchain version command failed"
+            exit 1
+          fi
+
+      - name: E2E preflight (binary + PATH + ports)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/bin:$PATH"
+
+          echo "== PATH =="
+          echo "$PATH" | tr ':' '\n' | sed -n '1,120p'
+
+          echo "== WHICH xgrchain =="
+          command -v xgrchain
+          ls -lah "$(command -v xgrchain)" || true
+
+          echo "== xgrchain version =="
+          (xgrchain version || xgrchain --version) || { echo "ERROR: xgrchain not runnable"; exit 1; }
+
+          echo "== LISTEN PORTS (before E2E) =="
+          ss -ltnp || true
+          echo "== PROCESSES (before E2E) =="
+          ps -ef | sed -n '1,40p'
+
+      - name: E2E (with heartbeat + extra diagnostics)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/bin:$PATH"
+
+          # Heartbeat so you see it's alive + quick hints if it stalls
+          go test -count=1 -timeout 40m ./e2e/... &
+          pid=$!
+          echo "E2E pid=$pid"
+
+          # up to 45m heartbeat (1s ticks)
+          for i in $(seq 1 2700); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid"
+              exit $?
+            fi
+
+            # every 60s print heartbeat + what is listening / running
+            if [ $((i % 60)) -eq 0 ]; then
+              echo "[heartbeat] $(date -u +'%Y-%m-%dT%H:%M:%SZ') e2e still running..."
+              echo "== xgrchain processes =="
+              ps -ef | grep -E '[x]grchain' || true
+              echo "== ports of interest =="
+              ss -ltnp | grep -E ':(8545|9632|1478)\b' || true
+            fi
+
+            sleep 1
+          done
+
+          echo "ERROR: E2E exceeded watchdog (45m) - killing..."
+          kill "$pid" || true
+          sleep 2
+          kill -9 "$pid" || true
+          exit 1
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
@@ -122,26 +208,31 @@ jobs:
           cache: true
 
       - name: Install deps (jq, curl)
+        shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y jq curl
 
       - name: Patch MinBaseFee for CI (EEST)
+        shell: bash
         run: |
           set -euo pipefail
           perl -pi -e 's/(MinBaseFee\s+uint64\s*=\s*)[0-9_]+/${1}1/' chain/params.go
           grep -n "MinBaseFee" chain/params.go
 
       - name: Build xgrchain (for local EEST node)
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p bin
           go build -trimpath -o ./bin/xgrchain .
           chmod +x ./bin/xgrchain
           echo "${GITHUB_WORKSPACE}/bin" >> "$GITHUB_PATH"
+          (./bin/xgrchain version || ./bin/xgrchain --version) || true
 
       - name: Generate ephemeral EEST seed key (PK + address)
+        shell: bash
         run: |
           set -euo pipefail
           cat > /tmp/keygen.go <<'GO'
@@ -165,6 +256,7 @@ jobs:
           echo "$out" >> "$GITHUB_ENV"
 
       - name: Create IBFT validator secrets (single node) + derive bootnode
+        shell: bash
         run: |
           set -euo pipefail
           rm -rf ./validator-1
@@ -186,6 +278,7 @@ jobs:
           echo "BOOTNODE=/ip4/127.0.0.1/tcp/1478/p2p/${NODE_ID}" >> "$GITHUB_ENV"
 
       - name: Generate genesis (IBFT + premine EEST seed)
+        shell: bash
         env:
           PREMINE_WEI: "1000000000000000000000000000"
         run: |
@@ -210,9 +303,11 @@ jobs:
           ' ./genesis-eest.json > ./genesis-eest.tmp && mv ./genesis-eest.tmp ./genesis-eest.json
           test -s ./genesis-eest.json
 
-      - name: Start local node (JSON-RPC)
+      - name: Start local node (JSON-RPC) + RPC health check
+        shell: bash
         run: |
           set -euo pipefail
+
           xgrchain server \
             --data-dir ./validator-1 \
             --chain ./genesis-eest.json \
@@ -223,12 +318,22 @@ jobs:
             --seal \
             --log-level INFO \
             --log-to node.log &
+
+          echo "Waiting for RPC..."
           for i in {1..90}; do
-            curl -sS -X POST http://127.0.0.1:8545 \
+            if curl -sS -X POST http://127.0.0.1:8545 \
               -H 'content-type: application/json' \
-              --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' >/dev/null && break
+              --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' >/dev/null; then
+              echo "RPC OK"
+              break
+            fi
             sleep 1
           done
+
+          echo "RPC sanity:"
+          curl -sS -X POST http://127.0.0.1:8545 \
+            -H 'content-type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"web3_clientVersion","params":[]}' | jq -r '.' || true
 
       - uses: actions/setup-python@v5
         with:
@@ -238,11 +343,13 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Clone execution-spec-tests
+        shell: bash
         run: |
           set -euo pipefail
           git clone --depth 1 https://github.com/ethereum/execution-spec-tests.git eest
 
       - name: Run EEST (execute remote)
+        shell: bash
         run: |
           set -euo pipefail
           cd eest
@@ -277,11 +384,22 @@ jobs:
           name: xgrchain-nightly
           path: dist
 
+      - name: Publish preflight (debug)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lah dist
+          test -s dist/xgrchain-nightly-linux-amd64
+          test -s dist/version.txt
+          sha256sum dist/xgrchain-nightly-linux-amd64 dist/version.txt
+
       - name: Create checksums
+        shell: bash
         run: |
           set -euo pipefail
           cd dist
           sha256sum xgrchain-nightly-linux-amd64 version.txt > sha256sums.txt
+          cat sha256sums.txt
 
       - name: "Publish/Update GitHub Release (tag: nightly)"
         uses: ncipollo/release-action@v1
