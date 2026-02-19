@@ -1,0 +1,305 @@
+name: Nightly (Integration + EEST + Publish)
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # daily 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      fork:
+        description: "EEST fork (test selection ruleset)"
+        required: true
+        default: "Shanghai"
+      tests_path:
+        description: "Path inside execution-spec-tests repo"
+        required: true
+        default: "./tests/"
+      pytest_k:
+        description: "Optional pytest -k filter"
+        required: false
+        default: "not berlin and not osaka and not cancun and not prague and not withdrawals and not test_blockhash and not test_call.py and not test_precompile_absence.py and not test_scenarios.py"
+
+concurrency:
+  group: nightly-main
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  meta:
+    name: Meta (nightly version)
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          set -euo pipefail
+          SHA="${GITHUB_SHA::7}"
+          DATE="$(date -u +%Y%m%d)"
+          echo "version=nightly-${DATE}-${SHA}" >> "$GITHUB_OUTPUT"
+
+  integration:
+    name: Integration (unit + e2e + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: [meta]
+    outputs:
+      version: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: true
+
+      - name: Go test (unit, full)
+        run: |
+          set -euo pipefail
+          pkgs=$(go list ./... | grep -vE '(/e2e($|/)|/e2e-polybft($|/)|/tests($|/)|/tracker($|/)|/command/rootchain/deploy($|/)|/consensus/polybft($|/)|/state/runtime/evm($|/))')
+          go test -count=1 $pkgs
+
+      - name: Build node binary (nightly, constant filename)
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+
+          COMMIT="$(git rev-parse --short HEAD)"
+          BRANCH="$(git rev-parse --abbrev-ref HEAD || true)"
+          if [ "${BRANCH}" = "HEAD" ] || [ -z "${BRANCH}" ]; then
+            BRANCH="${GITHUB_REF_NAME:-detached}"
+          fi
+          TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          PKG="github.com/xgr-network/xgrchain/versioning"
+
+          # build once
+          go build -trimpath -o "./bin/xgrchain-nightly-linux-amd64" \
+            -ldflags "-X ${PKG}.Version=${VERSION} -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=${BRANCH} -X ${PKG}.BuildTime=${TIME}" \
+            .
+
+          chmod +x ./bin/xgrchain-nightly-linux-amd64
+          printf "%s\n" "${VERSION}" > ./bin/version.txt
+
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+          ./bin/xgrchain-nightly-linux-amd64 version || true
+
+      - name: E2E
+        run: |
+          set -euo pipefail
+          # falls mehrere e2e-packages parallel Ports clobbern: serialisieren
+          go test -v -count=1 -timeout 40m ./e2e/...
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xgrchain-nightly
+          path: |
+            ./bin/xgrchain-nightly-linux-amd64
+            ./bin/version.txt
+          retention-days: 14
+
+  eest:
+    name: EEST (execution-spec-tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    needs: [meta]
+    env:
+      FORK: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.fork) || 'Shanghai' }}
+      TESTS_PATH: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.tests_path) || './tests/shanghai/' }}
+      PYTEST_K: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.pytest_k) || 'not withdrawals' }}
+      RPC: "http://127.0.0.1:8545"
+      CHAIN_ID: "100"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: true
+
+      - name: Install deps (jq, curl)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+
+      - name: Patch MinBaseFee for CI (EEST)
+        run: |
+          set -euo pipefail
+          perl -pi -e 's/(MinBaseFee\s+uint64\s*=\s*)[0-9_]+/${1}1/' chain/params.go
+          grep -n "MinBaseFee" chain/params.go
+
+      - name: Build xgrchain (for local EEST node)
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          go build -trimpath -o ./bin/xgrchain .
+          chmod +x ./bin/xgrchain
+          echo "${GITHUB_WORKSPACE}/bin" >> "$GITHUB_PATH"
+
+      - name: Generate ephemeral EEST seed key (PK + address)
+        run: |
+          set -euo pipefail
+          cat > /tmp/keygen.go <<'GO'
+          package main
+          import (
+            "encoding/hex"
+            "fmt"
+            "github.com/ethereum/go-ethereum/crypto"
+          )
+          func main() {
+            k, err := crypto.GenerateKey()
+            if err != nil { panic(err) }
+            pk := crypto.FromECDSA(k)
+            addr := crypto.PubkeyToAddress(k.PublicKey)
+            fmt.Printf("SEED_KEY=0x%s\n", hex.EncodeToString(pk))
+            fmt.Printf("SEED_ADDR=%s\n", addr.Hex())
+          }
+          GO
+          out="$(go run /tmp/keygen.go)"
+          echo "$out"
+          echo "$out" >> "$GITHUB_ENV"
+
+      - name: Create IBFT validator secrets (single node) + derive bootnode
+        run: |
+          set -euo pipefail
+          rm -rf ./validator-1
+          mkdir -p ./validator-1
+          OUT="$(xgrchain secrets init --data-dir ./validator-1 --insecure --json)"
+          echo "$OUT" | jq . || true
+          NODE_ID="$(
+            echo "$OUT" | jq -r '
+              if type=="array" then (.[0].node_id // .[0].nodeID // empty)
+              else (.node_id // .nodeID // empty)
+              end
+            '
+          )"
+          if [ -z "$NODE_ID" ] || [ "$NODE_ID" = "null" ]; then
+            echo "ERROR: could not determine node_id for bootnode"
+            echo "$OUT"
+            exit 1
+          fi
+          echo "BOOTNODE=/ip4/127.0.0.1/tcp/1478/p2p/${NODE_ID}" >> "$GITHUB_ENV"
+
+      - name: Generate genesis (IBFT + premine EEST seed)
+        env:
+          PREMINE_WEI: "1000000000000000000000000000"
+        run: |
+          set -euo pipefail
+          xgrchain genesis \
+            --consensus ibft \
+            --chain-id "${CHAIN_ID}" \
+            --block-time 1s \
+            --block-gas-limit 22500000 \
+            --base-fee-config 1000000000:2:8 \
+            --bootnode "${BOOTNODE}" \
+            --premine "${SEED_ADDR}:${PREMINE_WEI}" \
+            --validators-path ./ \
+            --validators-prefix validator- \
+            --min-validator-count 1 \
+            --max-validator-count 1 \
+            --name eest \
+            --dir ./genesis-eest.json
+          jq '
+            (.params.forks |= with_entries(.value |= (if (.block? != null) then (.block=0) else . end))) |
+            (.alloc = .genesis.alloc)
+          ' ./genesis-eest.json > ./genesis-eest.tmp && mv ./genesis-eest.tmp ./genesis-eest.json
+          test -s ./genesis-eest.json
+
+      - name: Start local node (JSON-RPC)
+        run: |
+          set -euo pipefail
+          xgrchain server \
+            --data-dir ./validator-1 \
+            --chain ./genesis-eest.json \
+            --grpc-address 127.0.0.1:9632 \
+            --libp2p 127.0.0.1:1478 \
+            --jsonrpc 127.0.0.1:8545 \
+            --price-limit 0 \
+            --seal \
+            --log-level INFO \
+            --log-to node.log &
+          for i in {1..90}; do
+            curl -sS -X POST http://127.0.0.1:8545 \
+              -H 'content-type: application/json' \
+              --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' >/dev/null && break
+            sleep 1
+          done
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Clone execution-spec-tests
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/ethereum/execution-spec-tests.git eest
+
+      - name: Run EEST (execute remote)
+        run: |
+          set -euo pipefail
+          cd eest
+          extra_args=()
+          if [ -n "${PYTEST_K}" ]; then
+            extra_args+=(-k "${PYTEST_K}")
+          fi
+          uv run execute remote \
+            --fork "${FORK}" \
+            --rpc-endpoint "${RPC}" \
+            --rpc-seed-key "${SEED_KEY}" \
+            --rpc-chain-id "${CHAIN_ID}" \
+            "${TESTS_PATH}" \
+            "${extra_args[@]}"
+
+      - name: Upload node log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eest-node-log
+          path: node.log
+          retention-days: 14
+
+  publish_nightly:
+    name: Publish nightly release
+    runs-on: ubuntu-latest
+    needs: [meta, integration, eest]
+    if: ${{ needs.integration.result == 'success' && needs.eest.result == 'success' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: xgrchain-nightly
+          path: dist
+
+      - name: Create checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum xgrchain-nightly-linux-amd64 version.txt > sha256sums.txt
+
+      - name: "Publish/Update GitHub Release (tag: nightly)"
+        uses: ncipollo/release-action@v1
+        with:
+          tag: nightly
+          name: Nightly
+          prerelease: true
+          allowUpdates: true
+          replacesArtifacts: true
+          makeLatest: false
+          body: |
+            Automated nightly build.
+            Version: ${{ needs.integration.outputs.version }}
+            Commit:  ${{ github.sha }}
+          artifacts: |
+            dist/xgrchain-nightly-linux-amd64
+            dist/version.txt
+            dist/sha256sums.txt
