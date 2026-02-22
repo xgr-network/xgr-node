@@ -121,7 +121,12 @@ func (d *Dispatcher) registerEndpoints(store JSONRPCStore) error {
 	}
 	engineMode := strings.TrimSpace(os.Getenv("XGR_ENGINE_MODE"))
 	if engineMode == "" {
-		engineMode = engineiface.ModeStub
+		// Back-compat with monorepo + current node.conf: XGR_ENGINE=on/off
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("XGR_ENGINE")), "on") {
+			engineMode = engineiface.ModeEmbedded
+		} else {
+			engineMode = engineiface.ModeStub
+		}
 	}
 	if err := engineiface.ValidateMode(engineMode); err != nil {
 		return err
@@ -145,12 +150,11 @@ func (d *Dispatcher) registerEndpoints(store JSONRPCStore) error {
 			d.logger.Warn("engine_config_fallback", "err", err)
 		}
 
-		d.endpoints.XGR = xgrsvc.New(xgrsvc.Config{
-			Logger:      d.logger.Named("xgr"),
-			EthRPCURL:   ethRPCURL,
-			EngineEOA:   engineEOA,
-			EnginePub33: enginePub33,
-		})
+		ep, err := newXGREndpointEmbedded(d.logger, ethRPCURL, engineEOA, enginePub33)
+		if err != nil {
+			return err
+		}
+		d.endpoints.XGR = ep
 	} else {
 		stub.LogEnabled(d.logger)
 		d.endpoints.XGR = xgrsvc.New(xgrsvc.Config{
