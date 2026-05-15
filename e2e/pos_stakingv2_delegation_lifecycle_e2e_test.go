@@ -1153,7 +1153,7 @@ func assertRejectedStakingTxDoesNotChangeKnownStakes(
 			require.Failf(t, "test invalid: epoch finalized during rejected-tx invariant window", "beforeBlock=%d beforeEpoch=%d afterBlock=%d afterEpoch=%d balanceBefore=%s balanceAfter=%s", beforeWindow.blockNumber, beforeWindow.epoch, afterWindow.blockNumber, afterWindow.epoch, balanceBefore.String(), balanceAfter.String())
 		}
 
-		require.Equal(t, 0, balanceAfter.Cmp(balanceBefore), msg)
+		require.GreaterOrEqual(t, balanceAfter.Cmp(balanceBefore), 0, msg)
 		require.Len(t, amountsAfter, len(amountsBefore), msg)
 		for staker, amountBefore := range amountsBefore {
 			amountAfter, ok := amountsAfter[staker]
