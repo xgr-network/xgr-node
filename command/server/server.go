@@ -218,7 +218,7 @@ func setFlags(cmd *cobra.Command) {
 		&params.rawConfig.Relayer,
 		relayerFlag,
 		defaultConfig.Relayer,
-		"start the state sync relayer service (PolyBFT only)",
+		"start the state sync relayer service",
 	)
 
 	cmd.Flags().Uint64Var(

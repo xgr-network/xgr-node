@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,10 +38,13 @@ func TestSimpleGossip(t *testing.T) {
 	servers, createErr := createServers(numServers, nil)
 	require.NoError(t, createErr, "Unable to create servers")
 
-	messageCh := make(chan *testproto.GenericMessage)
+	var (
+		receivedMu  sync.Mutex
+		receivedBy  = make(map[int]struct{}, numServers)
+		callbackErr error
+	)
 
 	t.Cleanup(func() {
-		close(messageCh)
 		closeTestServers(t, servers)
 	})
 
@@ -56,46 +60,56 @@ func TestSimpleGossip(t *testing.T) {
 
 		serverTopics[i] = topic
 
+		serverIndex := i
 		subscribeErr := topic.Subscribe(func(obj interface{}, _ peer.ID) {
-			// Everyone should relay they got the message
 			genericMessage, ok := obj.(*testproto.GenericMessage)
-			require.True(t, ok, "invalid type assert")
+			receivedMu.Lock()
+			defer receivedMu.Unlock()
 
-			messageCh <- genericMessage
+			if !ok {
+				if callbackErr == nil {
+					callbackErr = fmt.Errorf("invalid type assert for server %d", serverIndex)
+				}
+
+				return
+			}
+
+			if genericMessage.Message == sentMessage {
+				receivedBy[serverIndex] = struct{}{}
+			}
 		})
 		require.NoError(t, subscribeErr, "Unable to subscribe to topic")
 	}
 
-	publisher := servers[0]
 	publisherTopic := serverTopics[0]
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	require.Eventually(t, func() bool {
+		for i := range servers {
+			if NumSubscribers(servers[i], topicName) < len(servers)-1 {
+				return false
+			}
+		}
 
-	err := WaitForSubscribers(ctx, publisher, topicName, len(servers)-1)
-	require.NoError(t, err, "Unable to wait for subscribers")
+		return true
+	}, 10*time.Second, 100*time.Millisecond, "Unable to wait for subscribers on all servers")
 
-	err = publisherTopic.Publish(
+	err := publisherTopic.Publish(
 		&testproto.GenericMessage{
 			Message: sentMessage,
 		})
 	require.NoError(t, err, "Unable to publish message")
 
-	messagesGossiped := 0
+	require.Eventually(t, func() bool {
+		receivedMu.Lock()
+		defer receivedMu.Unlock()
 
-	for {
-		select {
-		case <-time.After(time.Second * 15):
-			t.Fatalf("Multicast messages not received before timeout")
-		case message := <-messageCh:
-			if message.Message == sentMessage {
-				messagesGossiped++
-				if messagesGossiped == len(servers) {
-					return
-				}
-			}
-		}
-	}
+		return callbackErr != nil || len(receivedBy) == len(servers)
+	}, 15*time.Second, 100*time.Millisecond, "Multicast messages not received before timeout")
+
+	receivedMu.Lock()
+	defer receivedMu.Unlock()
+	require.NoError(t, callbackErr)
+	require.Len(t, receivedBy, len(servers), "Expected all servers to receive the gossip message")
 }
 
 func Test_RepeatedClose(t *testing.T) {

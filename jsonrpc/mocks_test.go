@@ -1,6 +1,7 @@
 package jsonrpc
 
 import (
+	"github.com/xgr-network/xgr-node/chain"
 	"math/big"
 	"sync"
 
@@ -219,4 +220,8 @@ func (m *mockStore) GetStateSyncProof(stateSyncID uint64) (types.Proof, error) {
 
 func (m *mockStore) FilterExtra(extra []byte) ([]byte, error) {
 	return extra, nil
+}
+
+func (m *mockStore) GetChainParams() *chain.Params {
+	return nil
 }

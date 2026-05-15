@@ -96,11 +96,11 @@ func newDispatcher(
 
 func (d *Dispatcher) registerEndpoints(store JSONRPCStore) error {
 	d.endpoints.Eth = &Eth{
-		d.logger,
-		store,
-		d.params.chainID,
-		d.filterManager,
-		d.params.priceLimit,
+		logger:        d.logger,
+		store:         store,
+		chainID:       d.params.chainID,
+		filterManager: d.filterManager,
+		priceLimit:    d.params.priceLimit,
 	}
 	d.endpoints.Net = &Net{
 		store,

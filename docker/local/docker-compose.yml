@@ -31,7 +31,7 @@ services:
       dockerfile: docker/local/Dockerfile
     image: local/xgrchain
     container_name: xgrchain-bootstrapper
-    command: [ "init", "${EDGE_CONSENSUS:-polybft}" ]
+    command: [ "init", "${EDGE_CONSENSUS:-ibft}" ]
     depends_on:
       rootchain:
         condition: service_started
@@ -44,7 +44,7 @@ services:
   node-1:
     image: local/xgrchain
     container_name: xgrchain-validator-1
-    command: [ "start-node-1", "${EDGE_CONSENSUS:-polybft}" ]
+    command: [ "start-node-1", "${EDGE_CONSENSUS:-ibft}" ]
     depends_on:
       init:
         condition: service_completed_successfully

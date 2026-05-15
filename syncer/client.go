@@ -31,11 +31,12 @@ type syncPeerClient struct {
 	network    Network      // reference to the network module
 	blockchain Blockchain   // reference to the blockchain module
 
-	subscription           blockchain.Subscription // reference to the blockchain subscription
-	topic                  *network.Topic          // reference to the network topic
-	id                     string                  // node id
-	peerStatusUpdateCh     chan *NoForkPeer        // peer status update channel
-	peerConnectionUpdateCh chan *event.PeerEvent   // peer connection update channel
+	subscription            blockchain.Subscription // reference to the blockchain subscription
+	topic                   *network.Topic          // reference to the network topic
+	id                      string                  // node id
+	peerStatusUpdateCh      chan *NoForkPeer        // peer status update channel
+	peerConnectionUpdateCh  chan *event.PeerEvent   // peer connection update channel
+	peerEventProcessReadyCh chan struct{}           // optional test hook for peer event subscription readiness
 
 	shouldEmitBlocks bool // flag for emitting blocks in the topic
 	closeCh          chan struct{}
@@ -272,6 +273,9 @@ func (m *syncPeerClient) startPeerEventProcess() {
 		m.logger.Error("failed to subscribe", "err", err)
 
 		return
+	}
+	if m.peerEventProcessReadyCh != nil {
+		close(m.peerEventProcessReadyCh)
 	}
 
 	for {

@@ -1494,7 +1494,7 @@ func TestBlockchain_WriteFullBlock(t *testing.T) {
 			Transactions: []*types.Transaction{tx},
 		},
 		Receipts: receipts,
-	}, "polybft")
+	}, "ibft")
 
 	require.NoError(t, err)
 	require.Equal(t, 0, len(db))
@@ -1507,7 +1507,7 @@ func TestBlockchain_WriteFullBlock(t *testing.T) {
 			Transactions: []*types.Transaction{tx},
 		},
 		Receipts: receipts,
-	}, "polybft")
+	}, "ibft")
 
 	require.NoError(t, err)
 	require.Equal(t, 8, len(db))

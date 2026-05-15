@@ -111,6 +111,7 @@ const (
 	EIP2929             = "EIP2929"
 	EIP2930             = "EIP2930"
 	EIP3651             = "EIP3651"
+	FeePoolSplit        = "feePoolSplit"
 )
 
 // Forks is map which contains all forks and their starting blocks from genesis
@@ -153,6 +154,7 @@ func (f *Forks) At(block uint64) ForksInTime {
 		EIP2929:             f.IsActive(EIP2929, block),
 		EIP2930:             f.IsActive(EIP2930, block),
 		EIP3651:             f.IsActive(EIP3651, block),
+		FeePoolSplit:        f.IsActive(FeePoolSplit, block),
 	}
 }
 
@@ -205,7 +207,7 @@ type ForksInTime struct {
 	EIP155,
 	QuorumCalcAlignment,
 	TxHashWithType,
-	LondonFix, EIP3860, EIP2929, EIP2930, EIP3651 bool
+	LondonFix, EIP3860, EIP2929, EIP2930, EIP3651, FeePoolSplit bool
 }
 
 // AllForksEnabled should contain all supported forks by current edge version

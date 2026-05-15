@@ -3,6 +3,7 @@ package ibft
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/0xPolygon/go-ibft/core"
 )
@@ -13,6 +14,7 @@ type IBFTConsensus struct {
 
 	wg sync.WaitGroup
 
+	sequenceMu     sync.RWMutex
 	cancelSequence context.CancelFunc
 }
 
@@ -27,15 +29,21 @@ func newIBFT(
 	}
 }
 
+// ExtendRoundTimeout extends each round timeout.
+func (c *IBFTConsensus) ExtendRoundTimeout(amount time.Duration) {
+	c.IBFT.ExtendRoundTimeout(amount)
+}
+
 // runSequence starts the underlying consensus mechanism for the given height.
 // It may be called by a single thread at any given time
 func (c *IBFTConsensus) runSequence(height uint64) <-chan struct{} {
 	done := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 
+	c.sequenceMu.Lock()
 	c.cancelSequence = cancel
-
 	c.wg.Add(1)
+	c.sequenceMu.Unlock()
 
 	go func() {
 		defer func() {
@@ -52,6 +60,12 @@ func (c *IBFTConsensus) runSequence(height uint64) <-chan struct{} {
 
 // stopSequence terminates the running IBFT sequence gracefully and waits for it to return
 func (c *IBFTConsensus) stopSequence() {
-	c.cancelSequence()
+	c.sequenceMu.Lock()
+	cancel := c.cancelSequence
+	if cancel != nil {
+		cancel()
+	}
 	c.wg.Wait()
+	c.cancelSequence = nil
+	c.sequenceMu.Unlock()
 }

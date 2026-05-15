@@ -6,7 +6,7 @@ import (
 	protoIBFT "github.com/0xPolygon/go-ibft/messages/proto"
 )
 
-func (i *backendIBFT) signMessage(msg *protoIBFT.Message) *protoIBFT.Message {
+func (i *backendIBFT) signMessage(msg *protoIBFT.IbftMessage) *protoIBFT.IbftMessage {
 	raw, err := proto.Marshal(msg)
 	if err != nil {
 		return nil
@@ -23,7 +23,7 @@ func (i *backendIBFT) BuildPrePrepareMessage(
 	rawProposal []byte,
 	certificate *protoIBFT.RoundChangeCertificate,
 	view *protoIBFT.View,
-) *protoIBFT.Message {
+) *protoIBFT.IbftMessage {
 	proposedBlock := &protoIBFT.Proposal{
 		RawProposal: rawProposal,
 		Round:       view.Round,
@@ -35,11 +35,11 @@ func (i *backendIBFT) BuildPrePrepareMessage(
 		return nil
 	}
 
-	msg := &protoIBFT.Message{
+	msg := &protoIBFT.IbftMessage{
 		View: view,
 		From: i.ID(),
 		Type: protoIBFT.MessageType_PREPREPARE,
-		Payload: &protoIBFT.Message_PreprepareData{
+		Payload: &protoIBFT.IbftMessage_PreprepareData{
 			PreprepareData: &protoIBFT.PrePrepareMessage{
 				Proposal:     proposedBlock,
 				ProposalHash: proposalHash.Bytes(),
@@ -51,12 +51,12 @@ func (i *backendIBFT) BuildPrePrepareMessage(
 	return i.signMessage(msg)
 }
 
-func (i *backendIBFT) BuildPrepareMessage(proposalHash []byte, view *protoIBFT.View) *protoIBFT.Message {
-	msg := &protoIBFT.Message{
+func (i *backendIBFT) BuildPrepareMessage(proposalHash []byte, view *protoIBFT.View) *protoIBFT.IbftMessage {
+	msg := &protoIBFT.IbftMessage{
 		View: view,
 		From: i.ID(),
 		Type: protoIBFT.MessageType_PREPARE,
-		Payload: &protoIBFT.Message_PrepareData{
+		Payload: &protoIBFT.IbftMessage_PrepareData{
 			PrepareData: &protoIBFT.PrepareMessage{
 				ProposalHash: proposalHash,
 			},
@@ -66,7 +66,7 @@ func (i *backendIBFT) BuildPrepareMessage(proposalHash []byte, view *protoIBFT.V
 	return i.signMessage(msg)
 }
 
-func (i *backendIBFT) BuildCommitMessage(proposalHash []byte, view *protoIBFT.View) *protoIBFT.Message {
+func (i *backendIBFT) BuildCommitMessage(proposalHash []byte, view *protoIBFT.View) *protoIBFT.IbftMessage {
 	committedSeal, err := i.currentSigner.CreateCommittedSeal(proposalHash)
 	if err != nil {
 		i.logger.Error("Unable to build commit message, %v", err)
@@ -74,11 +74,11 @@ func (i *backendIBFT) BuildCommitMessage(proposalHash []byte, view *protoIBFT.Vi
 		return nil
 	}
 
-	msg := &protoIBFT.Message{
+	msg := &protoIBFT.IbftMessage{
 		View: view,
 		From: i.ID(),
 		Type: protoIBFT.MessageType_COMMIT,
-		Payload: &protoIBFT.Message_CommitData{
+		Payload: &protoIBFT.IbftMessage_CommitData{
 			CommitData: &protoIBFT.CommitMessage{
 				ProposalHash:  proposalHash,
 				CommittedSeal: committedSeal,
@@ -93,12 +93,12 @@ func (i *backendIBFT) BuildRoundChangeMessage(
 	proposal *protoIBFT.Proposal,
 	certificate *protoIBFT.PreparedCertificate,
 	view *protoIBFT.View,
-) *protoIBFT.Message {
-	msg := &protoIBFT.Message{
+) *protoIBFT.IbftMessage {
+	msg := &protoIBFT.IbftMessage{
 		View: view,
 		From: i.ID(),
 		Type: protoIBFT.MessageType_ROUND_CHANGE,
-		Payload: &protoIBFT.Message_RoundChangeData{RoundChangeData: &protoIBFT.RoundChangeMessage{
+		Payload: &protoIBFT.IbftMessage_RoundChangeData{RoundChangeData: &protoIBFT.RoundChangeMessage{
 			LastPreparedProposal:      proposal,
 			LatestPreparedCertificate: certificate,
 		}},

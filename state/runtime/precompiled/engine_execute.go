@@ -99,7 +99,7 @@ func pidUsed(host runtime.Host, user ethgo.Address, pid *big.Int) bool {
 	return pid.Cmp(next) < 0
 }
 
-// Kein fixes Overhead mehr
+// No fixed overhead anymore
 const engineOverheadGas = uint64(0)
 
 var engineMetaEvent = ethabi.MustNewABI(engineabi.EngineMetaEventABI).Events["EngineMeta"]
@@ -146,17 +146,17 @@ type inMeta struct {
 	Extras        []byte
 }
 
-// ---------- Gas-/Fee-Accounting (Single Source of Truth) -------------------
+// ---------- Gas/Fee accounting (single source of truth) -------------------
 //
-// WICHTIG:
-// - Precompile.gas() rechnet NUR Precompile-Kosten (ohne TX-Base 21k und ohne calldata-cost).
-// - Settlement/Preflight rechnet TX-Base + calldata-cost zusätzlich, weil der Engine-EOA diese bezahlt.
+// IMPORTANT:
+// - Precompile.gas() accounts only for precompile costs (without TX base 21k and without calldata cost).
+// - Settlement/Preflight additionally account for TX base + calldata cost because the engine EOA pays them.
 //
-// Bausteine:
-// - validationGas: deterministisch (explizit übergeben)
-// - Logs: deterministisch über calcEngineMetaLen / calcEngineExtrasLen
-// - CALL-Overhead: deterministisch aus len(call.Data)
-// - execLimit: deterministisch (explizit übergeben)
+// Components:
+// - validationGas: deterministic (explicitly passed in)
+// - Logs: deterministic via calcEngineMetaLen / calcEngineExtrasLen
+// - CALL overhead: deterministic from len(call.Data)
+// - execLimit: deterministic (explicitly passed in)
 
 func calldataCostUnits(b []byte) uint64 {
 	var c uint64
@@ -211,23 +211,34 @@ func (f feeCalc) logUnits() uint64 {
 	return logCostUnits(1, f.metaLen) + logCostUnits(1, f.extrasLen)
 }
 
-// Precompile-Gas (ohne TX-Base + calldata)
+// Precompile gas (without TX base + calldata)
 func (f feeCalc) precompileGasUnits() uint64 {
 	return f.validationGas + f.logUnits() + f.callOverhead + f.execLimit + engineOverheadGas
 }
 
-// EVM-TX Units (TX-Base + calldata + Events + CALL-Overhead + execLimit), ohne validationGas
+// EVM TX units (TX base + calldata + events + CALL overhead + execLimit), without validationGas
 func (f feeCalc) evmTxUnits() uint64 {
 	return 21_000 + f.calldata + f.logUnits() + f.callOverhead + f.execLimit + engineOverheadGas
 }
 
-// Gesamt für Abrechnung/Receipt-Summe (EVM + Validation)
+// Total for billing/receipt sum (EVM + validation)
 func (f feeCalc) totalTxUnits() uint64 {
 	return f.evmTxUnits() + f.validationGas
 }
 
-func (e *engineExecute) gas(input []byte, _ *chain.ForksInTime) uint64 {
-	// Minimum (User-Wunsch): niemals 0 zurückgeben für ENGINE_EXECUTE, auch wenn Decode fehlschlägt.
+func precompileGasUnitsForFork(fc feeCalc, forks *chain.ForksInTime) uint64 {
+	// With PoS/FeePoolSplit, validationGas is no longer forwarded to the EVM.
+	// Validation is instead settled directly in the precompile between sender and
+	// engine EOA.
+	if forks != nil && forks.FeePoolSplit {
+		return fc.logUnits() + fc.callOverhead + fc.execLimit + engineOverheadGas
+	}
+
+	return fc.precompileGasUnits()
+}
+
+func (e *engineExecute) gas(input []byte, forks *chain.ForksInTime) uint64 {
+	// Minimum (user requirement): never return 0 for ENGINE_EXECUTE, even if decode fails.
 	const minMalformedExecuteGas = uint64(21_000)
 	if len(input) < 4 {
 		return 0
@@ -261,7 +272,7 @@ func (e *engineExecute) gas(input []byte, _ *chain.ForksInTime) uint64 {
 	meta := decodeMeta(metaMap)
 
 	fc := calcFee(input, grant, call, meta)
-	return fc.precompileGasUnits()
+	return precompileGasUnitsForFork(fc, forks)
 }
 
 func (e *engineExecute) run(input []byte, caller types.Address, host runtime.Host) ([]byte, error) {
@@ -324,21 +335,21 @@ func (e *engineExecute) run(input []byte, caller types.Address, host runtime.Hos
 		return nil, runtime.ErrInvalidInputData
 	}
 
-	// --- Monotone Guard (einziger Wahrheitsanker: kNext) --------------------
-	// Regeln:
-	// - Neuer Root  : sessionId == kNext
+	// --- Monotonic guard (single source of truth: kNext) --------------------
+	// Rules:
+	// - New root    : sessionId == kNext
 	// - Follow-up   : sessionId <  kNext
 	// - Reject      : sessionId >  kNext
 	curNext := sloadU256(host, kNext(grant.From))
 	if curNext == nil || curNext.Sign() == 0 {
-		curNext = big.NewInt(1) // erste Session überhaupt
+		curNext = big.NewInt(1) // first session overall
 	}
 	switch grant.SessionId.Cmp(curNext) {
 	case 1:
-		// versucht zu springen (größer als kNext)
+		// attempted jump (greater than kNext)
 		return nil, runtime.ErrInvalidInputData
 	case 0:
-		// neuer Root -> nach den Sicherheitsprüfungen wird kNext erhöht
+		// new root -> kNext is increased after security checks
 	default:
 		// follow-up (< curNext) -> ok
 	}
@@ -355,43 +366,43 @@ func (e *engineExecute) run(input []byte, caller types.Address, host runtime.Hos
 		return nil, runtime.ErrUnauthorizedCaller
 	}
 
-	// --- Tatsächlich bezahlter TX-Gaspreis (Source of Truth für Settlement) ---
+	// --- Actually paid TX gas price (source of truth for settlement) ---
 	// In dieser Codebase ist TxContext.GasPrice ein uint256 als types.Hash (big-endian).
 	txCtx := host.GetTxContext()
 	paidWeiPerGas := new(big.Int).SetBytes(txCtx.GasPrice[:])
 	if paidWeiPerGas.Sign() <= 0 {
 		return nil, runtime.ErrInvalidInputData
 	}
-	// --- Gebühren-Guards ---------------------------------------------------
+	// --- Fee guards ---------------------------------------------------
 	// Semantik: fehlender/0er MaxFeePerGas => "erbt BaseFee" (falls vorhanden)
 	if bf := txCtx.BaseFee; bf != nil {
 		if call.MaxFeePerGas == nil || call.MaxFeePerGas.Sign() == 0 {
-			// kein Cap übergeben -> auf tatsächlich bezahlten Preis heben
-			// (sonst über-/unterverrechnen wir, sobald cap != effective price)
+			// no cap provided -> raise to the actually paid price
+			// (otherwise we over/under-charge as soon as cap != effective price)
 			call.MaxFeePerGas = new(big.Int).Set(paidWeiPerGas)
 		} else if call.MaxFeePerGas.Cmp(bf) < 0 {
 			// explizit gesetzter Cap < BaseFee
 			return nil, runtime.ErrInvalidInputData
 		}
 	}
-	// Wenn selbst nach dem Fallback noch nil/<=0 -> unzulässig
+	// If still nil/<=0 after fallback -> invalid
 	if call.MaxFeePerGas == nil || call.MaxFeePerGas.Sign() <= 0 {
 		return nil, runtime.ErrInvalidInputData
 	}
-	// Grant enthält kein MaxFeePerGas- oder PriorityFee-Feld mehr
-	// Wenn kein Ziel, muss GasLimit 0 sein
+	// Grant no longer carries MaxFeePerGas or PriorityFee fields
+	// If there is no target, GasLimit must be 0
 	if (call.To == (ethgo.Address{})) && call.GasLimit != 0 {
 		return nil, runtime.ErrInvalidInputData
 	}
 
-	// Settlement/Preflight immer mit dem tatsächlich bezahlten Preis (nicht mit dem Cap).
+	// Settlement/Preflight always use the actually paid price (not the cap).
 	effectiveWeiPerGas := paidWeiPerGas
-	// ---------- Konservativer Preflight-Guthabencheck -----------------------
-	// Ziel: spätere Erstattung darf NICHT mehr fehlschlagen → Engine bleibt
-	// niemals auf Kosten sitzen (auch bei Reverts).
+	// ---------- Conservative preflight balance check -----------------------
+	// Goal: later reimbursement must NOT fail anymore -> engine remains
+	// never left carrying costs (including on reverts).
 	//
-	// Enthaltene Einheiten (SSOT):
-	//   fc.totalTxUnits() + Value (+ ggf. GrantFee)
+	// Included units (SSOT):
+	//   fc.totalTxUnits() + value (+ optional grant fee)
 	worstWei := new(big.Int).Mul(new(big.Int).SetUint64(fc.totalTxUnits()), effectiveWeiPerGas)
 	worstTotal := new(big.Int).Set(worstWei)
 	worstTotal.Add(worstTotal, nz(call.ValueWei))
@@ -408,7 +419,7 @@ func (e *engineExecute) run(input []byte, caller types.Address, host runtime.Hos
 		return nil, runtime.ErrNotEnoughFunds
 	}
 	var execResGasUsed uint64
-	// Default: log-only (kein innerer CALL) als Fehler markieren
+	// Default: mark log-only (no inner CALL) as failure
 	success := false
 	if call.GasLimit > 0 && (call.To != (ethgo.Address{})) {
 		code := host.GetCode(types.Address(call.To))
@@ -427,10 +438,10 @@ func (e *engineExecute) run(input []byte, caller types.Address, host runtime.Hos
 		success = res.Succeeded()
 	}
 
-	// --- Einheitliche Erstattung an den Engine-EOA ---
-	// WICHTIG: Im Meta-Event die ROOT-ID (sessionId) loggen, NICHT die Node-PID
+	// --- Unified reimbursement to the engine EOA ---
+	// IMPORTANT: Im Meta-Event die ROOT-ID (sessionId) loggen, NICHT die Node-PID
 	metaData, _ := engineMetaEvent.Inputs.Encode([]interface{}{
-		grant.SessionId,    // processId-Feld trägt jetzt die rootId (Session)
+		grant.SessionId,    // processId field now carries rootId (session)
 		meta.Iteration,     // iteration
 		grant.XRC729,       // orchestration
 		grant.OstcId,       // ostcId
@@ -448,15 +459,15 @@ func (e *engineExecute) run(input []byte, caller types.Address, host runtime.Hos
 		new(big.Int).SetUint64(execResGasUsed),
 		meta.Extras,
 	})
-	// Abrechnungseinheiten sind SSOT aus fc:
-	//   - EVM-Units (Base+Calldata+Logs+CALL+execLimit)
-	//   - Validation-Units (call.ValidationGas)
+	// Billing units are SSOT from fc:
+	//   - EVM units (base+calldata+logs+CALL+execLimit)
+	//   - Validation units (call.ValidationGas)
 	evmUnits := fc.evmTxUnits()
 	totalUnits := fc.totalTxUnits()
 
-	// Erstattung deckungsgleich zur SSOT-Aufteilung:
-	//   Feld 3: EVM-Refund (ohne Validation)
-	//   Feld 4: Validation-Wei (nur Breakdown)
+	// Reimbursement aligned with SSOT split:
+	//   Field 3: EVM refund (without validation)
+	//   Field 4: validation wei (breakdown only)
 	evmFeeRefund := new(big.Int).Mul(new(big.Int).SetUint64(evmUnits), effectiveWeiPerGas)
 	engineFeeWei := new(big.Int).Mul(new(big.Int).SetUint64(fc.validationGas), effectiveWeiPerGas)
 	totalPay := new(big.Int).Add(new(big.Int).Set(evmFeeRefund), engineFeeWei)
@@ -465,24 +476,24 @@ func (e *engineExecute) run(input []byte, caller types.Address, host runtime.Hos
 			return nil, err
 		}
 	}
-	// EngineFee ist separat ausgewiesen (siehe Output-Feld 4).
+	// EngineFee is reported separately (see output field 4).
 
 	emitExtras := true
 	// Emit EngineMeta event (exact order)
 	id := engineMetaEvent.ID()
 	topics := []types.Hash{types.BytesToHash(id[:])}
 	host.EmitLog(contracts.EngineExecutePrecompile, topics, metaData)
-	// Emit EngineExtrasV2 event deckungsgleich zu gas(): immer loggen
+	// Emit EngineExtrasV2 event in line with gas(): always emit.
 	if emitExtras {
 		id2 := engineExtrasEvent.ID()
 		topics2 := []types.Hash{types.BytesToHash(id2[:])}
 		host.EmitLog(contracts.EngineExecutePrecompile, topics2, extrasData)
 	}
 
-	// Für UI:
-	//   - Feld 2 („billedUnits“) entspricht den verrechneten Gas-Units.
-	//   - Feld 3 enthält die EVM-Refund-Wei (Gas).
-	//   - Feld 4 enthält die EngineFee-Wei (ValidationGas).
+	// For UI:
+	//   - Field 2 ("billedUnits") contains billed gas units.
+	//   - Field 3 contains EVM refund wei (gas).
+	//   - Field 4 contains engine fee wei (validationGas).
 	out, _ := ethabi.MustNewType("tuple(bool,uint64,uint256,uint256)").Encode([]interface{}{
 		success,
 		totalUnits,
@@ -490,8 +501,8 @@ func (e *engineExecute) run(input []byte, caller types.Address, host runtime.Hos
 		engineFeeWei,
 	})
 
-	// Persistierung von kNext erfolgte bereits oben **vor** dem EVM-Call.
-	// Hier KEIN weiteres State-Tuning mehr, um Doppelwahrheiten auszuschließen.
+	// kNext persistence already happened above **before** the EVM call.
+	// Do NOT perform additional state tuning here to avoid dual sources of truth.
 
 	return out, nil
 }
@@ -553,15 +564,15 @@ func logGrantFeeCharged(host runtime.Host, payer, engine types.Address, seconds 
 	host.EmitLog(contracts.EngineExecutePrecompile, nil, payload)
 }
 
-// ---------- arithmetische Längen-Helfer (exakt, ohne Encode) ----------------
+// ---------- arithmetic length helpers (exact, without encode) ----------------
 func pad32(n int) int   { return ((n + 31) / 32) * 32 }
 func dynLen(n int) int  { return 32 + pad32(n) }  // 32B len + padded payload
 func bLen(s string) int { return len([]byte(s)) } // UTF-8 Bytes
 
-// EngineMeta: 13 Felder (8 static im Head, 5 dynamic im Tail)
+// EngineMeta: 13 fields (8 static in head, 5 dynamic in tail)
 const nArgsMeta = 13
 
-// EngineExtrasV2: 2 Felder (1 dynamic)
+// EngineExtrasV2: 2 fields (1 dynamic)
 const nArgsExtras = 2
 
 func calcEngineMetaLen(g inGrant, m inMeta) int {
@@ -575,13 +586,13 @@ func calcEngineMetaLen(g inGrant, m inMeta) int {
 	return head + tail
 }
 
-// --- Entfernte Legacy-Helfer ------------------------------------------------
-// Alle kRootSession-Referenzen wurden eliminiert.
-// Als Invariante gilt:
-//   - Neuer Root:   sessionId == kNext
+// --- Removed legacy helpers ------------------------------------------------
+// All kRootSession references were removed.
+// Invariant:
+//   - New root:     sessionId == kNext
 //   - Follow-up:    sessionId <  kNext
-//   - Ablehnung:    sessionId >  kNext
-//   - lastRoot := kNext - 1 (implizit)
+//   - Rejection:    sessionId >  kNext
+//   - lastRoot := kNext - 1 (implicit)
 
 func calcEngineExtrasLen(m inMeta) int {
 	return 32*nArgsExtras + dynLen(len(m.Extras))

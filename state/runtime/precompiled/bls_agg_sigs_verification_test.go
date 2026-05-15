@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/umbracle/ethgo/abi"
 	"github.com/xgr-network/xgr-node/bls"
-	"github.com/xgr-network/xgr-node/consensus/polybft/signer"
 	"github.com/xgr-network/xgr-node/types"
 )
 
@@ -68,7 +67,7 @@ func generatePubKeysAndSignature(t *testing.T, numKeys int, messageRaw []byte) (
 	signatures := make(bls.Signatures, len(validators))
 
 	for i, validator := range validators {
-		sign, err := validator.Sign(message[:], signer.DomainStateReceiver)
+		sign, err := validator.Sign(message[:], domainStateReceiver)
 		require.NoError(t, err)
 
 		pubKeys[i] = validator.PublicKey().Marshal()

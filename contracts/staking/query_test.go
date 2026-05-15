@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/umbracle/ethgo"
 	"github.com/xgr-network/xgr-node/contracts/abis"
 	"github.com/xgr-network/xgr-node/state/runtime"
 	"github.com/xgr-network/xgr-node/types"
@@ -57,6 +58,10 @@ func (m *TxMock) Apply(tx *types.Transaction) (*runtime.ExecutionResult, error) 
 	}
 
 	return nil, errors.New("not found")
+}
+
+func (m *TxMock) Call(tx *types.Transaction) (*runtime.ExecutionResult, error) {
+	return m.Apply(tx)
 }
 
 func (m *TxMock) GetNonce(addr types.Address) uint64 {
@@ -224,4 +229,90 @@ func TestQueryValidators(t *testing.T) {
 			assert.Equal(t, tt.expected, res)
 		})
 	}
+}
+
+func TestQueryAccountStake(t *testing.T) {
+	method := abis.StakingABI.Methods["accountStake"]
+	if method == nil {
+		t.Fail()
+	}
+
+	input, err := method.Inputs.Encode(map[string]interface{}{"account": ethgo.Address(addr2)})
+	assert.NoError(t, err)
+
+	tx := &types.Transaction{
+		From:     addr1,
+		To:       &AddrStakingContract,
+		Value:    big.NewInt(0),
+		Input:    append(method.ID(), input...),
+		GasPrice: big.NewInt(0),
+		Gas:      queryGasLimit,
+		Nonce:    7,
+	}
+
+	expectedStake := big.NewInt(12345)
+	encodedOut, err := method.Outputs.Encode(map[string]interface{}{"0": expectedStake})
+	assert.NoError(t, err)
+
+	mock := &TxMock{
+		hashToRes: map[types.Hash]*runtime.ExecutionResult{
+			tx.ComputeHash(1).Hash: {ReturnValue: encodedOut},
+		},
+		nonce: map[types.Address]uint64{addr1: 7},
+	}
+
+	stake, err := QueryAccountStake(mock, addr1, addr2)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, expectedStake.Cmp(stake))
+}
+
+func TestDecodeBLSPublicKeys(t *testing.T) {
+	method := abis.StakingABI.Methods["validatorBLSPublicKeys"]
+	if method == nil {
+		t.FailNow()
+	}
+
+	want := [][]byte{{0x01, 0x02}, {0x03, 0x04}}
+
+	encoded, err := method.Outputs.Encode(map[string]interface{}{"keys": want})
+	assert.NoError(t, err)
+
+	res, err := decodeBLSPublicKeys(method, encoded)
+	assert.NoError(t, err)
+	assert.Equal(t, want, res)
+}
+
+func TestDecodeWeb3ArrayOfBytes_FixedArrayItems(t *testing.T) {
+	method := abis.StakingABI.Methods["validatorBLSPublicKeys"]
+	if method == nil {
+		t.FailNow()
+	}
+
+	res, err := decodeWeb3ArrayOfBytes(method, map[string]interface{}{"keys": [][2]byte{{0x01, 0x02}, {0x03, 0x04}}})
+	assert.NoError(t, err)
+	assert.Equal(t, [][]byte{{0x01, 0x02}, {0x03, 0x04}}, res)
+}
+
+func TestStakingABI_SetValidatorPoolConfigSignature(t *testing.T) {
+	m := abis.StakingABI.Methods["setValidatorPoolConfig"]
+	assert.NotNil(t, m)
+	assert.Equal(t, 4, len(m.Inputs.TupleElems()))
+	assert.Equal(t, "delegationEnabled", m.Inputs.TupleElems()[0].Name)
+	assert.Equal(t, "maxTotalDelegatedStake", m.Inputs.TupleElems()[1].Name)
+	assert.Equal(t, "minDelegatorStake", m.Inputs.TupleElems()[2].Name)
+	assert.Equal(t, "commissionBps", m.Inputs.TupleElems()[3].Name)
+}
+
+func TestStakingABI_ValidatorPoolTupleNames(t *testing.T) {
+	m := abis.StakingABI.Methods["validatorPool"]
+	assert.NotNil(t, m)
+	out := m.Outputs.TupleElems()[0]
+	elems := out.Elem.TupleElems()
+	assert.Equal(t, "exists", elems[0].Name)
+	assert.Equal(t, "active", elems[1].Name)
+	assert.Equal(t, "delegationEnabled", elems[2].Name)
+	assert.Equal(t, "maxTotalDelegatedStake", elems[3].Name)
+	assert.Equal(t, "minDelegatorStake", elems[4].Name)
+	assert.Equal(t, "commissionBps", elems[5].Name)
+	assert.Equal(t, "blsPubKey", elems[6].Name)
 }

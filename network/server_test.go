@@ -735,7 +735,11 @@ func TestSubscribe(t *testing.T) {
 		})
 
 		err := server.Subscribe(ctx, func(e *peerEvent.PeerEvent) {
-			eventCh <- e
+			select {
+			case <-ctx.Done():
+				return
+			case eventCh <- e:
+			}
 		})
 
 		assert.NoError(t, err)
@@ -751,7 +755,11 @@ func TestSubscribe(t *testing.T) {
 		t.Helper()
 
 		select {
-		case received := <-eventCh:
+		case received, ok := <-eventCh:
+			if !ok {
+				return nil, false
+			}
+
 			return received, true
 		case <-time.After(timeout):
 			return nil, false

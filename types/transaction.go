@@ -9,6 +9,41 @@ import (
 )
 
 const (
+	// EpochFinalizationSystemTxInput marks the deterministic native
+	// epoch-finalization system transaction used for receipt/log indexing.
+	EpochFinalizationSystemTxInput = "xgr.pos.finalizeEpoch.v1"
+)
+
+// EpochFinalizationSystemTxTo is the consensus-owned PoS system address.
+var EpochFinalizationSystemTxTo = StringToAddress("0x0000000000000000000000000000000000009999")
+
+// IsEpochFinalizationSystemTx reports whether tx has the deterministic shape used
+// for native PoS epoch-finalization receipt/log indexing. The sender, nonce, and
+// hash are intentionally checked by IsEpochFinalizationSystemTxForBlock.
+func IsEpochFinalizationSystemTx(tx *Transaction) bool {
+	return tx != nil &&
+		tx.Type == StateTx &&
+		tx.To != nil && *tx.To == EpochFinalizationSystemTxTo &&
+		tx.Gas == StateTransactionGasLimit &&
+		tx.GasPrice != nil && tx.GasPrice.Sign() == 0 &&
+		tx.Value != nil && tx.Value.Sign() == 0 &&
+		string(tx.Input) == EpochFinalizationSystemTxInput
+}
+
+// IsEpochFinalizationSystemTxForBlock reports whether tx is the deterministic
+// native epoch-finalization system transaction for blockNumber and systemCaller.
+func IsEpochFinalizationSystemTxForBlock(tx *Transaction, blockNumber uint64, systemCaller Address) bool {
+	if !IsEpochFinalizationSystemTx(tx) || tx.From != systemCaller || tx.Nonce != blockNumber {
+		return false
+	}
+
+	cpy := tx.Copy()
+	cpy.ComputeHash(blockNumber)
+
+	return tx.Hash == cpy.Hash
+}
+
+const (
 	// StateTransactionGasLimit is arbitrary default gas limit for state transactions
 	StateTransactionGasLimit = 1000000
 )

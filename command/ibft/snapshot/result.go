@@ -16,19 +16,34 @@ type IBFTSnapshotVote struct {
 	Vote     ibftHelper.Vote `json:"vote"`
 }
 
+type IBFTSnapshotValidator struct {
+	Validator             validators.Validator `json:"validator"`
+	UptimeNominalWeight   uint64               `json:"uptime_nominal_weight"`
+	UptimeEffectiveWeight uint64               `json:"uptime_effective_weight"`
+	UptimeInactivity      uint64               `json:"uptime_inactivity"`
+}
+
 type IBFTSnapshotResult struct {
-	Number     uint64                 `json:"number"`
-	Hash       string                 `json:"hash"`
-	Votes      []IBFTSnapshotVote     `json:"votes"`
-	Validators []validators.Validator `json:"validators"`
+	Number                     uint64                  `json:"number"`
+	Hash                       string                  `json:"hash"`
+	MicroEpoch                 uint64                  `json:"micro_epoch"`
+	UptimeEpoch                uint64                  `json:"uptime_epoch"`
+	UptimeTotalEffectiveWeight uint64                  `json:"uptime_total_effective_weight"`
+	UptimeActiveEffective      uint64                  `json:"uptime_active_effective_weight"`
+	Votes                      []IBFTSnapshotVote      `json:"votes"`
+	Validators                 []IBFTSnapshotValidator `json:"validators"`
 }
 
 func newIBFTSnapshotResult(resp *ibftOp.Snapshot) (*IBFTSnapshotResult, error) {
 	res := &IBFTSnapshotResult{
-		Number:     resp.Number,
-		Hash:       resp.Hash,
-		Votes:      make([]IBFTSnapshotVote, len(resp.Votes)),
-		Validators: make([]validators.Validator, len(resp.Validators)),
+		Number:                     resp.Number,
+		Hash:                       resp.Hash,
+		MicroEpoch:                 resp.MicroEpoch,
+		UptimeEpoch:                resp.UptimeEpoch,
+		UptimeTotalEffectiveWeight: resp.UptimeTotalEffectiveWeight,
+		UptimeActiveEffective:      resp.UptimeActiveEffectiveWeight,
+		Votes:                      make([]IBFTSnapshotVote, len(resp.Votes)),
+		Validators:                 make([]IBFTSnapshotValidator, len(resp.Validators)),
 	}
 
 	for i, v := range resp.Votes {
@@ -56,7 +71,12 @@ func newIBFTSnapshotResult(resp *ibftOp.Snapshot) (*IBFTSnapshotResult, error) {
 			return nil, err
 		}
 
-		res.Validators[i] = validator
+		res.Validators[i] = IBFTSnapshotValidator{
+			Validator:             validator,
+			UptimeNominalWeight:   v.UptimeNominalWeight,
+			UptimeEffectiveWeight: v.UptimeEffectiveWeight,
+			UptimeInactivity:      v.UptimeInactivity,
+		}
 	}
 
 	return res, nil
@@ -74,10 +94,19 @@ func (r *IBFTSnapshotResult) GetOutput() string {
 }
 
 func (r *IBFTSnapshotResult) writeBlockData(buffer *bytes.Buffer) {
-	buffer.WriteString(helper.FormatKV([]string{
+	lines := []string{
 		fmt.Sprintf("Block|%d", r.Number),
 		fmt.Sprintf("Hash|%s", r.Hash),
-	}))
+	}
+	if r.uptimeFieldsVisible() {
+		lines = append(lines,
+			fmt.Sprintf("Micro-epoch|%d", r.MicroEpoch),
+			fmt.Sprintf("Uptime epoch|%d", r.UptimeEpoch),
+			fmt.Sprintf("Uptime total effective weight|%d", r.UptimeTotalEffectiveWeight),
+			fmt.Sprintf("Uptime active effective weight|%d", r.UptimeActiveEffective),
+		)
+	}
+	buffer.WriteString(helper.FormatKV(lines))
 	buffer.WriteString("\n")
 }
 
@@ -111,13 +140,40 @@ func (r *IBFTSnapshotResult) writeValidatorData(buffer *bytes.Buffer) {
 	validators[0] = "No validators found"
 
 	if numValidators > 0 {
-		validators[0] = "ADDRESS"
+		if r.uptimeFieldsVisible() {
+			validators[0] = "ADDRESS|UPTIME NOMINAL|UPTIME EFFECTIVE|UPTIME INACTIVITY"
+		} else {
+			validators[0] = "ADDRESS"
+		}
 		for i, d := range r.Validators {
-			validators[i+1] = d.String()
+			if r.uptimeFieldsVisible() {
+				validators[i+1] = fmt.Sprintf("%s|%d|%d|%d", d.Validator.String(), d.UptimeNominalWeight, d.UptimeEffectiveWeight, d.UptimeInactivity)
+			} else {
+				validators[i+1] = d.Validator.String()
+			}
 		}
 	}
 
 	buffer.WriteString("\n[VALIDATORS]\n")
 	buffer.WriteString(helper.FormatList(validators))
 	buffer.WriteString("\n")
+}
+
+func (r *IBFTSnapshotResult) uptimeFieldsVisible() bool {
+	if r.MicroEpoch != 0 ||
+		r.UptimeEpoch != 0 ||
+		r.UptimeTotalEffectiveWeight != 0 ||
+		r.UptimeActiveEffective != 0 {
+		return true
+	}
+
+	for _, v := range r.Validators {
+		if v.UptimeNominalWeight != 0 ||
+			v.UptimeEffectiveWeight != 0 ||
+			v.UptimeInactivity != 0 {
+			return true
+		}
+	}
+
+	return false
 }

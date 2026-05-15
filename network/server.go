@@ -677,8 +677,24 @@ func (s *Server) Subscribe(ctx context.Context, handler func(evnt *peerEvent.Pee
 			case <-s.closeCh:
 				return
 
-			case evnt := <-sub.Out():
+			case evnt, ok := <-sub.Out():
+				if !ok {
+					return
+				}
+
+				if ctx.Err() != nil {
+					return
+				}
+
 				if obj, ok := evnt.(peerEvent.PeerEvent); ok {
+					select {
+					case <-ctx.Done():
+						return
+					case <-s.closeCh:
+						return
+					default:
+					}
+
 					handler(&obj)
 				}
 			}

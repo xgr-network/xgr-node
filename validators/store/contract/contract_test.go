@@ -28,8 +28,9 @@ var (
 	testBLSPubKey2 = newTestBLSKeyBytes()
 
 	testPredeployParams = stakingHelper.PredeployParams{
-		MinValidatorCount: 0,
+		MinValidatorCount: 1,
 		MaxValidatorCount: 10,
+		EpochSize:         10,
 	}
 	testBlockGasLimit uint64 = 10000000
 )

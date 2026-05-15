@@ -5,10 +5,10 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/xgr-network/xgr-node/types"
 	"github.com/hashicorp/go-hclog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/xgr-network/xgr-node/types"
 )
 
 func TestEth_DecodeTxn(t *testing.T) {
@@ -299,13 +299,18 @@ func TestEth_TxnType(t *testing.T) {
 
 func newTestEthEndpoint(store testStore) *Eth {
 	return &Eth{
-		hclog.NewNullLogger(), store, 100, nil, 0,
+		logger:  hclog.NewNullLogger(),
+		store:   store,
+		chainID: 100,
 	}
 }
 
 func newTestEthEndpointWithPriceLimit(store testStore, priceLimit uint64) *Eth {
 	return &Eth{
-		hclog.NewNullLogger(), store, 100, nil, priceLimit,
+		logger:     hclog.NewNullLogger(),
+		store:      store,
+		chainID:    100,
+		priceLimit: priceLimit,
 	}
 }
 

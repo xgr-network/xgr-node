@@ -31,7 +31,20 @@ func NewIBFTServersManager(
 	ibftDirPrefix string,
 	callback IBFTServerConfigCallback,
 ) *IBFTServersManager {
+	return NewIBFTServersManagerWithGenesisValidators(t, numNodes, numNodes, ibftDirPrefix, callback)
+}
+
+func NewIBFTServersManagerWithGenesisValidators(
+	t *testing.T,
+	numNodes int,
+	numGenesisValidators int,
+	ibftDirPrefix string,
+	callback IBFTServerConfigCallback,
+) *IBFTServersManager {
 	t.Helper()
+	if numGenesisValidators > numNodes {
+		t.Fatalf("numGenesisValidators (%d) cannot exceed numNodes (%d)", numGenesisValidators, numNodes)
+	}
 
 	dataDir, err := tempDir()
 	if err != nil {
@@ -77,7 +90,9 @@ func NewIBFTServersManager(
 
 		srvs = append(srvs, srv)
 		bootnodes = append(bootnodes, libp2pAddr)
-		genesisValidators = append(genesisValidators, res.Address)
+		if i < numGenesisValidators {
+			genesisValidators = append(genesisValidators, res.Address)
+		}
 	}
 
 	srv := srvs[0]
@@ -131,6 +146,37 @@ func (m *IBFTServersManager) GetServer(i int) *TestServer {
 	}
 
 	return m.servers[i]
+}
+
+func (m *IBFTServersManager) StopServer(i int) {
+	srv := m.GetServer(i)
+	if srv == nil {
+		return
+	}
+
+	srv.Stop()
+}
+
+func (m *IBFTServersManager) ActiveServers(excluded ...int) []*TestServer {
+	if len(m.servers) == 0 {
+		return nil
+	}
+
+	excludedSet := make(map[int]struct{}, len(excluded))
+	for _, idx := range excluded {
+		excludedSet[idx] = struct{}{}
+	}
+
+	active := make([]*TestServer, 0, len(m.servers))
+	for idx, srv := range m.servers {
+		if _, skip := excludedSet[idx]; skip {
+			continue
+		}
+
+		active = append(active, srv)
+	}
+
+	return active
 }
 
 func initLogsDir(t *testing.T) (string, error) {

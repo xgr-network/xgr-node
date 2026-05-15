@@ -3,6 +3,7 @@ package signer
 import (
 	"crypto/ecdsa"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/coinbase/kryptology/pkg/signatures/bls/bls_sig"
@@ -14,6 +15,8 @@ import (
 	"github.com/xgr-network/xgr-node/types"
 	"github.com/xgr-network/xgr-node/validators"
 )
+
+var testHeaderHashOverrideMu sync.Mutex
 
 const (
 	// legacyCommitCode is the value that is contained in
@@ -126,17 +129,20 @@ func verifyIBFTExtraSize(header *types.Header) error {
 func UseIstanbulHeaderHashInTest(t *testing.T, signer Signer) {
 	t.Helper()
 
-	originalHashCalc := types.HeaderHash
-	types.HeaderHash = func(h *types.Header) types.Hash {
+	testHeaderHashOverrideMu.Lock()
+
+	originalHashCalc := types.GetHeaderHash()
+	types.SetHeaderHash(func(h *types.Header) types.Hash {
 		hash, err := signer.CalculateHeaderHash(h)
 		if err != nil {
 			return types.ZeroHash
 		}
 
 		return hash
-	}
+	})
 
 	t.Cleanup(func() {
-		types.HeaderHash = originalHashCalc
+		types.SetHeaderHash(originalHashCalc)
+		testHeaderHashOverrideMu.Unlock()
 	})
 }

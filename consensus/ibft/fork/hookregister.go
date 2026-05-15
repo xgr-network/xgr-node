@@ -2,6 +2,8 @@ package fork
 
 import (
 	"github.com/xgr-network/xgr-node/consensus/ibft/hook"
+	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
+	"github.com/xgr-network/xgr-node/consensus/ibft/signer"
 )
 
 // PoAHookRegisterer that registers hooks for PoA mode
@@ -61,19 +63,34 @@ func (r *PoAHookRegister) RegisterHooks(hooks *hook.Hooks, height uint64) {
 type PoSHookRegister struct {
 	posForks            IBFTForks
 	epochSize           uint64
+	firstPoSFrom        uint64
+	hasPoS              bool
 	deployContractForks map[uint64]*IBFTFork
+	uptimeCfg           pos.UptimeConfig
+	getSigner           func(uint64) (signer.Signer, error)
 }
 
 // NewPoSHookRegister is a constructor of PoSHookRegister
 func NewPoSHookRegister(
 	forks IBFTForks,
 	epochSize uint64,
+	uptimeCfg pos.UptimeConfig,
+	getSigner func(uint64) (signer.Signer, error),
 ) *PoSHookRegister {
 	posForks := forks.filterByType(PoS)
 
 	deployContractForks := make(map[uint64]*IBFTFork)
+	var (
+		firstPoSFrom uint64
+		hasPoS       bool
+	)
 
 	for _, fork := range posForks {
+		if !hasPoS || fork.From.Value < firstPoSFrom {
+			firstPoSFrom = fork.From.Value
+			hasPoS = true
+		}
+
 		if fork.Deployment == nil {
 			continue
 		}
@@ -84,7 +101,11 @@ func NewPoSHookRegister(
 	return &PoSHookRegister{
 		posForks:            posForks,
 		epochSize:           epochSize,
+		firstPoSFrom:        firstPoSFrom,
+		hasPoS:              hasPoS,
 		deployContractForks: deployContractForks,
+		uptimeCfg:           uptimeCfg,
+		getSigner:           getSigner,
 	}
 }
 
@@ -92,11 +113,11 @@ func NewPoSHookRegister(
 func (r *PoSHookRegister) RegisterHooks(hooks *hook.Hooks, height uint64) {
 	if currentFork := r.posForks.getFork(height); currentFork != nil {
 		// in PoS mode currently
-		registerTxInclusionGuardHooks(hooks, r.epochSize)
+		registerTxInclusionGuardHooks(hooks, r.epochSize, r.uptimeCfg, r.getSigner, r.firstPoSFrom)
 	}
 
 	if deploymentFork, ok := r.deployContractForks[height]; ok {
 		// deploy or update staking contract in deployment height
-		registerStakingContractDeploymentHooks(hooks, deploymentFork)
+		registerStakingContractDeploymentHooks(hooks, deploymentFork, r.epochSize)
 	}
 }

@@ -6,10 +6,11 @@ import (
 	"github.com/umbracle/ethgo/abi"
 	"github.com/xgr-network/xgr-node/bls"
 	"github.com/xgr-network/xgr-node/chain"
-	"github.com/xgr-network/xgr-node/consensus/polybft/signer"
 	"github.com/xgr-network/xgr-node/state/runtime"
 	"github.com/xgr-network/xgr-node/types"
 )
+
+var domainStateReceiver = []byte("DOMAIN_STATE_RECEIVER")
 
 var (
 	errBLSVerifyAggSignsInputs    = errors.New("invalid input")
@@ -100,7 +101,7 @@ func (c *blsAggSignsVerification) run(input []byte, caller types.Address, host r
 		blsPubKeys[i] = blsPubKey
 	}
 
-	if sig.VerifyAggregated(blsPubKeys, types.Hash(msg).Bytes(), signer.DomainStateReceiver) {
+	if sig.VerifyAggregated(blsPubKeys, types.Hash(msg).Bytes(), domainStateReceiver) {
 		return abiBoolTrue, nil
 	}
 

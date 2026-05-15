@@ -7,7 +7,6 @@ import (
 
 	"github.com/0xPolygon/go-ibft/messages"
 	protoIBFT "github.com/0xPolygon/go-ibft/messages/proto"
-	"github.com/xgr-network/xgr-node/consensus/ibft/signer"
 	"github.com/xgr-network/xgr-node/crypto"
 	"github.com/xgr-network/xgr-node/types"
 )
@@ -24,13 +23,12 @@ func (i *backendIBFT) calculateProposalHashFromBlockBytes(
 		return types.ZeroHash, err
 	}
 
-	signer, err := i.forkManager.GetSigner(block.Number())
+	_, err := i.forkManager.GetSigner(block.Number())
 	if err != nil {
 		return types.ZeroHash, err
 	}
 
 	return i.calculateProposalHash(
-		signer,
 		block.Header,
 		round,
 	)
@@ -39,7 +37,6 @@ func (i *backendIBFT) calculateProposalHashFromBlockBytes(
 // calculateProposalHash is new hash calculation for proposal in go-ibft,
 // which includes round number block is finalized at
 func (i *backendIBFT) calculateProposalHash(
-	signer signer.Signer,
 	header *types.Header,
 	round *uint64,
 ) (types.Hash, error) {
@@ -107,11 +104,10 @@ func (i *backendIBFT) IsValidProposal(rawProposal []byte) bool {
 
 		return false
 	}
-
 	return true
 }
 
-func (i *backendIBFT) IsValidValidator(msg *protoIBFT.Message) bool {
+func (i *backendIBFT) IsValidValidator(msg *protoIBFT.IbftMessage) bool {
 	msgNoSig, err := msg.PayloadNoSig()
 	if err != nil {
 		return false
@@ -173,16 +169,17 @@ func (i *backendIBFT) IsProposer(id []byte, height, round uint64) bool {
 		return false
 	}
 
-	nextProposer := CalcProposer(
-		i.currentValidators,
-		round,
-		previousProposer,
-	)
+	nextProposer := CalcProposer(i.currentValidators, round, previousProposer)
 
 	return types.BytesToAddress(id) == nextProposer.Addr()
 }
 
 func (i *backendIBFT) IsValidProposalHash(proposal *protoIBFT.Proposal, hash []byte) bool {
+	block := &types.Block{}
+	if err := block.UnmarshalRLP(proposal.RawProposal); err != nil {
+		return false
+	}
+
 	proposalHash, err := i.calculateProposalHashFromBlockBytes(proposal.RawProposal, &proposal.Round)
 	if err != nil {
 		return false

@@ -13,7 +13,7 @@ const (
 	DefaultGenesisFileName           = "genesis.json"
 	DefaultChainName                 = "xgrchain"
 	DefaultChainID                   = 100
-	DefaultConsensus                 = server.PolyBFTConsensus
+	DefaultConsensus                 = server.IBFTConsensus
 	DefaultGenesisGasUsed            = 458752  // 0x70000
 	DefaultGenesisGasLimit           = 5242880 // 0x500000
 	DefaultGenesisBaseFeeEM          = chain.GenesisBaseFeeEM

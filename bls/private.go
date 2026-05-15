@@ -33,7 +33,7 @@ func UnmarshalPrivateKey(data []byte) (*PrivateKey, error) {
 	}
 
 	// Otherwise, trying to assume the given data is a hex encoded big int represented as a bytes array.
-	// This is needed in order to be compatible with the currently stored polybft BLS keys.
+	// This is needed in order to be compatible with the currently stored legacy BLS keys.
 	var err error
 	if pk.s, err = hex.DecodeHexToBig(string(data)); err != nil {
 		return nil, err

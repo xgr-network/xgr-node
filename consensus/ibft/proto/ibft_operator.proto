@@ -31,10 +31,18 @@ message Snapshot {
 
     repeated Vote votes = 4;
 
+    uint64 micro_epoch = 5;
+    uint64 uptime_epoch = 6;
+    uint64 uptime_total_effective_weight = 7;
+    uint64 uptime_active_effective_weight = 8;
+
     message Validator {
         string type = 1;
         string address = 2;
         bytes data = 3;
+        uint64 uptime_nominal_weight = 4;
+        uint64 uptime_effective_weight = 5;
+        uint64 uptime_inactivity = 6;
     }
 
     message Vote {

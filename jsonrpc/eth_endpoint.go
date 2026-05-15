@@ -41,6 +41,7 @@ type ethStateStore interface {
 	GetStorage(root types.Hash, addr types.Address, slot types.Hash) ([]byte, error)
 	GetForksInTime(blockNumber uint64) chain.ForksInTime
 	GetCode(root types.Hash, addr types.Address) ([]byte, error)
+	GetChainParams() *chain.Params
 }
 
 type ethBlockchainStore interface {
@@ -98,6 +99,7 @@ type Eth struct {
 	chainID       uint64
 	filterManager *FilterManager
 	priceLimit    uint64
+	recoveryCache recoveryOverviewCache
 }
 
 var (
@@ -520,6 +522,21 @@ func (e *Eth) Call(arg *txnArgs, filter BlockNumberOrHash, apiOverride *stateOve
 		return nil, err
 	}
 
+	// IMPORTANT (eth_call / estimateGas):
+	// DecodeTxn may source nonce from txpool, which can diverge from state nonce (notably for 0x0).
+	// For simulation calls, align nonce to the referenced state to avoid "incorrect nonce".
+	if transaction.Nonce == 0 {
+		acc, aerr := e.store.GetAccount(header.StateRoot, transaction.From)
+		if aerr != nil {
+			if !errors.Is(aerr, ErrStateNotFound) {
+				return nil, aerr
+			}
+			// account not present => nonce 0 is fine
+		} else {
+			transaction.Nonce = acc.Nonce
+		}
+	}
+
 	// If the caller didn't supply the gas limit in the message, then we set it to maximum possible => block gas limit
 	if transaction.Gas == 0 {
 		transaction.Gas = header.GasLimit
@@ -573,6 +590,18 @@ func (e *Eth) EstimateGas(arg *txnArgs, rawNum *BlockNumber) (interface{}, error
 	transaction, err := DecodeTxn(arg, header.Number, e.store, true)
 	if err != nil {
 		return nil, err
+	}
+
+	// Same rationale as eth_call: simulation must not fail on txpool/state nonce divergence.
+	if transaction.Nonce == 0 {
+		acc, aerr := e.store.GetAccount(header.StateRoot, transaction.From)
+		if aerr != nil {
+			if !errors.Is(aerr, ErrStateNotFound) {
+				return nil, aerr
+			}
+		} else {
+			transaction.Nonce = acc.Nonce
+		}
 	}
 
 	forksInTime := e.store.GetForksInTime(header.Number)
@@ -688,7 +717,9 @@ ESTIMATE_BY_EXECUTION:
 		availableBalance.Cmp(big.NewInt(0)) > 0 { // Available balance > 0
 		gasAllowance := new(big.Int).Div(availableBalance, gasPriceInt)
 
-		// Check the gas allowance for this account, make sure high end is capped to it
+		// Check the gas allowance for this account, make sure high end is capped to it.
+		// If the allowance cannot even cover intrinsic gas, return a deterministic
+		// insufficient-funds error instead of falling through to an intrinsic-gas error.
 		if gasAllowance.IsUint64() && highEnd > gasAllowance.Uint64() {
 			e.logger.Debug(
 				fmt.Sprintf(
@@ -698,6 +729,9 @@ ESTIMATE_BY_EXECUTION:
 			)
 
 			highEnd = gasAllowance.Uint64()
+			if highEnd < standardGas {
+				return nil, fmt.Errorf("insufficient funds for gas * price + value: %w", state.ErrNotEnoughFundsForGas)
+			}
 		}
 	}
 

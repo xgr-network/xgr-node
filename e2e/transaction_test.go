@@ -72,7 +72,7 @@ func TestPreminedBalance(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			balance, err := rpcClient.Eth().GetBalance(ethgo.Address(testCase.address), ethgo.Latest)
 			assert.NoError(t, err)
-			assert.Equal(t, testCase.balance, balance)
+			assert.Equal(t, 0, balance.Cmp(testCase.balance))
 		})
 	}
 }

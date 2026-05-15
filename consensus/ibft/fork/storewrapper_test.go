@@ -305,7 +305,7 @@ func TestSnapshotValidatorStoreWrapperGetValidators(t *testing.T) {
 		}
 	)
 
-	store, err := snapshot.NewSnapshotValidatorStore(
+	snapshotStore, err := snapshot.NewSnapshotValidatorStore(
 		hclog.NewNullLogger(),
 		&store.MockBlockchain{
 			HeaderFn: func() *types.Header {
@@ -323,12 +323,20 @@ func TestSnapshotValidatorStoreWrapperGetValidators(t *testing.T) {
 	assert.NoError(t, err)
 
 	wrapper := SnapshotValidatorStoreWrapper{
-		SnapshotValidatorStore: store,
+		SnapshotValidatorStore: snapshotStore,
 	}
 
 	vals, err := wrapper.GetValidators(11, 0, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, snapshots[0].Set, vals)
+
+	t.Run("should return error for genesis height", func(t *testing.T) {
+		t.Parallel()
+
+		genesisVals, err := wrapper.GetValidators(0, 0, 0)
+		assert.Nil(t, genesisVals)
+		assert.EqualError(t, err, "height must be greater than 0")
+	})
 }
 
 func TestSnapshotValidatorStoreWrapperClose(t *testing.T) {
@@ -480,6 +488,92 @@ func TestNewContractValidatorStoreWrapperGetValidators(t *testing.T) {
 		assert.Nil(t, res)
 		assert.ErrorContains(t, err, "header not found at 9")
 	})
+
+	t.Run("should not use contract store before forkFrom", func(t *testing.T) {
+		t.Parallel()
+
+		var beginTxnCalls int
+
+		expected := validators.NewECDSAValidatorSet(
+			validators.NewECDSAValidator(types.StringToAddress("1")),
+		)
+
+		wrapper, err := NewContractValidatorStoreWrapper(
+			hclog.NewNullLogger(),
+			&store.MockBlockchain{
+				GetHeaderByNumberFn: func(u uint64) (*types.Header, bool) {
+					if u == 9 {
+						return &types.Header{Number: 9}, true
+					}
+
+					return nil, false
+				},
+			},
+			&MockExecutor{
+				BeginTxnFunc: func(types.Hash, *types.Header, types.Address) (*state.Transition, error) {
+					beginTxnCalls++
+
+					return nil, errTest
+				},
+			},
+			func(u uint64) (signer.Signer, error) {
+				return &mockSigner{
+					TypeFn: func() validators.ValidatorType {
+						return validators.ECDSAValidatorType
+					},
+					GetValidatorsFn: func(*types.Header) (validators.Validators, error) {
+						return expected, nil
+					},
+				}, nil
+			},
+		)
+
+		assert.NoError(t, err)
+
+		res, err := wrapper.GetValidators(10, 10, 50)
+		assert.NoError(t, err)
+		assert.Equal(t, expected, res)
+		assert.Zero(t, beginTxnCalls)
+	})
+
+	t.Run("should use contract store at fork boundary", func(t *testing.T) {
+		t.Parallel()
+
+		var beginTxnCalls int
+
+		wrapper, err := NewContractValidatorStoreWrapper(
+			hclog.NewNullLogger(),
+			&store.MockBlockchain{
+				GetHeaderByNumberFn: func(u uint64) (*types.Header, bool) {
+					if u == 49 {
+						return &types.Header{Number: 49}, true
+					}
+
+					return nil, false
+				},
+			},
+			&MockExecutor{
+				BeginTxnFunc: func(types.Hash, *types.Header, types.Address) (*state.Transition, error) {
+					beginTxnCalls++
+
+					return nil, errTest
+				},
+			},
+			func(u uint64) (signer.Signer, error) {
+				return signer.NewSigner(
+					&signer.ECDSAKeyManager{},
+					nil,
+				), nil
+			},
+		)
+
+		assert.NoError(t, err)
+
+		res, err := wrapper.GetValidators(50, 10, 50)
+		assert.Nil(t, res)
+		assert.ErrorIs(t, err, errTest)
+		assert.Equal(t, 1, beginTxnCalls)
+	})
 }
 
 func Test_calculateContractStoreFetchingHeight(t *testing.T) {
@@ -514,11 +608,11 @@ func Test_calculateContractStoreFetchingHeight(t *testing.T) {
 			expected:  9,
 		},
 		{
-			name:      "should return 9 if the height is 19 (in the second epoch)",
+			name:      "should return 10 if the height is 19 (in the second epoch)",
 			height:    19,
 			epochSize: 10,
 			forkFrom:  0,
-			expected:  9,
+			expected:  10,
 		},
 		{
 			name:      "should return 49 if the height is 10 but forkFrom is 50",
@@ -533,6 +627,13 @@ func Test_calculateContractStoreFetchingHeight(t *testing.T) {
 			epochSize: 10,
 			forkFrom:  50,
 			expected:  59,
+		},
+		{
+			name:      "should return 60 if the height is 61 and forkFrom is 50",
+			height:    61,
+			epochSize: 10,
+			forkFrom:  50,
+			expected:  60,
 		},
 	}
 

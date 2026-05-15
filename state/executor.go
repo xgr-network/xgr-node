@@ -26,6 +26,10 @@ import (
 
 var SystemAddress = types.StringToAddress("0x0000000000000000000000000000000000009999")
 
+// FeePoolAddress collects the pooled validator share and is distributed epoch-wise by IBFT-PoS.
+// Consensus-critical: only used when the FeePoolSplit fork is active.
+var FeePoolAddress = types.StringToAddress("0x000000000000000000000000000000000000fEE2")
+
 func Keccak256Hash(data []byte) [32]byte {
 	hash := sha3.NewLegacyKeccak256()
 	hash.Write(data)
@@ -37,7 +41,7 @@ func Keccak256Hash(data []byte) [32]byte {
 func HexToAddress(hexStr string) [20]byte {
 	var addr [20]byte
 
-	// "0x" entfernen
+	// Remove the "0x" prefix.
 	clean := strings.TrimPrefix(hexStr, "0x")
 	data, err := hex.DecodeString(clean)
 	if err != nil {
@@ -48,7 +52,7 @@ func HexToAddress(hexStr string) [20]byte {
 	return addr
 }
 
-// LeftPadBytes füllt ein Byte-Slice links mit 0 auf die angegebene Länge auf
+// LeftPadBytes left-pads a byte slice with zeros to the specified length.
 func LeftPadBytes(input []byte, length int) []byte {
 	if len(input) >= length {
 		return input
@@ -187,6 +191,13 @@ func (e *Executor) ProcessBlock(
 	}
 
 	for _, t := range block.Transactions {
+		if types.IsEpochFinalizationSystemTxForBlock(t, block.Header.Number, contracts.SystemCaller) {
+			// The deterministic native PoS epoch-finalization system transaction is
+			// represented by logs emitted in the consensus PreCommitState hook and
+			// materialized with WriteSystemReceipt after FinalizeEpoch completes.
+			continue
+		}
+
 		if t.Gas > block.Header.GasLimit {
 			continue
 		}
@@ -257,11 +268,13 @@ func (e *Executor) BeginTxn(
 		config:   forkConfig,
 		gasPool:  uint64(txCtx.GasLimit),
 
-		receipts:     []*types.Receipt{},
-		totalGas:     0,
-		donationFee:  nil,
-		validatorFee: nil,
-		burnedFee:    nil,
+		receipts:              []*types.Receipt{},
+		totalGas:              0,
+		donationFee:           nil,
+		validatorFee:          nil,
+		validatorImmediateFee: nil,
+		validatorPooledFee:    nil,
+		burnedFee:             nil,
 
 		evm:         evm.NewEVM(),
 		precompiles: precompiled.NewPrecompiled(),
@@ -312,12 +325,14 @@ type Transition struct {
 	gasPool uint64
 
 	// result
-	receipts     []*types.Receipt
-	totalGas     uint64
-	donationFee  *big.Int
-	validatorFee *big.Int
-	burnedFee    *big.Int
-	PostHook     func(t *Transition)
+	receipts              []*types.Receipt
+	totalGas              uint64
+	donationFee           *big.Int
+	validatorFee          *big.Int
+	validatorImmediateFee *big.Int
+	validatorPooledFee    *big.Int
+	burnedFee             *big.Int
+	PostHook              func(t *Transition)
 
 	// runtimes
 	evm         *evm.EVM
@@ -382,6 +397,30 @@ func (t *Transition) Receipts() []*types.Receipt {
 
 var emptyFrom = types.Address{}
 
+var (
+	feeLogAddress              = HexToAddress("0x000000000000000000000000000000000000fEE1")
+	xgrFeeSplitTopic           = Keccak256Hash([]byte("XGRFeeSplit(uint256,uint256,uint256)"))
+	xgrFeeAccountingTopic      = Keccak256Hash([]byte("XGRFeeAccounting(uint256,uint256,uint256,uint256)"))
+	xgrFeeAccountingZeroPooled = big.NewInt(0)
+)
+
+func feeAmountBytes(amount *big.Int) []byte {
+	if amount == nil {
+		return LeftPadBytes(nil, 32)
+	}
+
+	return LeftPadBytes(amount.Bytes(), 32)
+}
+
+func encodeFeeLogData(amounts ...*big.Int) []byte {
+	data := make([]byte, 0, len(amounts)*32)
+	for _, amount := range amounts {
+		data = append(data, feeAmountBytes(amount)...)
+	}
+
+	return data
+}
+
 // Write writes another transaction to the executor
 func (t *Transition) Write(txn *types.Transaction) error {
 	var err error
@@ -408,28 +447,28 @@ func (t *Transition) Write(txn *types.Transaction) error {
 
 	t.totalGas += result.GasUsed
 
-	topics := []types.Hash{
-		Keccak256Hash([]byte("XGRFeeSplit(uint256,uint256,uint256)")),
-	}
-
-	data := append(
-		LeftPadBytes(t.donationFee.Bytes(), 32),
-		append(
-			LeftPadBytes(t.validatorFee.Bytes(), 32),
-			LeftPadBytes(t.burnedFee.Bytes(), 32)...,
-		)...,
-	)
-
-	myLog := &types.Log{
-		Address:     HexToAddress("0x000000000000000000000000000000000000fEE1"),
-		Topics:      topics,
-		Data:        data,
+	logs := t.state.Logs()
+	logs = append(logs, &types.Log{
+		Address:     feeLogAddress,
+		Topics:      []types.Hash{xgrFeeSplitTopic},
+		Data:        encodeFeeLogData(t.donationFee, t.validatorFee, t.burnedFee),
 		BlockNumber: uint64(t.ctx.Number),
 		TxHash:      txn.Hash,
+	})
+	if t.config.FeePoolSplit {
+		logs = append(logs, &types.Log{
+			Address: feeLogAddress,
+			Topics:  []types.Hash{xgrFeeAccountingTopic},
+			Data: encodeFeeLogData(
+				t.donationFee,
+				t.validatorImmediateFee,
+				t.validatorPooledFee,
+				t.burnedFee,
+			),
+			BlockNumber: uint64(t.ctx.Number),
+			TxHash:      txn.Hash,
+		})
 	}
-
-	logs := t.state.Logs()
-	logs = append(logs, myLog)
 
 	receipt := &types.Receipt{
 		CumulativeGasUsed: t.totalGas,
@@ -456,6 +495,36 @@ func (t *Transition) Write(txn *types.Transaction) error {
 
 	// Set the receipt logs and create a bloom for filtering
 	receipt.Logs = logs
+	receipt.LogsBloom = types.CreateBloom([]*types.Receipt{receipt})
+	t.receipts = append(t.receipts, receipt)
+
+	return nil
+}
+
+// WriteSystemReceipt materializes logs emitted outside normal transaction
+// execution (for example consensus-owned PoS epoch finalization logs) into a
+// deterministic receipt for a native system transaction. The transaction is not
+// executed here; it supplies the transaction hash and type used by RPC and
+// receipt roots.
+func (t *Transition) WriteSystemReceipt(txn *types.Transaction) error {
+	if txn == nil {
+		return fmt.Errorf("missing system transaction")
+	}
+
+	logs := t.state.Logs()
+	for _, log := range logs {
+		log.BlockNumber = uint64(t.ctx.Number)
+		log.TxHash = txn.Hash
+	}
+
+	receipt := &types.Receipt{
+		CumulativeGasUsed: t.totalGas,
+		TransactionType:   txn.Type,
+		TxHash:            txn.Hash,
+		GasUsed:           0,
+		Logs:              logs,
+	}
+	receipt.SetStatus(types.ReceiptSuccess)
 	receipt.LogsBloom = types.CreateBloom([]*types.Receipt{receipt})
 	t.receipts = append(t.receipts, receipt)
 
@@ -493,6 +562,60 @@ func (t *Transition) addGasPool(amount uint64) {
 
 func (t *Transition) Txn() *Txn {
 	return t.state
+}
+
+func (t *Transition) ForksInTime() chain.ForksInTime {
+	return t.config
+}
+
+func cloneBig(x *big.Int) *big.Int {
+	if x == nil {
+		return nil
+	}
+	return new(big.Int).Set(x)
+}
+
+// Call executes a transaction in "simulation" mode and ALWAYS reverts state changes.
+// Intended for eth_call / estimateGas / internal view queries.
+func (t *Transition) Call(msg *types.Transaction) (*runtime.ExecutionResult, error) {
+	// Snapshot world state
+	s := t.state.Snapshot()
+
+	// Snapshot transition-local mutable fields (apply() mutates these)
+	prevCtx := t.ctx
+	prevGasPool := t.gasPool
+	prevReceipts := t.receipts
+	prevTotalGas := t.totalGas
+	prevDonation := cloneBig(t.donationFee)
+	prevValidator := cloneBig(t.validatorFee)
+	prevValidatorImmediate := cloneBig(t.validatorImmediateFee)
+	prevValidatorPooled := cloneBig(t.validatorPooledFee)
+	prevBurned := cloneBig(t.burnedFee)
+	prevPostHook := t.PostHook
+
+	// PostHook must not run for simulation calls
+	t.PostHook = nil
+
+	res, err := t.apply(msg)
+
+	// Always revert world state changes, regardless of success/failure
+	if revertErr := t.state.RevertToSnapshot(s); revertErr != nil {
+		return nil, revertErr
+	}
+
+	// Restore transition-local bookkeeping
+	t.ctx = prevCtx
+	t.gasPool = prevGasPool
+	t.receipts = prevReceipts
+	t.totalGas = prevTotalGas
+	t.donationFee = prevDonation
+	t.validatorFee = prevValidator
+	t.validatorImmediateFee = prevValidatorImmediate
+	t.validatorPooledFee = prevValidatorPooled
+	t.burnedFee = prevBurned
+	t.PostHook = prevPostHook
+
+	return res, err
 }
 
 // Apply applies a new transaction
@@ -686,8 +809,10 @@ func (t *Transition) apply(msg *types.Transaction) (*runtime.ExecutionResult, er
 	if msg.IsContractCreation() {
 		result = t.Create2(msg.From, msg.Input, value, gasLeft)
 	} else {
-		if err := t.state.IncrNonce(msg.From); err != nil {
-			return nil, err
+		if !t.ctx.NonPayable {
+			if err := t.state.IncrNonce(msg.From); err != nil {
+				return nil, err
+			}
 		}
 		result = t.Call2(msg.From, *msg.To, msg.Input, value, gasLeft)
 	}
@@ -699,82 +824,106 @@ func (t *Transition) apply(msg *types.Transaction) (*runtime.ExecutionResult, er
 		t.ctx.Tracer.TxEnd(result.GasLeft)
 	}
 
-	// Refund the sender
-	remaining := new(big.Int).Mul(new(big.Int).SetUint64(result.GasLeft), gasPrice)
-	t.state.AddBalance(msg.From, remaining)
+	if !t.ctx.NonPayable {
+		// Refund the sender
+		remaining := new(big.Int).Mul(new(big.Int).SetUint64(result.GasLeft), gasPrice)
+		t.state.AddBalance(msg.From, remaining)
 
-	// Berechne gesamte Fee = gasUsed × gasPrice
-	totalFeeRaw := new(big.Int).Mul(new(big.Int).SetUint64(result.GasUsed), gasPrice)
+		// Compute total fee = gasUsed × gasPrice
+		totalFeeRaw := new(big.Int).Mul(new(big.Int).SetUint64(result.GasUsed), gasPrice)
 
-	// ziehe Burning Betrag ab (clamped; niemals negative Fees erzeugen)
-	burned := big.NewInt(0).Mul(big.NewInt(1000), big.NewInt(1_000_000_000))
-	burnedApplied := new(big.Int).Set(burned)
-	totalFee := new(big.Int).Set(totalFeeRaw)
-	if totalFee.Cmp(burnedApplied) <= 0 {
-		// Fee reicht nicht für den fixen Burn -> alles geht an Burn, Rest = 0
-		burnedApplied.Set(totalFee)
-		totalFee.SetInt64(0)
-	} else {
-		totalFee.Sub(totalFee, burnedApplied)
-	}
+		// Subtract the fixed burn amount (clamped; never create negative fees).
+		burned := big.NewInt(0).Mul(big.NewInt(1000), big.NewInt(1_000_000_000))
+		burnedApplied := new(big.Int).Set(burned)
+		totalFee := new(big.Int).Set(totalFeeRaw)
+		if totalFee.Cmp(burnedApplied) <= 0 {
+			// Fee is below fixed burn -> everything goes to burn, remainder = 0.
+			burnedApplied.Set(totalFee)
+			totalFee.SetInt64(0)
+		} else {
+			totalFee.Sub(totalFee, burnedApplied)
+		}
 
-	// Lade optionale Konfigurationen aus dem State
-	burnedAddr := chain.DefaultBurnedAddress
-	donationAddr := chain.DefaultDonationAddress
-	donationPercent := chain.DefaultDonationPercent
+		// Load optional configuration values from state.
+		burnedAddr := chain.DefaultBurnedAddress
+		donationAddr := chain.DefaultDonationAddress
+		donationPercent := chain.DefaultDonationPercent
 
-	// Donation config analog minBaseFee: read from EngineRegistry storage slots (if deployed).
-	// If registry is missing (address==0 or code-size==0), keep DefaultDonation*.
-	if chain.EngineRegistryAddress != (types.Address{}) {
-		if code := t.state.GetCode(chain.EngineRegistryAddress); len(code) > 0 {
-			// donationAddress: address is right-aligned in last 20 bytes of the slot
-			addrSlot := t.state.GetState(chain.EngineRegistryAddress, chain.EngineRegistrySlotKeyDonationAddress())
-			var regAddr types.Address
-			copy(regAddr[:], addrSlot[12:32])
-			// donationPercent: uint256 (accept 0..100)
-			pctSlot := t.state.GetState(chain.EngineRegistryAddress, chain.EngineRegistrySlotKeyDonationPercent())
-			pct := new(big.Int).SetBytes(pctSlot[:])
-			if pct.Sign() >= 0 && pct.BitLen() <= 64 {
-				p := pct.Uint64()
-				if p <= 100 {
-					donationPercent = p
+		// Donation config analog minBaseFee: read from EngineRegistry storage slots (if deployed).
+		// If registry is missing (address==0 or code-size==0), keep DefaultDonation*.
+		if chain.EngineRegistryAddress != (types.Address{}) {
+			if code := t.state.GetCode(chain.EngineRegistryAddress); len(code) > 0 {
+				// donationAddress: address is right-aligned in last 20 bytes of the slot
+				addrSlot := t.state.GetState(chain.EngineRegistryAddress, chain.EngineRegistrySlotKeyDonationAddress())
+				var regAddr types.Address
+				copy(regAddr[:], addrSlot[12:32])
+				// donationPercent: uint256 (accept 0..100)
+				pctSlot := t.state.GetState(chain.EngineRegistryAddress, chain.EngineRegistrySlotKeyDonationPercent())
+				pct := new(big.Int).SetBytes(pctSlot[:])
+				if pct.Sign() >= 0 && pct.BitLen() <= 64 {
+					p := pct.Uint64()
+					if p <= 100 {
+						donationPercent = p
+					}
+				}
+				// Safety: if address is zero => donation disabled
+				if regAddr == types.ZeroAddress {
+					donationPercent = 0
+				} else {
+					donationAddr = regAddr
 				}
 			}
-			// Safety: if address is zero => donation disabled
-			if regAddr == types.ZeroAddress {
-				donationPercent = 0
+		}
+
+		// Compute split: donation + validator
+		donation := new(big.Int).Mul(totalFee, new(big.Int).SetUint64(donationPercent))
+		donation.Div(donation, big.NewInt(100))
+		if donation.Sign() < 0 {
+			donation.SetInt64(0)
+		}
+		if donation.Cmp(totalFee) > 0 {
+			donation.Set(totalFee)
+		}
+		validator := new(big.Int).Sub(totalFee, donation)
+		if validator.Sign() < 0 {
+			validator.SetInt64(0)
+		}
+		// Distribute fee
+		if donation.Sign() > 0 {
+			t.state.AddBalance(donationAddr, donation)
+		}
+		validatorImmediate := new(big.Int)
+		validatorPooled := new(big.Int)
+		if validator.Sign() > 0 {
+			if t.config.FeePoolSplit {
+				// forked PoS behavior
+				validatorImmediate.Rsh(new(big.Int).Set(validator), 1)
+				validatorPooled.Sub(validator, validatorImmediate)
+
+				if validatorImmediate.Sign() > 0 {
+					t.state.AddBalance(t.ctx.Coinbase, validatorImmediate)
+				}
+				if validatorPooled.Sign() > 0 {
+					t.state.AddBalance(FeePoolAddress, validatorPooled)
+				}
 			} else {
-				donationAddr = regAddr
+				// legacy PoA / xgr-node behavior
+				validatorImmediate.Set(validator)
+				t.state.AddBalance(t.ctx.Coinbase, validator)
 			}
 		}
+		if !t.config.FeePoolSplit {
+			validatorPooled.Set(xgrFeeAccountingZeroPooled)
+		}
+		if burnedApplied.Sign() > 0 {
+			t.state.AddBalance(burnedAddr, burnedApplied)
+		}
+		t.donationFee = donation
+		t.validatorFee = validator
+		t.validatorImmediateFee = validatorImmediate
+		t.validatorPooledFee = validatorPooled
+		t.burnedFee = burnedApplied
 	}
-
-	// Berechne Aufteilung: Donation + Validator
-	donation := new(big.Int).Mul(totalFee, new(big.Int).SetUint64(donationPercent))
-	donation.Div(donation, big.NewInt(100))
-	if donation.Sign() < 0 {
-		donation.SetInt64(0)
-	}
-	if donation.Cmp(totalFee) > 0 {
-		donation.Set(totalFee)
-	}
-	validator := new(big.Int).Sub(totalFee, donation)
-	if validator.Sign() < 0 {
-		validator.SetInt64(0)
-	}
-	// Verteile Fee
-	if donation.Sign() > 0 {
-		t.state.AddBalance(donationAddr, donation)
-	}
-	if validator.Sign() > 0 {
-		t.state.AddBalance(t.ctx.Coinbase, validator)
-	}
-	if burnedApplied.Sign() > 0 {
-		t.state.AddBalance(burnedAddr, burnedApplied)
-	}
-	t.donationFee = donation
-	t.validatorFee = validator
-	t.burnedFee = burnedApplied
 	// return gas to the pool
 	t.addGasPool(result.GasLeft)
 	return result, nil
@@ -1358,7 +1507,12 @@ func checkAndProcessTx(msg *types.Transaction, t *Transition) error {
 	// GasPrice is mandatory for LegacyTx + AccessListTx (and any other non-1559 tx).
 	// This avoids panics in GetGasPrice()/Cost() paths and rejects invalid blocks.
 	if msg.Type != types.DynamicFeeTx && msg.Type != types.StateTx && msg.GasPrice == nil {
-		return NewTransitionApplicationError(ErrGasPriceNotSet, true)
+		// eth_call / estimateGas: allow missing gasPrice
+		if t.ctx.NonPayable {
+			msg.GasPrice = big.NewInt(0)
+		} else {
+			return NewTransitionApplicationError(ErrGasPriceNotSet, true)
+		}
 	}
 	// EIP-3860 (Shanghai): contract-creation *transactions* with oversized initcode are invalid
 	// and must be rejected by consensus before execution.
@@ -1366,12 +1520,12 @@ func checkAndProcessTx(msg *types.Transaction, t *Transition) error {
 	if t.config.EIP3860 && msg.IsContractCreation() && len(msg.Input) > TxPoolMaxInitCodeSize {
 		return NewTransitionApplicationError(ErrMaxInitCodeSizeExceeded, true)
 	}
-	// 1. the nonce of the message caller is correct
-	if err := t.nonceCheck(msg); err != nil {
-		return NewTransitionApplicationError(err, true)
-	}
 
 	if !t.ctx.NonPayable {
+		// 1. nonce check is only for real tx admission, not eth_call / estimateGas
+		if err := t.nonceCheck(msg); err != nil {
+			return NewTransitionApplicationError(err, true)
+		}
 		// 2. check dynamic fees of the transaction
 		if err := t.checkDynamicFees(msg); err != nil {
 			return NewTransitionApplicationError(err, true)

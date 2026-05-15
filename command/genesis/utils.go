@@ -1,26 +1,15 @@
 package genesis
 
 import (
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"math/big"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/hashicorp/go-hclog"
 	"github.com/xgr-network/xgr-node/command"
-	"github.com/xgr-network/xgr-node/consensus/polybft"
-	"github.com/xgr-network/xgr-node/consensus/polybft/bitmap"
-	"github.com/xgr-network/xgr-node/consensus/polybft/validator"
-	"github.com/xgr-network/xgr-node/consensus/polybft/wallet"
 	"github.com/xgr-network/xgr-node/helper/common"
-	"github.com/xgr-network/xgr-node/secrets"
-	"github.com/xgr-network/xgr-node/secrets/helper"
-	"github.com/xgr-network/xgr-node/secrets/local"
 	"github.com/xgr-network/xgr-node/types"
 )
 
@@ -65,35 +54,8 @@ func verifyGenesisExistence(genesisPath string) *GenesisGenError {
 	return nil
 }
 
-// parseTrackerStartBlocks parses provided event tracker start blocks configuration.
-// It is set in a following format: <contractAddress>:<startBlock>.
-// In case smart contract address isn't provided in the string, it is assumed its starting block is 0 implicitly.
-func parseTrackerStartBlocks(trackerStartBlocksRaw []string) (map[types.Address]uint64, error) {
-	trackerStartBlocksConfig := make(map[types.Address]uint64, len(trackerStartBlocksRaw))
-
-	for _, startBlockRaw := range trackerStartBlocksRaw {
-		delimiterIdx := strings.Index(startBlockRaw, ":")
-		if delimiterIdx == -1 {
-			return nil, fmt.Errorf("invalid event tracker start block configuration provided: %s", trackerStartBlocksRaw)
-		}
-
-		// <contractAddress>:<startBlock>
-		address := types.StringToAddress(startBlockRaw[:delimiterIdx])
-		startBlockRaw := startBlockRaw[delimiterIdx+1:]
-
-		startBlock, err := strconv.ParseUint(startBlockRaw, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse provided start block %s: %w", startBlockRaw, err)
-		}
-
-		trackerStartBlocksConfig[address] = startBlock
-	}
-
-	return trackerStartBlocksConfig, nil
-}
-
 // parseBurnContractInfo parses provided burn contract information and returns burn contract block and address
-func parseBurnContractInfo(burnContractInfoRaw string) (*polybft.BurnContractInfo, error) {
+func parseBurnContractInfo(burnContractInfoRaw string) (*burnContractInfo, error) {
 	// <block>:<address>[:<burn destination address>]
 	burnContractParts := strings.Split(burnContractInfoRaw, ":")
 	if len(burnContractParts) < 2 || len(burnContractParts) > 3 {
@@ -113,7 +75,7 @@ func parseBurnContractInfo(burnContractInfoRaw string) (*polybft.BurnContractInf
 	}
 
 	if len(burnContractParts) == 2 {
-		return &polybft.BurnContractInfo{
+		return &burnContractInfo{
 			BlockNumber:        blockNum,
 			Address:            types.StringToAddress(contractAddress),
 			DestinationAddress: types.ZeroAddress,
@@ -125,7 +87,7 @@ func parseBurnContractInfo(burnContractInfoRaw string) (*polybft.BurnContractInf
 		return nil, fmt.Errorf("failed to parse burn destination address %s: %w", destinationAddress, err)
 	}
 
-	return &polybft.BurnContractInfo{
+	return &burnContractInfo{
 		BlockNumber:        blockNum,
 		Address:            types.StringToAddress(contractAddress),
 		DestinationAddress: types.StringToAddress(destinationAddress),
@@ -218,68 +180,8 @@ func GetValidatorKeyFiles(rootDir, filePrefix string) ([]string, error) {
 	return fileNames, nil
 }
 
-// ReadValidatorsByPrefix reads validators secrets on a given root directory and with given folder prefix
-func ReadValidatorsByPrefix(dir, prefix string) ([]*validator.GenesisValidator, error) {
-	validatorKeyFiles, err := GetValidatorKeyFiles(dir, prefix)
-	if err != nil {
-		return nil, err
-	}
-
-	validators := make([]*validator.GenesisValidator, len(validatorKeyFiles))
-
-	for i, file := range validatorKeyFiles {
-		path := filepath.Join(dir, file)
-
-		account, nodeID, err := getSecrets(path)
-		if err != nil {
-			return nil, err
-		}
-
-		validators[i] = &validator.GenesisValidator{
-			Address:   types.Address(account.Ecdsa.Address()),
-			BlsKey:    hex.EncodeToString(account.Bls.PublicKey().Marshal()),
-			MultiAddr: fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", "127.0.0.1", bootnodePortStart+int64(i), nodeID),
-			Stake:     big.NewInt(0),
-		}
-	}
-
-	return validators, nil
-}
-
-func getSecrets(directory string) (*wallet.Account, string, error) {
-	baseConfig := &secrets.SecretsManagerParams{
-		Logger: hclog.NewNullLogger(),
-		Extra: map[string]interface{}{
-			secrets.Path: directory,
-		},
-	}
-
-	localManager, err := local.SecretsManagerFactory(nil, baseConfig)
-	if err != nil {
-		return nil, "", fmt.Errorf("unable to instantiate local secrets manager, %w", err)
-	}
-
-	nodeID, err := helper.LoadNodeID(localManager)
-	if err != nil {
-		return nil, "", err
-	}
-
-	account, err := wallet.NewAccountFromSecret(localManager)
-	if err != nil {
-		return nil, "", err
-	}
-
-	return account, nodeID, err
-}
-
-// GenerateExtraDataPolyBft populates Extra with specific fields required for polybft consensus protocol
-func GenerateExtraDataPolyBft(validators []*validator.ValidatorMetadata) ([]byte, error) {
-	delta := &validator.ValidatorSetDelta{
-		Added:   validators,
-		Removed: bitmap.Bitmap{},
-	}
-
-	extra := polybft.Extra{Validators: delta, Checkpoint: &polybft.CheckpointData{}}
-
-	return extra.MarshalRLPTo(nil), nil
+type burnContractInfo struct {
+	BlockNumber        uint64
+	Address            types.Address
+	DestinationAddress types.Address
 }

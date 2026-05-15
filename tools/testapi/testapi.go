@@ -23,19 +23,19 @@ type Config struct {
 }
 
 type Route struct {
-	Method   string    `json:"method"`             // GET|POST|PUT|PATCH (Default GET)
-	Path     string    `json:"path"`               // exakte Pfadangabe, z.B. /fx/latest
-	Mode     string    `json:"mode,omitempty"`     // first|round-robin|sequential (Default first)
-	Responses []Reply  `json:"responses"`          // mind. 1 Eintrag
+	Method   string    `json:"method"`             // GET|POST|PUT|PATCH (default GET)
+	Path     string    `json:"path"`               // exact path, e.g. /fx/latest
+	Mode     string    `json:"mode,omitempty"`     // first|round-robin|sequential (default first)
+	Responses []Reply  `json:"responses"`          // at least 1 entry
 }
 
 type Reply struct {
 	Status      int               `json:"status,omitempty"`       // Default 200
 	Headers     map[string]string `json:"headers,omitempty"`      // Optional
-	ContentType string            `json:"contentType,omitempty"`  // Default: aus Body/Text abgeleitet
-	Body        json.RawMessage   `json:"body,omitempty"`         // Gültiges JSON (roh, unverändert gesendet)
-	Text        string            `json:"text,omitempty"`         // Falls kein JSON, wird Text gesendet
-	DelayMs     int               `json:"delayMs,omitempty"`      // künstliche Latenz
+	ContentType string            `json:"contentType,omitempty"`  // default: derived from body/text
+	Body        json.RawMessage   `json:"body,omitempty"`         // valid JSON (raw, sent unchanged)
+	Text        string            `json:"text,omitempty"`         // if not JSON, text is sent
+	DelayMs     int               `json:"delayMs,omitempty"`      // artificial latency
 }
 
 type compiledRoute struct {
@@ -44,7 +44,7 @@ type compiledRoute struct {
 	mode     string
 	replies  []Reply
 	mu       sync.Mutex
-	cursor   int // für round-robin/sequential
+	cursor   int // for round-robin/sequential
 }
 
 type server struct {
@@ -146,7 +146,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := s.pickReply(cr)
 
-	// künstliche Latenz
+	// artificial latency
 	if d := resp.DelayMs; d > 0 {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(d)*time.Millisecond)
 		defer cancel()

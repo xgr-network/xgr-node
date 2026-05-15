@@ -706,6 +706,14 @@ github.com/viant/assertly v0.4.8/go.mod h1:aGifi++jvCrUaklKEKT0BU95igDNaqkvz+49u
 github.com/viant/toolbox v0.24.0/go.mod h1:OxMCG57V0PXuIP2HNQrtJf2CjqdmbrOx5EkMILuUhzM=
 github.com/vishvananda/netlink v1.1.0/go.mod h1:cTgwzPIzzgDAYoQrMm0EdrjRUBkTqKYppBueQtXaqoE=
 github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df/go.mod h1:JP3t17pCcGlemwknint6hfoeCVQrEMVwxRLRjXpq+BU=
+github.com/xgr-network/go-ibft v0.0.0-20260403082038-0dc8c3b9d5fe h1:cFCCaCWiI3aA0JrbwqqOIIIvlSwKT9okVYm9zuRYBHE=
+github.com/xgr-network/go-ibft v0.0.0-20260403082038-0dc8c3b9d5fe/go.mod h1:FPdz+s0jyQzW4pZK+HMnhz2b8ebsg5FaSVFTjvQi8ls=
+github.com/xgr-network/go-ibft v0.0.0-20260406142847-339905dd34f5 h1:+upnAT4Z/7ySY+Jh90gpnoXOMuR0r3CPPp2EK8bgbxI=
+github.com/xgr-network/go-ibft v0.0.0-20260406142847-339905dd34f5/go.mod h1:FPdz+s0jyQzW4pZK+HMnhz2b8ebsg5FaSVFTjvQi8ls=
+github.com/xgr-network/go-ibft v0.0.0-20260409060202-6825e8ac7627 h1:u5VDzJHoYXfzvsR1DMs4PYGNKiD+SOBfhX+EbA5BS4o=
+github.com/xgr-network/go-ibft v0.0.0-20260409060202-6825e8ac7627/go.mod h1:FPdz+s0jyQzW4pZK+HMnhz2b8ebsg5FaSVFTjvQi8ls=
+github.com/xgr-network/go-ibft v0.0.0-20260501091827-652ddc3bf3c1 h1:WqAkgr4hYzG/wyQI0O8O2opGkTFgnvM8ABGvsZebt5M=
+github.com/xgr-network/go-ibft v0.0.0-20260501091827-652ddc3bf3c1/go.mod h1:FPdz+s0jyQzW4pZK+HMnhz2b8ebsg5FaSVFTjvQi8ls=
 github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/yuin/goldmark v1.2.1/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/yuin/goldmark v1.3.5/go.mod h1:mwnBkeHKe2W/ZEtQ+71ViKU8L12m81fl3OWwC1Zlc8k=

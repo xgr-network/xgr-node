@@ -50,89 +50,12 @@ case "$1" in
                   createGenesisConfig "$2" "$secrets"
               fi
               ;;
-          "polybft")
-              echo "Generating PolyBFT secrets..."
-              secrets=$("$XGRCHAIN_BIN" polybft-secrets init --insecure --num 4 --data-dir /data/data- --json)
-              echo "Secrets have been successfully generated"
-
-              rm -f /data/genesis.json
-
-              proxyContractsAdmin=0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed
-
-              createGenesisConfig "$2" "$secrets" \
-                --reward-wallet 0xDEADBEEF:1000000 \
-                --native-token-config "XGR:XGR:18:true:$(echo "$secrets" | jq -r '.[0] | .address')" \
-                --proxy-contracts-admin ${proxyContractsAdmin}
-
-              echo "Deploying stake manager..."
-              "$XGRCHAIN_BIN" polybft stake-manager-deploy \
-                --jsonrpc http://rootchain:8545 \
-                --genesis /data/genesis.json \
-                --proxy-contracts-admin ${proxyContractsAdmin} \
-                --test
-
-              stakeManagerAddr=$(cat /data/genesis.json | jq -r '.params.engine.polybft.bridge.stakeManagerAddr')
-              stakeToken=$(cat /data/genesis.json | jq -r '.params.engine.polybft.bridge.stakeTokenAddr')
-
-              "$XGRCHAIN_BIN" rootchain deploy \
-                --stake-manager ${stakeManagerAddr} \
-                --stake-token ${stakeToken} \
-                --json-rpc http://rootchain:8545 \
-                --genesis /data/genesis.json \
-                --proxy-contracts-admin ${proxyContractsAdmin} \
-                --test
-
-              customSupernetManagerAddr=$(cat /data/genesis.json | jq -r '.params.engine.polybft.bridge.customSupernetManagerAddr')
-              supernetID=$(cat /data/genesis.json | jq -r '.params.engine.polybft.supernetID')
-              addresses="$(echo "$secrets" | jq -r '.[0] | .address'),$(echo "$secrets" | jq -r '.[1] | .address'),$(echo "$secrets" | jq -r '.[2] | .address'),$(echo "$secrets" | jq -r '.[3] | .address')"
-
-              "$XGRCHAIN_BIN" rootchain fund \
-                --json-rpc http://rootchain:8545 \
-                --stake-token ${stakeToken} \
-                --mint \
-                --addresses ${addresses} \
-                --amounts 1000000000000000000000000,1000000000000000000000000,1000000000000000000000000,1000000000000000000000000
-
-              "$XGRCHAIN_BIN" polybft whitelist-validators \
-                --addresses ${addresses} \
-                --supernet-manager ${customSupernetManagerAddr} \
-                --private-key aa75e9a7d427efc732f8e4f1a5b7646adcc61fd5bae40f80d13c8419c9f43d6d \
-                --jsonrpc http://rootchain:8545
-
-              counter=1
-              while [ $counter -le 4 ]; do
-                echo "Registering validator: ${counter}"
-
-                "$XGRCHAIN_BIN" polybft register-validator \
-                  --supernet-manager ${customSupernetManagerAddr} \
-                  --data-dir /data/data-${counter} \
-                  --jsonrpc http://rootchain:8545
-
-                "$XGRCHAIN_BIN" polybft stake \
-                  --data-dir /data/data-${counter} \
-                  --amount 1000000000000000000000000 \
-                  --supernet-id ${supernetID} \
-                  --stake-manager ${stakeManagerAddr} \
-                  --stake-token ${stakeToken} \
-                  --jsonrpc http://rootchain:8545
-
-                counter=$((counter + 1))
-              done
-
-              "$XGRCHAIN_BIN" polybft supernet \
-                --private-key aa75e9a7d427efc732f8e4f1a5b7646adcc61fd5bae40f80d13c8419c9f43d6d \
-                --supernet-manager ${customSupernetManagerAddr} \
-                --finalize-genesis-set \
-                --enable-staking \
-                --genesis /data/genesis.json \
-                --jsonrpc http://rootchain:8545
-              ;;
       esac
       ;;
   "start-node-1")
     relayer_flag=""
-    # Start relayer only when run in polybft
-    if [ "$2" == "polybft" ]; then
+    # Start relayer only when run in ibft
+    if [ "$2" == "ibft" ]; then
       echo "Starting relayer..."
       relayer_flag="--relayer"
     fi
