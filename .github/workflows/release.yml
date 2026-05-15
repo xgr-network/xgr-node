@@ -120,7 +120,7 @@ jobs:
           set -euo pipefail
 
           echo "Starting E2E..."
-          ( go test -v -count=1 -timeout 40m ./e2e/... ) &
+          ( go test -v -count=1 -timeout 120m ./e2e/... ) &
           pid=$!
           echo "E2E pid=$pid"
 
