@@ -531,26 +531,27 @@ func TestAddTxHighPressure(t *testing.T) {
 	t.Run(
 		"pruning handler is signaled",
 		func(t *testing.T) {
-			t.Parallel()
+			require.NoError(t, err)
+			t.Cleanup(pool.Close)
 
-			pool, err := newTestPool()
-			assert.NoError(t, err)
 			pool.SetSigner(&mockSigner{})
-
+			// signalPruning uses a non-blocking send. Use a buffered channel here
+			// so the test observes the signal deterministically without relying
+			// on goroutine scheduling.
+			pool.pruneCh = make(chan struct{}, 1)
 			//	mock high pressure
 			slots := 1 + (highPressureMark*pool.gauge.max)/100
 			pool.gauge.increase(slots)
 
 			//	enqueue tx
-			go func() {
-				assert.NoError(t,
-					pool.addTx(local, newTx(addr1, 0, 1)),
-				)
-			}()
+			require.NoError(t, pool.addTx(local, newTx(addr1, 0, 1)))
 
 			//	pick up signal
-			_, ok := <-pool.pruneCh
-			assert.True(t, ok)
+			select {
+			case _, ok := <-pool.pruneCh:
+				require.True(t, ok)
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for pruning signal")
 		},
 	)
 
