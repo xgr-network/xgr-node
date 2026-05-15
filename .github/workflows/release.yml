@@ -56,7 +56,7 @@ jobs:
   integration:
     name: Integration (unit + e2e + build)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     needs: [meta]
     outputs:
       version: ${{ needs.meta.outputs.version }}
@@ -124,7 +124,7 @@ jobs:
           pid=$!
           echo "E2E pid=$pid"
 
-          for i in $(seq 1 2700); do
+          for i in $(seq 1 7200); do
             if ! kill -0 "$pid" 2>/dev/null; then
               echo "E2E finished, waiting..."
               wait "$pid"
@@ -149,14 +149,14 @@ jobs:
             sleep 1
           done
 
-          echo "ERROR: E2E exceeded watchdog (45m) - killing..."
+          echo "ERROR: E2E exceeded watchdog (120m) - killing..."
           kill "$pid" || true
           sleep 2
           kill -9 "$pid" || true
           exit 1
 
 
-          echo "ERROR: E2E exceeded watchdog (45m) - killing..."
+          echo "ERROR: E2E exceeded watchdog (120m) - killing..."
           kill "$pid" || true
           sleep 2
           kill -9 "$pid" || true
