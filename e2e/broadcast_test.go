@@ -17,7 +17,7 @@ import (
 func TestBroadcast(t *testing.T) {
 	// This test is not stable
 	// Opened the ticket to check + fix it
-	t.Skip()
+	t.Skip("unstable topology timing in current harness; kept skipped until deterministic peer-connect assertions are implemented")
 
 	testCases := []struct {
 		name     string

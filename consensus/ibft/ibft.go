@@ -3,15 +3,22 @@ package ibft
 import (
 	"errors"
 	"fmt"
+	"math/big"
+	"sort"
+	"strconv"
 	"time"
 
+	ibftProtoMessages "github.com/0xPolygon/go-ibft/messages/proto"
 	"github.com/armon/go-metrics"
 	"github.com/hashicorp/go-hclog"
 	"github.com/xgr-network/xgr-node/blockchain"
+	"github.com/xgr-network/xgr-node/chain"
 	"github.com/xgr-network/xgr-node/consensus"
 	"github.com/xgr-network/xgr-node/consensus/ibft/fork"
+	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
 	"github.com/xgr-network/xgr-node/consensus/ibft/proto"
 	"github.com/xgr-network/xgr-node/consensus/ibft/signer"
+	xcrypto "github.com/xgr-network/xgr-node/crypto"
 	"github.com/xgr-network/xgr-node/helper/progress"
 	"github.com/xgr-network/xgr-node/network"
 	"github.com/xgr-network/xgr-node/secrets"
@@ -41,6 +48,13 @@ var (
 	ErrWrongDifficulty            = errors.New("wrong difficulty")
 )
 
+type effectivePowerSnapshot struct {
+	hash             types.Hash
+	powers           map[string]string
+	totalVotingPower string
+	quorumThreshold  string
+}
+
 type txPoolInterface interface {
 	Prepare()
 	Length() uint64
@@ -59,6 +73,7 @@ type forkManagerInterface interface {
 	GetValidatorStore(uint64) (fork.ValidatorStore, error)
 	GetValidators(uint64) (validators.Validators, error)
 	GetHooks(uint64) fork.HooksInterface
+	IsPosActive(uint64) bool
 }
 
 // backendIBFT represents the IBFT consensus mechanism object
@@ -88,6 +103,7 @@ type backendIBFT struct {
 	epochSize          uint64
 	quorumSizeBlockNum uint64
 	blockTime          time.Duration // Minimum block generation time in seconds
+	uptimeCfg          pos.UptimeConfig
 
 	// Channels
 	closeCh chan struct{} // Channel for closing
@@ -95,11 +111,17 @@ type backendIBFT struct {
 
 // Factory implements the base consensus Factory method
 func Factory(params *consensus.Params) (consensus.Consensus, error) {
+	if err := alignFeePoolSplitWithPoSFork(params.Config.Params, params.Config.Config); err != nil {
+		return nil, err
+	}
+
 	// defaults for user set fields in genesis
 	var (
 		epochSize          = uint64(DefaultEpochSize)
 		quorumSizeBlockNum = uint64(0)
+		uptimeCfg          = pos.ParseUptimeConfig(params.Config.Config)
 	)
+	uptimeCfg.ChainID = params.Config.Params.ChainID
 
 	if definedEpochSize, ok := params.Config.Config[KeyEpochSize]; ok {
 		// Epoch size is defined, use the passed in one
@@ -109,6 +131,12 @@ func Factory(params *consensus.Params) (consensus.Consensus, error) {
 		}
 
 		epochSize = uint64(readSize)
+	}
+	if err := validateEpochSize(epochSize); err != nil {
+		return nil, err
+	}
+	if err := validateUptimeConfig(uptimeCfg); err != nil {
+		return nil, err
 	}
 
 	if rawBlockNum, ok := params.Config.Config["quorumSizeBlockNum"]; ok {
@@ -159,15 +187,66 @@ func Factory(params *consensus.Params) (consensus.Consensus, error) {
 		epochSize:          epochSize,
 		quorumSizeBlockNum: quorumSizeBlockNum,
 		blockTime:          time.Duration(params.BlockTime) * time.Second,
+		uptimeCfg:          uptimeCfg,
 
 		// Channels
 		closeCh: make(chan struct{}),
 	}
-
 	// Istanbul requires a different header hash function
 	p.SetHeaderHash()
 
 	return p, nil
+}
+
+// alignFeePoolSplitWithPoSFork ensures FeePoolSplit activates exactly when the first PoS IBFT fork starts.
+// This removes double-gating at genesis level (PoS-from + feePoolSplit block).
+func alignFeePoolSplitWithPoSFork(chainParams *chain.Params, ibftConfig map[string]interface{}) error {
+	if chainParams == nil {
+		return nil
+	}
+	if ibftConfig == nil {
+		return nil
+	}
+
+	ibftForks, err := fork.GetIBFTForks(ibftConfig)
+	if err != nil {
+		return err
+	}
+
+	firstPoSFrom := uint64(0)
+	foundPoS := false
+
+	for _, ibftFork := range ibftForks {
+		if ibftFork.Type != fork.PoS {
+			continue
+		}
+
+		if !foundPoS || ibftFork.From.Value < firstPoSFrom {
+			firstPoSFrom = ibftFork.From.Value
+			foundPoS = true
+		}
+	}
+
+	if !foundPoS {
+		return nil
+	}
+
+	if chainParams.Forks == nil {
+		forks := make(chain.Forks)
+		chainParams.Forks = &forks
+	}
+
+	if feePoolSplitFork, exists := (*chainParams.Forks)[chain.FeePoolSplit]; exists {
+		if feePoolSplitFork.Block != firstPoSFrom {
+			return fmt.Errorf("feePoolSplit fork must match first PoS fork: feePoolSplit=%d firstPoSFrom=%d", feePoolSplitFork.Block, firstPoSFrom)
+		}
+
+		return nil
+	}
+
+	chainParams.Forks.SetFork(chain.FeePoolSplit, chain.NewFork(firstPoSFrom))
+
+	return nil
 }
 
 func (i *backendIBFT) Initialize() error {
@@ -208,12 +287,15 @@ func (i *backendIBFT) Initialize() error {
 // sync runs the syncer in the background to receive blocks from advanced peers
 func (i *backendIBFT) startSyncing() {
 	callInsertBlockHook := func(fullBlock *types.FullBlock) bool {
-		if err := i.currentHooks.PostInsertBlock(fullBlock.Block); err != nil {
+		hooks := i.forkManager.GetHooks(fullBlock.Block.Number())
+
+		if err := hooks.PostInsertBlock(fullBlock.Block); err != nil {
 			i.logger.Error("failed to call PostInsertBlock", "height", fullBlock.Block.Header.Number, "error", err)
 		}
 
 		if err := i.updateCurrentModules(fullBlock.Block.Number() + 1); err != nil {
 			i.logger.Error("failed to update sub modules", "height", fullBlock.Block.Number()+1, "err", err)
+			i.txpool.SetSealing(false)
 		}
 
 		i.txpool.ResetWithHeaders(fullBlock.Block.Header)
@@ -293,6 +375,22 @@ func (i *backendIBFT) startConsensus() {
 				"height", pending,
 				"err", err,
 			)
+
+			i.txpool.SetSealing(false)
+
+			retryTimer := time.NewTimer(i.blockTime)
+
+			select {
+			case <-syncerBlockCh:
+				retryTimer.Stop()
+				goto nextHeight
+			case <-retryTimer.C:
+				goto nextHeight
+			case <-i.closeCh:
+				retryTimer.Stop()
+
+				return
+			}
 		}
 
 		// Update the No.of validator metric
@@ -301,31 +399,49 @@ func (i *backendIBFT) startConsensus() {
 		isValidator = i.isActiveValidator()
 
 		i.txpool.SetSealing(isValidator)
+		sequenceCh = make(<-chan struct{})
 
 		if isValidator {
 			sequenceCh = i.consensus.runSequence(pending)
 		}
 
-		select {
-		case <-syncerBlockCh:
-			if isValidator {
-				i.consensus.stopSequence()
-				i.logger.Info("canceled sequence", "sequence", pending)
-			}
-		case <-sequenceCh:
-		case <-i.closeCh:
-			if isValidator {
-				i.consensus.stopSequence()
-			}
+		for {
+			select {
+			case <-syncerBlockCh:
+				if isValidator {
+					i.consensus.stopSequence()
+					i.logger.Info("canceled sequence", "sequence", pending)
+				}
+				goto nextHeight
+			case <-sequenceCh:
+				goto nextHeight
+			case <-i.closeCh:
+				if isValidator {
+					i.consensus.stopSequence()
+				}
 
-			return
+				return
+			}
 		}
+	nextHeight:
 	}
 }
 
 // isActiveValidator returns whether my signer belongs to current validators
 func (i *backendIBFT) isActiveValidator() bool {
 	return i.currentValidators.Includes(i.currentSigner.Address())
+}
+
+// RoundStarts notifies the backend that IBFT is about to start a new round.
+func (i *backendIBFT) RoundStarts(view *ibftProtoMessages.View) error {
+	_ = i
+	_ = view
+	return nil
+}
+
+// SequenceCancelled notifies the backend that the active sequence was cancelled.
+func (i *backendIBFT) SequenceCancelled(*ibftProtoMessages.View) error {
+	return nil
 }
 
 // updateMetrics will update various metrics based on the given block
@@ -374,7 +490,6 @@ func (i *backendIBFT) verifyHeaderImpl(
 	if _, err := headerSigner.GetIBFTExtra(header); err != nil {
 		return err
 	}
-
 	// verify the ProposerSeal
 	if err := verifyProposerSeal(
 		header,
@@ -391,7 +506,6 @@ func (i *backendIBFT) verifyHeaderImpl(
 	); err != nil {
 		return err
 	}
-
 	// Additional header verification
 	if err := hooks.VerifyHeader(header); err != nil {
 		return err
@@ -402,10 +516,18 @@ func (i *backendIBFT) verifyHeaderImpl(
 
 // VerifyHeader wrapper for verifying headers
 func (i *backendIBFT) VerifyHeader(header *types.Header) error {
-	parent, ok := i.blockchain.GetHeaderByNumber(header.Number - 1)
+	parent, ok := i.blockchain.GetHeaderByHash(header.ParentHash)
 	if !ok {
 		return fmt.Errorf(
-			"unable to get parent header for block number %d",
+			"unable to get parent header %s for block number %d",
+			header.ParentHash,
+			header.Number,
+		)
+	}
+	if parent.Number+1 != header.Number {
+		return fmt.Errorf(
+			"invalid parent header number %d for block number %d",
+			parent.Number,
 			header.Number,
 		)
 	}
@@ -436,7 +558,6 @@ func (i *backendIBFT) VerifyHeader(header *types.Header) error {
 	}
 
 	hashForCommittedSeal, err := i.calculateProposalHash(
-		headerSigner,
 		header,
 		extra.RoundNumber,
 	)
@@ -446,12 +567,24 @@ func (i *backendIBFT) VerifyHeader(header *types.Header) error {
 
 	// verify the Committed Seals
 	// CommittedSeals exists only in the finalized header
+	committedSealQuorum := i.quorumSize(header.Number)(validators)
+	if i.forkManager.IsPosActive(header.Number) {
+		// In PoS weighted mode, signer-level verification is used only for
+		// structural/cryptographic validation. Weighted voting power check below
+		// is the sole quorum acceptance rule.
+		committedSealQuorum = 0
+	}
+
 	if err := headerSigner.VerifyCommittedSeals(
 		hashForCommittedSeal,
 		extra.CommittedSeals,
 		validators,
-		i.quorumSize(header.Number)(validators),
+		committedSealQuorum,
 	); err != nil {
+		return err
+	}
+
+	if err := i.verifyWeightedCommittedPower(header.Number, hashForCommittedSeal, extra.CommittedSeals, validators, header, parent, extra.RoundNumber); err != nil {
 		return err
 	}
 
@@ -494,9 +627,49 @@ func (i *backendIBFT) GetBlockCreator(header *types.Header) (types.Address, erro
 
 // PreCommitState a hook to be called before finalizing state transition on inserting block
 func (i *backendIBFT) PreCommitState(block *types.Block, txn *state.Transition) error {
-	hooks := i.forkManager.GetHooks(block.Number())
+	if block == nil || block.Header == nil {
+		return fmt.Errorf("missing block header in PreCommitState")
+	}
+	// Deterministic uptime accounting MUST use the parent header (already sealed/final).
+	// Counting on the current header breaks determinism during buildBlock because proposer seal/hash
+	// may not be present yet.
+	parentHeader, ok := i.blockchain.GetHeaderByHash(block.Header.ParentHash)
+	if !ok {
+		return fmt.Errorf("parent header %s not found for block %d", block.Header.ParentHash, block.Number())
+	}
 
-	return hooks.PreCommitState(block.Header, txn)
+	parentPosActive := i.forkManager.IsPosActive(parentHeader.Number)
+	requiresValidators := parentPosActive
+	var parentValidators validators.Validators
+	if requiresValidators {
+		vLoaded, vErr := i.forkManager.GetValidators(parentHeader.Number)
+		if vErr != nil {
+			if parentPosActive {
+				return fmt.Errorf("failed to get validators for uptime at height %d: %w", parentHeader.Number, vErr)
+			}
+
+			return fmt.Errorf("failed to get validators at height %d: %w", parentHeader.Number, vErr)
+		}
+		parentValidators = vLoaded
+	}
+
+	if parentPosActive {
+		parentSigner, err := i.forkManager.GetSigner(parentHeader.Number)
+		if err != nil {
+			return fmt.Errorf("failed to get signer for uptime at height %d: %w", parentHeader.Number, err)
+		}
+		if parentSigner == nil {
+			return fmt.Errorf("missing signer for uptime at height %d", parentHeader.Number)
+		}
+		if err := pos.RecordBlockUptime(parentHeader, i.epochSize, parentValidators, parentSigner, i.uptimeCfg, txn); err != nil {
+			return fmt.Errorf("failed to record parent uptime for block %d: %w", block.Number(), err)
+		}
+	}
+	hooks := i.forkManager.GetHooks(block.Number())
+	if err := hooks.PreCommitState(block.Header, txn); err != nil {
+		return err
+	}
+	return nil
 }
 
 // GetEpoch returns the current epoch
@@ -534,7 +707,7 @@ func (i *backendIBFT) Close() error {
 
 // SetHeaderHash updates hash calculation function for IBFT
 func (i *backendIBFT) SetHeaderHash() {
-	types.HeaderHash = func(h *types.Header) types.Hash {
+	types.SetHeaderHash(func(h *types.Header) types.Hash {
 		signer, err := i.forkManager.GetSigner(h.Number)
 		if err != nil {
 			return types.ZeroHash
@@ -546,7 +719,7 @@ func (i *backendIBFT) SetHeaderHash() {
 		}
 
 		return hash
-	}
+	})
 }
 
 // GetBridgeProvider returns an instance of BridgeDataProvider
@@ -615,7 +788,6 @@ func (i *backendIBFT) verifyParentCommittedSeals(
 	}
 
 	parentHash, err := i.calculateProposalHash(
-		parentSigner,
 		parentHeader,
 		parentExtra.RoundNumber,
 	)
@@ -625,13 +797,258 @@ func (i *backendIBFT) verifyParentCommittedSeals(
 
 	// if shouldVerifyParentCommittedSeals is false, skip the verification
 	// when header doesn't have Parent Committed Seals (Backward Compatibility)
-	return parentSigner.VerifyParentCommittedSeals(
+	parentCommittedSealQuorum := i.quorumSize(parent.Number)(parentValidators)
+	if i.forkManager.IsPosActive(parent.Number) {
+		// In PoS weighted mode, signer-level verification remains a
+		// structural/cryptographic guard only. Weighted parent committed power
+		// verification below is the sole quorum acceptance rule.
+		parentCommittedSealQuorum = 0
+	}
+
+	if err := parentSigner.VerifyParentCommittedSeals(
 		parentHash,
 		header,
 		parentValidators,
-		i.quorumSize(parent.Number)(parentValidators),
+		parentCommittedSealQuorum,
 		shouldVerifyParentCommittedSeals,
+	); err != nil {
+		return err
+	}
+
+	if !i.forkManager.IsPosActive(parent.Number) {
+		return nil
+	}
+
+	parentCommittedSealsGetter, ok := parentSigner.(interface {
+		GetParentCommittedSeals(*types.Header) (signer.Seals, error)
+	})
+	if !ok {
+		return errors.New("parent signer does not support extracting parent committed seals")
+	}
+
+	parentCommittedSeals, err := parentCommittedSealsGetter.GetParentCommittedSeals(header)
+	if err != nil {
+		return err
+	}
+	if parentCommittedSeals == nil || parentCommittedSeals.Num() == 0 {
+		return fmt.Errorf("missing parent committed seals in PoS weighted mode at height %d", parent.Number)
+	}
+
+	parentParentHeader, ok := i.blockchain.GetHeaderByHash(parentHeader.ParentHash)
+	if !ok {
+		return fmt.Errorf("header %s not found", parentHeader.ParentHash)
+	}
+
+	// ParentCommittedSeals stored in child header are signatures for the parent proposal.
+	// Verify weighted quorum in the same consensus context:
+	// state at parent height + evidence transition from grandparent -> parent.
+	return i.verifyWeightedCommittedPower(
+		parent.Number,
+		parentHash,
+		parentCommittedSeals,
+		parentValidators,
+		parentHeader,
+		parentParentHeader,
+		parentExtra.RoundNumber,
 	)
+}
+
+func validateUptimeConfig(cfg pos.UptimeConfig) error {
+	if cfg.MicroEpochSize == 0 {
+		return nil
+	}
+
+	if cfg.MicroEpochNominalWeight == 0 {
+		return errors.New("microEpochNominalWeightUnits must be greater than 0 when microEpochSize is enabled")
+	}
+	if cfg.MicroEpochInactivityDecayBps == 0 {
+		return errors.New("microEpochInactivityDecayBps must be greater than 0 when microEpochSize is enabled")
+	}
+	if cfg.MicroEpochInactivityDecayBps > 10000 {
+		return errors.New("microEpochInactivityDecayBps must be less than or equal to 10000")
+	}
+
+	return nil
+}
+
+func validateEpochSize(epochSize uint64) error {
+	if epochSize < 2 {
+		return errors.New("epochSize must be greater than or equal to 2")
+	}
+
+	return nil
+}
+
+func (i *backendIBFT) verifyWeightedCommittedPower(
+	height uint64,
+	hash types.Hash,
+	committedSeals signer.Seals,
+	validatorSet validators.Validators,
+	proposalHeader *types.Header,
+	parentHeader *types.Header,
+	roundNumber *uint64,
+) error {
+	if !i.forkManager.IsPosActive(height) {
+		return nil
+	}
+
+	votingPowers, err := i.getVotingPowersWithProposal(height, validatorSet, proposalHeader, parentHeader, roundNumber)
+	if err != nil {
+		return err
+	}
+
+	signers, err := committedSealSigners(hash, committedSeals, validatorSet)
+	if err != nil {
+		return err
+	}
+
+	collected := new(big.Int)
+	total := new(big.Int)
+	powerByValidator := make(map[string]string, validatorSet.Len())
+	for idx := 0; idx < validatorSet.Len(); idx++ {
+		addr := validatorSet.At(uint64(idx)).Addr()
+		p, ok := votingPowers[types.AddressToString(addr)]
+		if !ok {
+			p = big.NewInt(0)
+		}
+		total.Add(total, p)
+		powerByValidator[addr.String()] = p.String()
+		if _, ok := signers[addr]; ok {
+			collected.Add(collected, p)
+		}
+	}
+
+	if !hasWeightedQuorum(collected, total) {
+		signerAddrs := make([]string, 0, len(signers))
+		for addr := range signers {
+			signerAddrs = append(signerAddrs, addr.String())
+		}
+		sort.Strings(signerAddrs)
+		quorumThreshold := weightedQuorumThreshold(total)
+		proposalNumber := uint64(0)
+		proposalHash := types.ZeroHash.String()
+		proposalTimestamp := uint64(0)
+		if proposalHeader != nil {
+			proposalNumber = proposalHeader.Number
+			proposalHash = proposalHeader.Hash.String()
+			proposalTimestamp = proposalHeader.Timestamp
+		}
+		parentNumber := uint64(0)
+		parentHash := types.ZeroHash.String()
+		parentTimestamp := uint64(0)
+		if parentHeader != nil {
+			parentNumber = parentHeader.Number
+			parentHash = parentHeader.Hash.String()
+			parentTimestamp = parentHeader.Timestamp
+		}
+		roundDisplay := "nil"
+		if roundNumber != nil {
+			roundDisplay = strconv.FormatUint(*roundNumber, 10)
+		}
+		committedSealsCount := 0
+		if committedSeals != nil {
+			committedSealsCount = committedSeals.Num()
+		}
+
+		return fmt.Errorf(
+			"not enough weighted committed power: height=%d round=%s committedSeals=%d collected=%s quorum=%s total=%s proposalNumber=%d proposalHash=%s proposalTimestamp=%d parentNumber=%d parentHash=%s parentTimestamp=%d signerAddresses=%v votingPowers=%v: %w",
+			height,
+			roundDisplay,
+			committedSealsCount,
+			collected.String(),
+			quorumThreshold.String(),
+			total.String(),
+			proposalNumber,
+			proposalHash,
+			proposalTimestamp,
+			parentNumber,
+			parentHash,
+			parentTimestamp,
+			signerAddrs,
+			powerByValidator,
+			signer.ErrNotEnoughCommittedSeals,
+		)
+	}
+
+	return nil
+}
+
+func weightedQuorumThreshold(total *big.Int) *big.Int {
+	if total == nil || total.Sign() <= 0 {
+		return big.NewInt(0)
+	}
+
+	// Equivalent to ceil((2*total)/3), integer-safe.
+	// Keep this aligned with the classic PoA quorum behavior for equal weights.
+	quorum := new(big.Int).Mul(total, big.NewInt(2))
+	quorum.Add(quorum, big.NewInt(2))
+	quorum.Div(quorum, big.NewInt(3))
+
+	return quorum
+}
+
+func hasWeightedQuorum(collected, total *big.Int) bool {
+	if total == nil || total.Sign() <= 0 {
+		return false
+	}
+	if collected == nil || collected.Sign() <= 0 {
+		return false
+	}
+
+	return collected.Cmp(weightedQuorumThreshold(total)) >= 0
+}
+
+func (i *backendIBFT) getVotingPowersWithProposal(
+	height uint64,
+	validatorSet validators.Validators,
+	proposalHeader *types.Header,
+	parentHeader *types.Header,
+	_ *uint64,
+) (map[string]*big.Int, error) {
+	_ = proposalHeader
+	result, _, err := i.effectiveVotingPowerSnapshot(height, validatorSet, parentHeader)
+	return result, err
+}
+
+func committedSealSigners(
+	hash types.Hash,
+	committedSeals signer.Seals,
+	validatorSet validators.Validators,
+) (map[types.Address]struct{}, error) {
+	out := map[types.Address]struct{}{}
+	if committedSeals == nil {
+		return out, nil
+	}
+
+	switch seals := committedSeals.(type) {
+	case *signer.AggregatedSeal:
+		if seals.Bitmap == nil {
+			return out, nil
+		}
+		for idx := 0; idx < validatorSet.Len(); idx++ {
+			if seals.Bitmap.Bit(idx) == 0 {
+				continue
+			}
+			out[validatorSet.At(uint64(idx)).Addr()] = struct{}{}
+		}
+		return out, nil
+	case *signer.SerializedSeal:
+		digest := signer.LegacyCommitDigest(hash.Bytes())
+		for _, raw := range *seals {
+			pub, err := xcrypto.RecoverPubkey(raw, digest)
+			if err != nil {
+				return nil, err
+			}
+			addr := xcrypto.PubKeyToAddress(pub)
+			if !validatorSet.Includes(addr) {
+				return nil, signer.ErrNonValidatorCommittedSeal
+			}
+			out[addr] = struct{}{}
+		}
+		return out, nil
+	default:
+		return nil, signer.ErrInvalidCommittedSealType
+	}
 }
 
 // getModulesFromForkManager is a helper function to get all modules from ForkManager

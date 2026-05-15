@@ -9,6 +9,7 @@ import (
 	"github.com/0xPolygon/go-ibft/messages"
 	"github.com/0xPolygon/go-ibft/messages/proto"
 	"github.com/xgr-network/xgr-node/consensus"
+	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
 	"github.com/xgr-network/xgr-node/consensus/ibft/signer"
 	"github.com/xgr-network/xgr-node/helper/hex"
 	"github.com/xgr-network/xgr-node/state"
@@ -16,11 +17,19 @@ import (
 )
 
 func (i *backendIBFT) BuildProposal(view *proto.View) []byte {
+
+	if view == nil {
+		if i.logger != nil {
+			i.logger.Error("build proposal requested with nil view")
+		}
+
+		return nil
+	}
+
 	var (
 		latestHeader      = i.blockchain.Header()
 		latestBlockNumber = latestHeader.Number
 	)
-
 	if latestBlockNumber+1 != view.Height {
 		i.logger.Error(
 			"unable to build block, due to lack of parent block",
@@ -104,7 +113,6 @@ func (i *backendIBFT) InsertProposal(
 
 		return
 	}
-
 	i.updateMetrics(newBlock)
 
 	//	i.logger.Info(
@@ -140,24 +148,42 @@ func (i *backendIBFT) MaximumFaultyNodes() uint64 {
 	return uint64(CalcMaxFaultyNodes(i.currentValidators))
 }
 
-// DISCLAIMER: IBFT will be deprecated so we set 1 as a voting power to all validators
 func (i *backendIBFT) GetVotingPowers(height uint64) (map[string]*big.Int, error) {
+	if height == 0 {
+		return nil, fmt.Errorf("invalid height 0")
+	}
+
 	validators, err := i.forkManager.GetValidators(height)
 	if err != nil {
 		return nil, err
 	}
+	parentHeader, ok := i.blockchain.GetHeaderByNumber(height - 1)
+	if !ok {
+		return nil, fmt.Errorf("parent header not found for height %d", height)
+	}
 
-	result := make(map[string]*big.Int, validators.Len())
-
-	for index := 0; index < validators.Len(); index++ {
-		strAddress := types.AddressToString(validators.At(uint64(index)).Addr())
-		result[strAddress] = big.NewInt(1) // set 1 as voting power to everyone
+	result, snapshot, err := i.effectiveVotingPowerSnapshot(height, validators, parentHeader)
+	if err != nil {
+		return nil, err
+	}
+	if i.logger != nil && i.forkManager.IsPosActive(height) {
+		i.logger.Info(
+			"ibft voting powers",
+			"height", height,
+			"parentNumber", parentHeader.Number,
+			"parentHash", parentHeader.Hash,
+			"parentStateRoot", parentHeader.StateRoot,
+			"stakeWeightedActive", i.forkManager.IsPosActive(parentHeader.Number),
+			"totalVotingPower", snapshot.totalVotingPower,
+			"quorumThreshold", snapshot.quorumThreshold,
+			"votingPowers", snapshot.powers,
+		)
 	}
 
 	return result, nil
 }
 
-// buildBlock builds the block, based on the passed in snapshot and parent header
+// buildBlock builds the block, based on the passed in snapshot and parent header.
 func (i *backendIBFT) buildBlock(parent *types.Header) (*types.Block, error) {
 	header := &types.Header{
 		ParentHash: parent.Hash,
@@ -187,8 +213,13 @@ func (i *backendIBFT) buildBlock(parent *types.Header) (*types.Block, error) {
 		return nil, err
 	}
 
-	// Set the header timestamp
-	potentialTimestamp := i.calcHeaderTimestamp(parent.Timestamp, time.Now().UTC())
+	// Set the header timestamp.
+	// PoS mode may still use round-bound logical timestamps in the header,
+	// but runtime transaction writing / pacing should stay aligned with normal
+	// IBFT wall-clock scheduling.
+	var potentialTimestamp time.Time
+	runtimeDeadline := i.calcHeaderTimestamp(parent.Timestamp, time.Now().UTC())
+	potentialTimestamp = runtimeDeadline
 	header.Timestamp = uint64(potentialTimestamp.Unix())
 
 	parentCommittedSeals, err := i.extractParentCommittedSeals(parent)
@@ -203,7 +234,7 @@ func (i *backendIBFT) buildBlock(parent *types.Header) (*types.Block, error) {
 		return nil, err
 	}
 	// Get the block transactions
-	writeCtx, cancelFn := context.WithDeadline(context.Background(), potentialTimestamp)
+	writeCtx, cancelFn := context.WithDeadline(context.Background(), runtimeDeadline)
 	defer cancelFn()
 
 	txs := i.writeTransactions(
@@ -212,11 +243,19 @@ func (i *backendIBFT) buildBlock(parent *types.Header) (*types.Block, error) {
 		header.Number,
 		transition,
 	)
-
-	// provide dummy block instance to the PreCommitState
-	// (for the IBFT consensus, it is correct to have just a header, as only it is used)
-	if err := i.PreCommitState(&types.Block{Header: header}, transition); err != nil {
-		return nil, err
+	// Provide the in-progress block body to PreCommitState. PoS epoch boundary
+	// finalization writes a deterministic internal system receipt; when that
+	// happens, append the matching system transaction to the otherwise user-tx-free
+	// block so receipt count, receipt root, and tx root remain deterministic.
+	preCommitBlock := &types.Block{Header: header, Transactions: txs}
+	if err := i.PreCommitState(preCommitBlock, transition); err != nil {
+		return nil, fmt.Errorf("pre-commit state failed at block %d: %w", header.Number, err)
+	}
+	if len(transition.Receipts()) == len(txs)+1 {
+		finalizationTx := pos.EpochFinalizationSystemTx(header.Number)
+		if transition.Receipts()[len(transition.Receipts())-1].TxHash == finalizationTx.Hash {
+			txs = append(txs, finalizationTx)
+		}
 	}
 	_, root, err := transition.Commit()
 	if err != nil {
@@ -246,7 +285,6 @@ func (i *backendIBFT) buildBlock(parent *types.Header) (*types.Block, error) {
 	block.Header.ComputeHash()
 
 	i.logger.Info("build block", "number", header.Number, "txs", len(txs))
-
 	return block, nil
 }
 
@@ -353,7 +391,8 @@ write:
 		}
 	}
 
-	//	wait for the timer to expire
+	// wait for the timer to expire so the built block is aligned with the
+	// configured block time schedule
 	<-writeCtx.Done()
 
 	return

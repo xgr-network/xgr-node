@@ -2808,6 +2808,13 @@ func TestExecutablesOrder(t *testing.T) {
 		addr types.Address, nonce, gasPrice uint64, gasFeeCap uint64, value uint64) *types.Transaction {
 		tx := newTx(addr, nonce, 1)
 		tx.Value = new(big.Int).SetUint64(value)
+		tx.Input = []byte{
+			addr[0],
+			byte(nonce),
+			byte(gasPrice),
+			byte(gasFeeCap),
+			byte(value),
+		}
 
 		if gasPrice == 0 {
 			tx.Type = types.DynamicFeeTx
@@ -2955,25 +2962,17 @@ func TestExecutablesOrder(t *testing.T) {
 			pool.Start()
 			defer pool.Close()
 
-			subscription := pool.eventManager.subscribe(
-				[]proto.EventType{proto.EventType_PROMOTED},
-			)
-
-			expectedPromotedTx := 0
 			for _, txs := range test.allTxs {
 				for _, tx := range txs {
-					expectedPromotedTx++
 					// send all txs
 					assert.NoError(t, pool.addTx(local, tx))
 				}
 			}
 
-			ctx, cancelFn := context.WithTimeout(context.Background(), time.Second*10)
-			defer cancelFn()
-
-			// All txns should get added
-			require.Len(t, waitForEvents(ctx, subscription, expectedPromotedTx), expectedPromotedTx)
-			require.Equal(t, uint64(len(test.expectedPriceOrder)), pool.accounts.promoted())
+			expectedPromotedTx := len(test.expectedPriceOrder)
+			require.Eventually(t, func() bool {
+				return pool.accounts.promoted() == uint64(expectedPromotedTx)
+			}, 10*time.Second, 10*time.Millisecond)
 
 			pool.Prepare()
 
@@ -3492,12 +3491,10 @@ func TestSetSealing(t *testing.T) {
 }
 
 func TestBatchTx_SingleAccount(t *testing.T) {
-	t.Parallel()
-
 	_, addr := tests.GenerateKeyAndAddr(t)
 
 	pool, err := newTestPool()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	pool.SetSigner(&mockSigner{})
 
@@ -3508,68 +3505,92 @@ func TestBatchTx_SingleAccount(t *testing.T) {
 	// subscribe to enqueue and promote events
 	subscription := pool.eventManager.subscribe([]proto.EventType{proto.EventType_ENQUEUED, proto.EventType_PROMOTED})
 
-	txHashMap := map[types.Hash]struct{}{}
-	// mutex for txHashMap
-	mux := &sync.RWMutex{}
+	txCount := int(defaultMaxAccountEnqueued)
+	txHashMap := make(map[types.Hash]struct{}, txCount)
+	txs := make([]*types.Transaction, txCount)
+
+	for i := 0; i < txCount; i++ {
+		tx := newTx(addr, uint64(i), 1)
+		require.NotNil(t, tx)
+
+		tx.ComputeHash(1)
+		txHashMap[tx.Hash] = struct{}{}
+		txs[i] = tx
+	}
+
+	start := make(chan struct{})
+	errCh := make(chan error, txCount)
 	counter := uint64(0)
+	wg := new(sync.WaitGroup)
+	wg.Add(txCount)
 
 	// run max number of addTx concurrently
-	for i := 0; i < int(defaultMaxAccountEnqueued); i++ {
-		go func(i uint64) {
-			tx := newTx(addr, i, 1)
+	for i, tx := range txs {
+		i := i
+		tx := tx
 
-			tx.ComputeHash(1)
+		go func() {
+			defer wg.Done()
 
-			// add transaction hash to map
-			mux.Lock()
-			txHashMap[tx.Hash] = struct{}{}
-			mux.Unlock()
+			<-start
 
-			// submit transaction to pool
-			assert.NoError(t, pool.addTx(local, tx))
+			if addErr := pool.addTx(local, tx); addErr != nil {
+				errCh <- fmt.Errorf("tx[%d] add failed: %w", i, addErr)
+
+				return
+			}
 
 			atomic.AddUint64(&counter, 1)
-		}(uint64(i))
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for addErr := range errCh {
+		require.NoError(t, addErr)
 	}
 
 	enqueuedCount := 0
 	promotedCount := 0
-	ev := (*proto.TxPoolEvent)(nil)
+	receivedEvents := 0
+	expectedEventCount := txCount * 2
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
 
 	// wait for all the submitted transactions to be promoted
-	for {
+	for receivedEvents < expectedEventCount {
 		select {
-		case ev = <-subscription.subscriptionChannel:
-		case <-time.After(time.Second * 3):
+		case ev := <-subscription.subscriptionChannel:
+			// check if valid transaction hash
+			_, hashExists := txHashMap[types.StringToHash(ev.TxHash)]
+			require.True(t, hashExists, "received event for unknown hash %s", ev.TxHash)
+
+			// increment corresponding event type's count
+			if ev.Type == proto.EventType_ENQUEUED {
+				enqueuedCount++
+			} else if ev.Type == proto.EventType_PROMOTED {
+				promotedCount++
+			} else {
+				require.Failf(t, "unexpected event type", "type: %s", ev.Type.String())
+			}
+
+			receivedEvents++
+		case <-timeout.C:
 			t.Fatal(fmt.Sprintf("timeout. processed: %d/%d and %d/%d. Added: %d",
 				enqueuedCount, defaultMaxAccountEnqueued, promotedCount, defaultMaxAccountEnqueued,
 				atomic.LoadUint64(&counter)))
 		}
-
-		// check if valid transaction hash
-		mux.Lock()
-		_, hashExists := txHashMap[types.StringToHash(ev.TxHash)]
-		mux.Unlock()
-
-		assert.True(t, hashExists)
-
-		// increment corresponding event type's count
-		if ev.Type == proto.EventType_ENQUEUED {
-			enqueuedCount++
-		} else if ev.Type == proto.EventType_PROMOTED {
-			promotedCount++
-		}
-
-		if enqueuedCount == int(defaultMaxAccountEnqueued) && promotedCount == int(defaultMaxAccountEnqueued) {
-			// compare local tracker to pool internal
-			assert.Equal(t, defaultMaxAccountEnqueued, pool.Length())
-
-			// all transactions are promoted
-			break
-		}
 	}
 
+	assert.Equal(t, int(defaultMaxAccountEnqueued), enqueuedCount)
+	assert.Equal(t, int(defaultMaxAccountEnqueued), promotedCount)
+	// compare local tracker to pool internal
+	assert.Equal(t, defaultMaxAccountEnqueued, pool.Length())
+
 	acc := pool.accounts.get(addr)
+	require.NotNil(t, acc)
 
 	acc.nonceToTx.lock()
 

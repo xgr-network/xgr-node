@@ -5,6 +5,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/xgr-network/xgr-node/consensus/ibft/hook"
+	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
 	"github.com/xgr-network/xgr-node/consensus/ibft/signer"
 	"github.com/xgr-network/xgr-node/secrets"
 	"github.com/xgr-network/xgr-node/state"
@@ -66,6 +67,7 @@ type ForkManager struct {
 	forks     IBFTForks
 	filePath  string
 	epochSize uint64
+	uptimeCfg pos.UptimeConfig
 
 	// submodule lookup
 	keyManagers     map[validators.ValidatorType]signer.KeyManager
@@ -95,6 +97,7 @@ func NewForkManager(
 		secretsManager:  secretManager,
 		filePath:        filePath,
 		epochSize:       epochSize,
+		uptimeCfg:       pos.ParseUptimeConfig(ibftConfig),
 		forks:           forks,
 		keyManagers:     make(map[validators.ValidatorType]signer.KeyManager),
 		validatorStores: make(map[store.SourceType]ValidatorStore),
@@ -196,6 +199,12 @@ func (m *ForkManager) GetHooks(height uint64) HooksInterface {
 	}
 
 	return hooks
+}
+
+// IsPosActive returns whether the IBFT mode at the given height is PoS.
+func (m *ForkManager) IsPosActive(height uint64) bool {
+	f := m.forks.getFork(height)
+	return f != nil && f.Type == PoS
 }
 
 func (m *ForkManager) getValidatorStoreByIBFTFork(fork *IBFTFork) ValidatorStore {
@@ -321,6 +330,8 @@ func (m *ForkManager) initializeHooksRegister(ibftType IBFTType) {
 		m.hooksRegisters[PoS] = NewPoSHookRegister(
 			m.forks,
 			m.epochSize,
+			m.uptimeCfg,
+			m.GetSigner,
 		)
 	}
 }

@@ -283,6 +283,10 @@ func packProposerSealIntoExtra(
 				newArrayValue.Set(oldValues[4])
 			}
 
+			for idx := 5; idx < len(oldValues); idx++ {
+				newArrayValue.Set(oldValues[idx])
+			}
+
 			return nil
 		},
 	)
@@ -323,6 +327,10 @@ func packCommittedSealsAndRoundNumberIntoExtra(
 				newArrayValue.Set(ar.NewBytes(
 					toRoundBytes(*roundNumber),
 				))
+			}
+
+			for idx := 5; idx < len(oldValues); idx++ {
+				newArrayValue.Set(oldValues[idx])
 			}
 
 			return nil

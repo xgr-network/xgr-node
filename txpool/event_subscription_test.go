@@ -117,7 +117,7 @@ func TestEventSubscription_ProcessedEvents(t *testing.T) {
 				eventStore: &eventQueue{
 					events: make([]*proto.TxPoolEvent, 0),
 				},
-				notifyCh: make(chan struct{}),
+				notifyCh: make(chan struct{}, 1),
 			}
 			go subscription.runLoop()
 

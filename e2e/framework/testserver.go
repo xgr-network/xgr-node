@@ -368,7 +368,15 @@ func (t *TestServer) GenerateGenesis() error {
 	cmd.Stdout = stdout
 	cmd.Stderr = stdout
 
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	if err := t.patchMicroEpochGenesisConfig(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (t *TestServer) GenesisPredeploy() error {
@@ -407,7 +415,63 @@ func (t *TestServer) GenesisPredeploy() error {
 	cmd.Stdout = stdout
 	cmd.Stderr = stdout
 
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	if err := t.patchMicroEpochGenesisConfig(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (t *TestServer) patchMicroEpochGenesisConfig() error {
+	if t.Config.MicroEpochSize == 0 {
+		return nil
+	}
+
+	genesisPath := filepath.Join(t.Config.RootDir, "genesis.json")
+	raw, err := os.ReadFile(genesisPath)
+	if err != nil {
+		return err
+	}
+
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return err
+	}
+
+	params, _ := doc["params"].(map[string]interface{})
+	if params == nil {
+		params = map[string]interface{}{}
+		doc["params"] = params
+	}
+	engine, _ := params["engine"].(map[string]interface{})
+	if engine == nil {
+		engine = map[string]interface{}{}
+		params["engine"] = engine
+	}
+	ibftCfg, _ := engine["ibft"].(map[string]interface{})
+	if ibftCfg == nil {
+		ibftCfg = map[string]interface{}{}
+		engine["ibft"] = ibftCfg
+	}
+
+	ibftCfg["microEpochSize"] = t.Config.MicroEpochSize
+	if t.Config.MicroEpochNominalWeight > 0 {
+		ibftCfg["microEpochNominalWeightUnits"] = t.Config.MicroEpochNominalWeight
+	}
+	if t.Config.MicroEpochDecayBps > 0 {
+		ibftCfg["microEpochInactivityDecayBps"] = t.Config.MicroEpochDecayBps
+	}
+
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(genesisPath, out, 0o644)
 }
 
 func (t *TestServer) Start(ctx context.Context) error {
@@ -460,6 +524,10 @@ func (t *TestServer) Start(ctx context.Context) error {
 	// Start the server
 	t.cmd = exec.Command(resolveBinary(), args...) //nolint:gosec
 	t.cmd.Dir = t.Config.RootDir
+	t.cmd.Env = os.Environ()
+	for k, v := range t.Config.ExtraEnv {
+		t.cmd.Env = append(t.cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
 
 	stdout := t.GetStdout()
 	t.cmd.Stdout = stdout

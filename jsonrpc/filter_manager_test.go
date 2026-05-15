@@ -11,13 +11,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xgr-network/xgr-node/blockchain"
-	"github.com/xgr-network/xgr-node/txpool/proto"
-	"github.com/xgr-network/xgr-node/types"
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/go-hclog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/xgr-network/xgr-node/blockchain"
+	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
+	"github.com/xgr-network/xgr-node/crypto"
+	"github.com/xgr-network/xgr-node/txpool/proto"
+	"github.com/xgr-network/xgr-node/types"
 )
 
 func Test_GetLogsForQuery(t *testing.T) {
@@ -228,6 +230,46 @@ func Test_getLogsFromBlock(t *testing.T) {
 	for i := 0; i < numOfLogs; i++ {
 		require.Equal(t, uint64(i), uint64(logs[i].LogIndex))
 	}
+}
+
+func TestGetLogsForQueryFindsPosSystemReceiptLogsOnBoundaryBlock(t *testing.T) {
+	t.Parallel()
+
+	header := &types.Header{Hash: types.StringToHash("pos-boundary"), Number: 20}
+	systemTx := pos.EpochFinalizationSystemTx(header.Number)
+	uptimeTopic := types.BytesToHash(crypto.Keccak256([]byte("ValidatorUptimeFinalized(uint256,address,uint256,uint256,uint256,uint256,uint256,bool,bool)")))
+
+	block := &types.Block{
+		Header:       header,
+		Transactions: []*types.Transaction{systemTx},
+	}
+	store := &mockBlockStore{receipts: map[types.Hash][]*types.Receipt{
+		header.Hash: {
+			{
+				TxHash:          systemTx.Hash,
+				TransactionType: types.StateTx,
+				Logs: []*types.Log{
+					{Address: pos.PosSysAddr, Topics: []types.Hash{uptimeTopic}},
+				},
+			},
+		},
+	}}
+	store.appendBlocksToStore([]*types.Block{block})
+
+	f := NewFilterManager(hclog.NewNullLogger(), store, 1000)
+	t.Cleanup(func() { f.Close() })
+
+	logs, err := f.GetLogsForQuery(&LogQuery{
+		fromBlock: 20,
+		toBlock:   20,
+		Addresses: []types.Address{pos.PosSysAddr},
+		Topics:    [][]types.Hash{{uptimeTopic}},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	require.Equal(t, systemTx.Hash, logs[0].TxHash)
+	require.Equal(t, uint64(0), uint64(logs[0].TxIndex))
 }
 
 func Test_GetLogFilterFromID(t *testing.T) {

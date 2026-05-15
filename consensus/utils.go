@@ -25,8 +25,10 @@ func BuildBlock(params BuildBlockParams) *types.Block {
 
 	if len(params.Receipts) == 0 {
 		header.ReceiptsRoot = types.EmptyRootHash
+		header.LogsBloom = types.Bloom{}
 	} else {
 		header.ReceiptsRoot = buildroot.CalculateReceiptsRoot(params.Receipts)
+		header.LogsBloom = types.CreateBloom(params.Receipts)
 	}
 
 	header.Sha3Uncles = types.EmptyUncleHash

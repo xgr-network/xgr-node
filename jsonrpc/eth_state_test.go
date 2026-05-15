@@ -5,12 +5,12 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/xgr-network/xgr-node/chain"
 	"github.com/xgr-network/xgr-node/helper/hex"
 	"github.com/xgr-network/xgr-node/state"
 	"github.com/xgr-network/xgr-node/state/runtime"
 	"github.com/xgr-network/xgr-node/types"
-	"github.com/stretchr/testify/assert"
 )
 
 var (
@@ -704,6 +704,25 @@ func TestEth_EstimateGas_GasLimit(t *testing.T) {
 	}
 }
 
+func TestEth_EstimateGas_InsufficientFundsBeforeIntrinsic(t *testing.T) {
+	store := getExampleStore()
+	ethEndpoint := newTestEthEndpoint(store)
+
+	// Keep the sender balance too low to cover intrinsic gas at the specified gas price.
+	store.account.account.Balance = big.NewInt(10000)
+
+	// Contract interaction (non-empty data) forces estimate-by-execution path.
+	tx := constructMockTx(nil, argBytesPtr([]byte{0x12}))
+	tx.GasPrice = argBytesPtr([]byte{0x1})
+
+	estimate, err := ethEndpoint.EstimateGas(tx, nil)
+
+	assert.Nil(t, estimate)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, state.ErrNotEnoughFundsForGas)
+	assert.ErrorContains(t, err, "insufficient funds for gas * price + value")
+}
+
 func TestEth_EstimateGas_Reverts(t *testing.T) {
 	testTable := []struct {
 		name              string
@@ -900,6 +919,10 @@ func (m *mockSpecialStore) GetCode(root types.Hash, addr types.Address) ([]byte,
 
 func (m *mockSpecialStore) GetForksInTime(blockNumber uint64) chain.ForksInTime {
 	return chain.AllForksEnabled.At(0)
+}
+
+func (m *mockSpecialStore) GetChainParams() *chain.Params {
+	return nil
 }
 
 func (m *mockSpecialStore) ApplyTxn(header *types.Header, txn *types.Transaction, _ types.StateOverride, _ bool) (*runtime.ExecutionResult, error) {

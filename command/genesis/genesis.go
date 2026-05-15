@@ -110,13 +110,6 @@ func setFlags(cmd *cobra.Command) {
 		"the epoch size for the chain",
 	)
 
-	cmd.Flags().StringVar(
-		&params.proxyContractsAdmin,
-		proxyContractsAdminFlag,
-		"",
-		"admin for proxy contracts",
-	)
-
 	// PoS
 	{
 		cmd.Flags().BoolVar(
@@ -159,7 +152,7 @@ func setFlags(cmd *cobra.Command) {
 			&params.validators,
 			command.ValidatorFlag,
 			[]string{},
-			"validators defined by user (polybft format: <P2P multi address>:<ECDSA address>:<public BLS key>)",
+			"validators defined by user",
 		)
 
 		cmd.MarkFlagsMutuallyExclusive(command.ValidatorFlag, command.ValidatorRootFlag)
@@ -176,160 +169,12 @@ func setFlags(cmd *cobra.Command) {
 		)
 	}
 
-	// PolyBFT
-	{
-		cmd.Flags().Uint64Var(
-			&params.sprintSize,
-			sprintSizeFlag,
-			defaultSprintSize,
-			"the number of block included into a sprint",
-		)
-
-		cmd.Flags().DurationVar(
-			&params.blockTime,
-			blockTimeFlag,
-			defaultBlockTime,
-			"the predefined period which determines block creation frequency",
-		)
-
-		cmd.Flags().Uint64Var(
-			&params.epochReward,
-			epochRewardFlag,
-			defaultEpochReward,
-			"reward size for block sealing",
-		)
-
-		// regenesis flag that allows to start from non-empty database
-		cmd.Flags().StringVar(
-			&params.initialStateRoot,
-			trieRootFlag,
-			"",
-			"trie root from the corresponding triedb",
-		)
-
-		cmd.Flags().StringVar(
-			&params.nativeTokenConfigRaw,
-			nativeTokenConfigFlag,
-			"",
-			"native token configuration, provided in the following format: "+
-				"<name:symbol:decimals count:mintable flag:[mintable token owner address]>",
-		)
-
-		cmd.Flags().StringVar(
-			&params.rewardTokenCode,
-			rewardTokenCodeFlag,
-			"",
-			"hex encoded reward token byte code",
-		)
-
-		cmd.Flags().StringVar(
-			&params.rewardWallet,
-			rewardWalletFlag,
-			"",
-			"configuration of reward wallet in format <address:amount>",
-		)
-
-		cmd.Flags().Uint64Var(
-			&params.blockTimeDrift,
-			blockTimeDriftFlag,
-			defaultBlockTimeDrift,
-			"configuration for block time drift value (in seconds)",
-		)
-
-		cmd.Flags().DurationVar(
-			&params.blockTrackerPollInterval,
-			blockTrackerPollIntervalFlag,
-			defaultBlockTrackerPollInterval,
-			"interval (number of seconds) at which block tracker polls for latest block at rootchain",
-		)
-	}
-
-	// Access Control Lists
-	{
-		cmd.Flags().StringArrayVar(
-			&params.contractDeployerAllowListAdmin,
-			contractDeployerAllowListAdminFlag,
-			[]string{},
-			"list of addresses to use as admin accounts in the contract deployer allow list",
-		)
-
-		cmd.Flags().StringArrayVar(
-			&params.contractDeployerAllowListEnabled,
-			contractDeployerAllowListEnabledFlag,
-			[]string{},
-			"list of addresses to enable by default in the contract deployer allow list",
-		)
-
-		cmd.Flags().StringArrayVar(
-			&params.contractDeployerBlockListAdmin,
-			contractDeployerBlockListAdminFlag,
-			[]string{},
-			"list of addresses to use as admin accounts in the contract deployer block list",
-		)
-
-		cmd.Flags().StringArrayVar(
-			&params.contractDeployerBlockListEnabled,
-			contractDeployerBlockListEnabledFlag,
-			[]string{},
-			"list of addresses to enable by default in the contract deployer block list",
-		)
-
-		cmd.Flags().StringArrayVar(
-			&params.transactionsAllowListAdmin,
-			transactionsAllowListAdminFlag,
-			[]string{},
-			"list of addresses to use as admin accounts in the transactions allow list",
-		)
-
-		cmd.Flags().StringArrayVar(
-			&params.transactionsAllowListEnabled,
-			transactionsAllowListEnabledFlag,
-			[]string{},
-			"list of addresses to enable by default in the transactions allow list",
-		)
-
-		cmd.Flags().StringArrayVar(
-			&params.transactionsBlockListAdmin,
-			transactionsBlockListAdminFlag,
-			[]string{},
-			"list of addresses to use as admin accounts in the transactions block list",
-		)
-
-		cmd.Flags().StringArrayVar(
-			&params.transactionsBlockListEnabled,
-			transactionsBlockListEnabledFlag,
-			[]string{},
-			"list of addresses to enable by default in the transactions block list",
-		)
-
-		cmd.Flags().StringArrayVar(
-			&params.bridgeAllowListAdmin,
-			bridgeAllowListAdminFlag,
-			[]string{},
-			"list of addresses to use as admin accounts in the bridge allow list",
-		)
-
-		cmd.Flags().StringArrayVar(
-			&params.bridgeAllowListEnabled,
-			bridgeAllowListEnabledFlag,
-			[]string{},
-			"list of addresses to enable by default in the bridge allow list",
-		)
-
-		cmd.Flags().StringArrayVar(
-			&params.bridgeBlockListAdmin,
-			bridgeBlockListAdminFlag,
-			[]string{},
-			"list of addresses to use as admin accounts in the bridge block list",
-		)
-
-		cmd.Flags().StringArrayVar(
-			&params.bridgeBlockListEnabled,
-			bridgeBlockListEnabledFlag,
-			[]string{},
-			"list of addresses to enable by default in the bridge block list",
-		)
-	}
+	cmd.Flags().DurationVar(
+		&params.blockTime,
+		blockTimeFlag,
+		defaultBlockTime,
+		"the predefined period which determines block creation frequency",
+	)
 }
 
 // setLegacyFlags sets the legacy flags to preserve backwards compatibility
@@ -362,12 +207,8 @@ func runCommand(cmd *cobra.Command, _ []string) {
 
 	var err error
 
-	if params.isPolyBFTConsensus() {
-		err = params.generatePolyBftChainConfig(outputter)
-	} else {
-		_, _ = outputter.Write([]byte(fmt.Sprintf("%s\n", common.IBFTImportantNotice)))
-		err = params.generateGenesis()
-	}
+	_, _ = outputter.Write([]byte(fmt.Sprintf("%s\n", common.IBFTImportantNotice)))
+	err = params.generateGenesis()
 
 	if err != nil {
 		outputter.SetError(err)

@@ -41,6 +41,10 @@ func (m *mockEventSubscriber) len() int {
 }
 
 func TestEventTracker_TrackSyncEvents(t *testing.T) {
+	if os.Getenv("XGR_ENABLE_DOCKER_INTEGRATION_TESTS") != "1" {
+		t.Skip("requires docker-backed RPC with eth_accounts; set XGR_ENABLE_DOCKER_INTEGRATION_TESTS=1 to run")
+	}
+
 	const (
 		numBlockConfirmations = 6
 		eventsPerStep         = 8

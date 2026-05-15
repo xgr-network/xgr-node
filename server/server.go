@@ -15,7 +15,6 @@ import (
 	"github.com/xgr-network/xgr-node/blockchain/storage"
 	"github.com/xgr-network/xgr-node/blockchain/storage/leveldb"
 	"github.com/xgr-network/xgr-node/blockchain/storage/memory"
-	consensusPolyBFT "github.com/xgr-network/xgr-node/consensus/polybft"
 	"github.com/xgr-network/xgr-node/forkmanager"
 	"github.com/xgr-network/xgr-node/gasprice"
 
@@ -251,28 +250,6 @@ func NewServer(config *Config) (*Server, error) {
 	}
 
 	var initialStateRoot = types.ZeroHash
-
-	if ConsensusType(engineName) == PolyBFTConsensus {
-		polyBFTConfig, err := consensusPolyBFT.GetPolyBFTConfig(config.Chain)
-		if err != nil {
-			return nil, err
-		}
-
-		if polyBFTConfig.InitialTrieRoot != types.ZeroHash {
-			checkedInitialTrieRoot, err := itrie.HashChecker(polyBFTConfig.InitialTrieRoot.Bytes(), stateStorage)
-			if err != nil {
-				return nil, fmt.Errorf("error on state root verification %w", err)
-			}
-
-			if checkedInitialTrieRoot != polyBFTConfig.InitialTrieRoot {
-				return nil, errors.New("invalid initial state root")
-			}
-
-			logger.Info("Initial state root checked and correct")
-
-			initialStateRoot = polyBFTConfig.InitialTrieRoot
-		}
-	}
 
 	genesisRoot, err := m.executor.WriteGenesis(config.Chain.Genesis.Alloc, initialStateRoot)
 	if err != nil {
@@ -651,6 +628,14 @@ func (j *jsonRPCHub) GetAccount(root types.Hash, addr types.Address) (*jsonrpc.A
 // GetForksInTime returns the active forks at the given block height
 func (j *jsonRPCHub) GetForksInTime(blockNumber uint64) chain.ForksInTime {
 	return j.Executor.GetForksInTime(blockNumber)
+}
+
+func (j *jsonRPCHub) GetChainParams() *chain.Params {
+	if j.Blockchain == nil {
+		return nil
+	}
+
+	return j.Blockchain.Config()
 }
 
 func (j *jsonRPCHub) GetStorage(stateRoot types.Hash, addr types.Address, slot types.Hash) ([]byte, error) {

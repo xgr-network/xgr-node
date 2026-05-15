@@ -1,4 +1,5 @@
 module github.com/xgr-network/xgr-node
+
 // NOTE:
 // xgrchain must build standalone even if the private ../xgrEngine repo is absent.
 // Therefore, we replace xgrEngine with a repo-local stub module by default.
@@ -254,3 +255,5 @@ require (
 )
 
 replace github.com/xgr-network/xgrEngine => ./xgrEngine
+
+replace github.com/0xPolygon/go-ibft => github.com/xgr-network/go-ibft v0.0.0-20260501091827-652ddc3bf3c1

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/xgr-network/xgr-node/consensus/ibft/signer"
@@ -52,6 +53,10 @@ func (w *SnapshotValidatorStoreWrapper) Close() error {
 
 // GetValidators returns validators at the specific height
 func (w *SnapshotValidatorStoreWrapper) GetValidators(height, _, _ uint64) (validators.Validators, error) {
+	if height == 0 {
+		return nil, errors.New("height must be greater than 0")
+	}
+
 	// the biggest height of blocks that have been processed before the given height
 	return w.GetValidatorsByHeight(height - 1)
 }
@@ -117,7 +122,8 @@ func NewSnapshotValidatorStoreWrapper(
 // in order to add Close and GetValidators
 type ContractValidatorStoreWrapper struct {
 	*contract.ContractValidatorStore
-	getSigner func(uint64) (signer.Signer, error)
+	blockchain store.HeaderGetter
+	getSigner  func(uint64) (signer.Signer, error)
 }
 
 // NewContractValidatorStoreWrapper creates *ContractValidatorStoreWrapper
@@ -140,6 +146,7 @@ func NewContractValidatorStoreWrapper(
 
 	return &ContractValidatorStoreWrapper{
 		ContractValidatorStore: contractStore,
+		blockchain:             blockchain,
 		getSigner:              getSigner,
 	}, nil
 }
@@ -151,44 +158,131 @@ func (w *ContractValidatorStoreWrapper) Close() error {
 
 // GetValidators gets and returns validators at the given height
 func (w *ContractValidatorStoreWrapper) GetValidators(
-	height, epochSize, forkFrom uint64,
+	height,
+	epochSize,
+	forkFrom uint64,
 ) (validators.Validators, error) {
 	signer, err := w.getSigner(height)
 	if err != nil {
 		return nil, err
 	}
 
-	return w.GetValidatorsByHeight(
-		signer.Type(),
-		calculateContractStoreFetchingHeight(
-			height,
-			epochSize,
-			forkFrom,
-		),
+	if epochSize < 2 {
+		return nil, errors.New("epochSize must be greater than or equal to 2")
+	}
+
+	fetchingHeight := calculateContractStoreFetchingHeight(
+		height,
+		epochSize,
+		forkFrom,
 	)
+
+	// Before PoS fork, contract store must not be used as validator source.
+	if height < forkFrom {
+		headerHeight := uint64(0)
+		if height > 0 {
+			headerHeight = height - 1
+		}
+
+		headerSigner, signErr := w.getSigner(headerHeight)
+		if signErr != nil {
+			return nil, signErr
+		}
+
+		header, ok := w.blockchain.GetHeaderByNumber(headerHeight)
+		if !ok {
+			return nil, errors.New("failed to load pre-fork header validators")
+		}
+
+		return headerSigner.GetValidators(header)
+	}
+
+	vals, err := w.GetValidatorsByHeight(
+		signer.Type(),
+		fetchingHeight,
+	)
+	if err == nil && vals != nil && vals.Len() > 0 {
+		return vals, nil
+	}
+
+	// Before / at PoS fork boundary we may need to use pre-fork header validator set.
+	// Reason: the staking contract is deployed at the PoS deployment block, but the block itself
+	// must still be validated using the PoS fork boundary validator source.
+	if height <= forkFrom {
+		if err != nil && !strings.Contains(err.Error(), "empty input") {
+			return nil, err
+		}
+
+		headerSigner, signErr := w.getSigner(fetchingHeight)
+		if signErr != nil {
+			if err != nil {
+				return nil, err
+			}
+
+			return nil, signErr
+		}
+
+		header, ok := w.blockchain.GetHeaderByNumber(fetchingHeight)
+		if !ok {
+			if err != nil {
+				return nil, err
+			}
+			return nil, errors.New("failed to load pre-fork header validators")
+		}
+
+		fromHeader, hdrErr := headerSigner.GetValidators(header)
+		if hdrErr != nil {
+			if err != nil {
+				return nil, err
+			}
+			return nil, hdrErr
+		}
+
+		return fromHeader, nil
+	}
+
+	// After PoS fork, staking contract is the source of truth.
+	if err != nil {
+		return nil, err
+	}
+
+	return nil, errors.New("staking contract returned empty validator set")
 }
 
 // calculateContractStoreFetchingHeight calculates the block height at which ContractStore fetches validators
 // based on height, epoch, and fork beginning height
-func calculateContractStoreFetchingHeight(height, epochSize, forkFrom uint64) uint64 {
-	// calculates the beginning of the epoch the given height is in
-	beginningEpoch := (height / epochSize) * epochSize
+func calculateContractStoreFetchingHeight(
+	height uint64,
+	epochSize uint64,
+	forkFrom uint64,
+) uint64 {
+	var fetchingHeight uint64
 
-	// calculates the end of the previous epoch
-	// to determine the height to fetch validators
-	fetchingHeight := uint64(0)
-	if beginningEpoch > 0 {
-		fetchingHeight = beginningEpoch - 1
+	if height == 0 {
+		fetchingHeight = 0
+	} else if height%epochSize == 0 {
+		// Epoch boundary block itself is finalized with the previous epoch context.
+		fetchingHeight = height - 1
+	} else {
+		// Non-boundary blocks should read validator data at the epoch boundary block,
+		// because finalize hooks on that boundary can affect the effective next-epoch set.
+		fetchingHeight = (height / epochSize) * epochSize
 	}
 
-	// use the calculated height if it's bigger than or equal to from
-	if fetchingHeight >= forkFrom {
-		return fetchingHeight
-	}
-
-	if forkFrom > 0 {
+	// For all heights up to and including the PoS forkFrom block, keep legacy behavior
+	// (contract fetch height pinned to the last PoA block) so the PoS deployment block can
+	// still be validated with the PoA validator set.
+	if height <= forkFrom {
+		if forkFrom == 0 {
+			return 0
+		}
 		return forkFrom - 1
 	}
 
-	return forkFrom
+	// After the PoS fork, never fetch from a pre-fork height.
+	if fetchingHeight < forkFrom {
+		return forkFrom
+	}
+
+	return fetchingHeight
 }

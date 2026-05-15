@@ -39,13 +39,14 @@ func newTestNetwork(t *testing.T) *network.Server {
 
 func newTestSyncPeerClient(network Network, blockchain Blockchain) *syncPeerClient {
 	client := &syncPeerClient{
-		logger:                 hclog.NewNullLogger(),
-		network:                network,
-		blockchain:             blockchain,
-		id:                     network.AddrInfo().ID.String(),
-		peerStatusUpdateCh:     make(chan *NoForkPeer, 1),
-		peerConnectionUpdateCh: make(chan *event.PeerEvent, 1),
-		closeCh:                make(chan struct{}),
+		logger:                  hclog.NewNullLogger(),
+		network:                 network,
+		blockchain:              blockchain,
+		id:                      network.AddrInfo().ID.String(),
+		peerStatusUpdateCh:      make(chan *NoForkPeer, 1),
+		peerConnectionUpdateCh:  make(chan *event.PeerEvent, 1),
+		peerEventProcessReadyCh: nil,
+		closeCh:                 make(chan struct{}),
 	}
 
 	// need to register protocol
@@ -174,12 +175,19 @@ func TestStatusPubSub(t *testing.T) {
 	_, peerSrv := createTestSyncerService(t, &mockBlockchain{})
 	peerID := peerSrv.AddrInfo().ID
 
+	client.peerEventProcessReadyCh = make(chan struct{})
 	go client.startPeerEventProcess()
+	select {
+	case <-client.peerEventProcessReadyCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for peer event process readiness")
+	}
 
 	// run goroutine to collect events
 	var (
-		events = []*event.PeerEvent{}
-		wg     sync.WaitGroup
+		events   = []*event.PeerEvent{}
+		eventsMu sync.Mutex
+		wg       sync.WaitGroup
 	)
 
 	wg.Add(1)
@@ -188,7 +196,9 @@ func TestStatusPubSub(t *testing.T) {
 		defer wg.Done()
 
 		for event := range client.GetPeerConnectionUpdateEventCh() {
+			eventsMu.Lock()
 			events = append(events, event)
+			eventsMu.Unlock()
 		}
 	}()
 
@@ -211,10 +221,21 @@ func TestStatusPubSub(t *testing.T) {
 
 	assert.NoError(t, err)
 
-	// close channel and wait for events
+	require.Eventually(t, func() bool {
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
+
+		return len(events) == 2
+	}, 5*time.Second, 10*time.Millisecond)
+
+	// close channel and wait for events after both expected events are observed
 	close(client.closeCh)
 
 	wg.Wait()
+
+	eventsMu.Lock()
+	observedEvents := append([]*event.PeerEvent(nil), events...)
+	eventsMu.Unlock()
 
 	expected := []*event.PeerEvent{
 		{
@@ -227,7 +248,7 @@ func TestStatusPubSub(t *testing.T) {
 		},
 	}
 
-	assert.Equal(t, expected, events)
+	assert.Equal(t, expected, observedEvents)
 }
 
 func TestPeerConnectionUpdateEventCh(t *testing.T) {

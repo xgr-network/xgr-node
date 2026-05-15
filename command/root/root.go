@@ -7,17 +7,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/xgr-network/xgr-node/command/backup"
-	"github.com/xgr-network/xgr-node/command/bridge"
 	"github.com/xgr-network/xgr-node/command/genesis"
 	"github.com/xgr-network/xgr-node/command/helper"
 	"github.com/xgr-network/xgr-node/command/ibft"
 	"github.com/xgr-network/xgr-node/command/license"
 	"github.com/xgr-network/xgr-node/command/monitor"
 	"github.com/xgr-network/xgr-node/command/peers"
-	"github.com/xgr-network/xgr-node/command/polybft"
-	"github.com/xgr-network/xgr-node/command/polybftsecrets"
 	"github.com/xgr-network/xgr-node/command/regenesis"
-	"github.com/xgr-network/xgr-node/command/rootchain"
 	"github.com/xgr-network/xgr-node/command/secrets"
 	"github.com/xgr-network/xgr-node/command/server"
 	"github.com/xgr-network/xgr-node/command/status"
@@ -50,16 +46,12 @@ func (rc *RootCommand) registerSubCommands() {
 		status.GetCommand(),
 		secrets.GetCommand(),
 		peers.GetCommand(),
-		rootchain.GetCommand(),
 		monitor.GetCommand(),
 		ibft.GetCommand(),
 		backup.GetCommand(),
 		genesis.GetCommand(),
 		server.GetCommand(),
 		license.GetCommand(),
-		polybftsecrets.GetCommand(),
-		polybft.GetCommand(),
-		bridge.GetCommand(),
 		regenesis.GetCommand(),
 	)
 }

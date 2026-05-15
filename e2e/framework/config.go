@@ -61,8 +61,12 @@ type TestServerConfig struct {
 	MaxValidatorCount       uint64                   // Max validator count
 	BlockTime               uint64                   // Minimum block generation time (in s)
 	IBFTBaseTimeout         uint64                   // Base Timeout in seconds for IBFT
+	MicroEpochSize          uint64                   // PoS micro-epoch size for uptime weighting
+	MicroEpochNominalWeight uint64                   // PoS micro-epoch nominal weight units
+	MicroEpochDecayBps      uint64                   // PoS micro-epoch inactivity decay bps
 	PredeployParams         *PredeployParams
 	BurnContracts           map[uint64]types.Address
+	ExtraEnv                map[string]string
 }
 
 func (t *TestServerConfig) SetPredeployParams(params *PredeployParams) {
@@ -193,6 +197,12 @@ func (t *TestServerConfig) SetEpochSize(epochSize uint64) {
 	t.EpochSize = epochSize
 }
 
+func (t *TestServerConfig) SetMicroEpochConfig(size, nominalWeight, decayBps uint64) {
+	t.MicroEpochSize = size
+	t.MicroEpochNominalWeight = nominalWeight
+	t.MicroEpochDecayBps = decayBps
+}
+
 // SetMinValidatorCount sets the min validator count
 func (t *TestServerConfig) SetMinValidatorCount(val uint64) {
 	t.MinValidatorCount = val
@@ -216,4 +226,13 @@ func (t *TestServerConfig) SetLogsDir(dir string) {
 // SetName sets the name of the server
 func (t *TestServerConfig) SetName(name string) {
 	t.Name = name
+}
+
+// SetEnv sets an environment variable for the server process.
+func (t *TestServerConfig) SetEnv(key, value string) {
+	if t.ExtraEnv == nil {
+		t.ExtraEnv = map[string]string{}
+	}
+
+	t.ExtraEnv[key] = value
 }

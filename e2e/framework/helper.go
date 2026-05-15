@@ -174,25 +174,58 @@ func UnstakeAmount(
 // GetStakedAmount is a helper function for getting the staked amount on the Staking SC
 func GetStakedAmount(from types.Address, rpcClient *jsonrpc.Client) (*big.Int, error) {
 	stakedAmountMethod, ok := abis.StakingABI.Methods["stakedAmount"]
+	if ok {
+		toAddress := ethgo.Address(staking.AddrStakingContract)
+		selector := stakedAmountMethod.ID()
+		response, err := rpcClient.Eth().Call(
+			&ethgo.CallMsg{
+				From:     ethgo.Address(from),
+				To:       &toAddress,
+				Data:     selector,
+				GasPrice: TestGasPriceUint64(),
+				Value:    big.NewInt(0),
+			},
+			ethgo.Latest,
+		)
+
+		if err != nil {
+			return nil, fmt.Errorf("unable to call Staking contract method stakedAmount, %w", err)
+		}
+
+		bigResponse, decodeErr := common.ParseUint256orHex(&response)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("unable to decode hex response")
+		}
+
+		return bigResponse, nil
+	}
+
+	return rpcClient.Eth().GetBalance(ethgo.Address(staking.AddrStakingContract), ethgo.Latest)
+}
+
+func GetAccountStake(account types.Address, rpcClient *jsonrpc.Client) (*big.Int, error) {
+	accountStakeMethod, ok := abis.StakingABI.Methods["accountStake"]
 	if !ok {
-		return nil, errors.New("stakedAmount method doesn't exist in Staking contract ABI")
+		return nil, errors.New("accountStake method doesn't exist in Staking contract ABI")
+	}
+
+	input, err := accountStakeMethod.Encode([]interface{}{ethgo.Address(account)})
+	if err != nil {
+		return nil, fmt.Errorf("unable to encode accountStake method input, %w", err)
 	}
 
 	toAddress := ethgo.Address(staking.AddrStakingContract)
-	selector := stakedAmountMethod.ID()
 	response, err := rpcClient.Eth().Call(
 		&ethgo.CallMsg{
-			From:     ethgo.Address(from),
 			To:       &toAddress,
-			Data:     selector,
+			Data:     input,
 			GasPrice: TestGasPriceUint64(),
 			Value:    big.NewInt(0),
 		},
 		ethgo.Latest,
 	)
-
 	if err != nil {
-		return nil, fmt.Errorf("unable to call Staking contract method stakedAmount, %w", err)
+		return nil, fmt.Errorf("unable to call Staking contract method accountStake, %w", err)
 	}
 
 	bigResponse, decodeErr := common.ParseUint256orHex(&response)

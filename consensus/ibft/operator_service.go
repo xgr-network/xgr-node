@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
 	"github.com/xgr-network/xgr-node/consensus/ibft/proto"
 	"github.com/xgr-network/xgr-node/consensus/ibft/signer"
 	"github.com/xgr-network/xgr-node/crypto"
+	"github.com/xgr-network/xgr-node/state"
 	"github.com/xgr-network/xgr-node/types"
 	"github.com/xgr-network/xgr-node/validators"
 	"github.com/xgr-network/xgr-node/validators/store"
@@ -66,10 +68,26 @@ func (o *operator) GetSnapshot(ctx context.Context, req *proto.SnapshotReq) (*pr
 		return nil, err
 	}
 
+	stateTx, err := o.stateAtHeader(header)
+	if err != nil {
+		return nil, err
+	}
+
+	uptimeActive := o.ibft.forkManager.IsPosActive(height)
+
 	resp := &proto.Snapshot{
 		Number:     height,
 		Hash:       header.Hash.String(),
-		Validators: validatorsToProtoValidators(validators),
+		Validators: validatorsToProtoValidators(validators, stateTx, o.ibft.uptimeCfg, uptimeActive),
+	}
+
+	if uptimeActive {
+		for idx := 0; idx < len(resp.Validators); idx++ {
+			resp.UptimeTotalEffectiveWeight += resp.Validators[idx].UptimeEffectiveWeight
+		}
+		for idx := 0; idx < validators.Len(); idx++ {
+			resp.UptimeActiveEffectiveWeight += pos.UptimeEffectiveWeight(stateTx.Txn(), validators.At(uint64(idx)).Addr())
+		}
 	}
 
 	votes, err := getVotes(validatorsStore, height)
@@ -181,17 +199,23 @@ func (o *operator) getLatestSigner() (signer.Signer, error) {
 }
 
 // validatorsToProtoValidators converts validators to response of validators
-func validatorsToProtoValidators(validators validators.Validators) []*proto.Snapshot_Validator {
+func validatorsToProtoValidators(validators validators.Validators, tx *state.Transition, cfg pos.UptimeConfig, uptimeActive bool) []*proto.Snapshot_Validator {
 	protoValidators := make([]*proto.Snapshot_Validator, validators.Len())
 
 	for idx := 0; idx < validators.Len(); idx++ {
 		validator := validators.At(uint64(idx))
 
-		protoValidators[idx] = &proto.Snapshot_Validator{
+		entry := &proto.Snapshot_Validator{
 			Type:    string(validator.Type()),
 			Address: validator.Addr().String(),
 			Data:    validator.Bytes(),
 		}
+		if uptimeActive && cfg.Enabled() && tx != nil {
+			entry.UptimeNominalWeight = pos.UptimeNominalWeight(tx.Txn(), validator.Addr())
+			entry.UptimeEffectiveWeight = pos.UptimeEffectiveWeight(tx.Txn(), validator.Addr())
+			entry.UptimeInactivity = pos.UptimeInactivity(tx.Txn(), validator.Addr())
+		}
+		protoValidators[idx] = entry
 	}
 
 	return protoValidators
@@ -227,6 +251,14 @@ func candidatesToProtoCandidates(candidates []*store.Candidate) []*proto.Candida
 	}
 
 	return protoCandidates
+}
+
+func (o *operator) stateAtHeader(header *types.Header) (*state.Transition, error) {
+	if header == nil {
+		return nil, ErrHeaderNotFound
+	}
+
+	return o.ibft.executor.BeginTxn(header.StateRoot, header, types.ZeroAddress)
 }
 
 // getVotes gets votes from validator store only if store supports voting

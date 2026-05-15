@@ -34,8 +34,7 @@ protoc: check-protoc
 	 ./server/proto/*.proto \
 	 ./network/proto/*.proto \
 	 ./txpool/proto/*.proto \
-	 ./consensus/ibft/**/*.proto \
-	 ./consensus/polybft/**/*.proto
+	 ./consensus/ibft/**/*.proto
 
 .PHONY: build
 build: check-go check-git
@@ -71,39 +70,21 @@ test-e2e: check-go
 	go build -race -o artifacts/xgrchain .
 	env EDGE_BINARY=${PWD}/artifacts/xgrchain go test -v -timeout=30m ./e2e/...
 
-.PHONY: test-e2e-polybft
-test-e2e-polybft: check-go
-	go build -o artifacts/xgrchain .
-	env EDGE_BINARY=${PWD}/artifacts/xgrchain E2E_TESTS=true E2E_LOGS=true \
-	go test -v -timeout=1h30m ./e2e-polybft/e2e/...
-
-.PHONY: test-property-polybft
-test-property-polybft: check-go
-	go build -o artifacts/xgrchain .
-	env EDGE_BINARY=${PWD}/artifacts/xgrchain E2E_TESTS=true E2E_LOGS=true go test -v -timeout=30m ./e2e-polybft/property/... \
-	-rapid.checks=10
-
 .PHONY: compile-core-contracts
 compile-core-contracts: check-npm
 	cd core-contracts && npm install && npm run compile
-	$(MAKE) generate-smart-contract-bindings
-
-.PHONY: generate-smart-contract-bindings
-generate-smart-contract-bindings: check-go
-	go run ./consensus/polybft/contractsapi/artifacts-gen/main.go
-	go run ./consensus/polybft/contractsapi/bindings-gen/main.go
 
 .PHONY: run-docker
 run-docker:
-	./scripts/cluster polybft --docker
+	./scripts/cluster ibft --docker
 
 .PHONY: stop-docker
 stop-docker:
-	./scripts/cluster polybft --docker stop
+	./scripts/cluster ibft --docker stop
 
 .PHONY: destroy-docker
 destroy-docker:
-	./scripts/cluster polybft --docker destroy
+	./scripts/cluster ibft --docker destroy
 
 .PHONY: help
 help:
@@ -117,13 +98,10 @@ help:
 	@printf "  %-35s - %s\n" "test" "Run unit tests"
 	@printf "  %-35s - %s\n" "fuzz-test" "Run fuzz tests"
 	@printf "  %-35s - %s\n" "test-e2e" "Run end-to-end tests"
-	@printf "  %-35s - %s\n" "test-e2e-polybft" "Run end-to-end tests for PolyBFT"
-	@printf "  %-35s - %s\n" "test-property-polybft" "Run property tests for PolyBFT"
 	@printf "  %-35s - %s\n" "compile-core-contracts" "Compile core contracts"
-	@printf "  %-35s - %s\n" "generate-smart-contract-bindings" "Generate smart contract bindings"
-	@printf "  %-35s - %s\n" "run-docker" "Run Docker cluster for PolyBFT"
-	@printf "  %-35s - %s\n" "stop-docker" "Stop Docker cluster for PolyBFT"
-	@printf "  %-35s - %s\n" "destroy-docker" "Destroy Docker cluster for PolyBFT"
+	@printf "  %-35s - %s\n" "run-docker" "Run Docker cluster for IBFT"
+	@printf "  %-35s - %s\n" "stop-docker" "Stop Docker cluster for IBFT"
+	@printf "  %-35s - %s\n" "destroy-docker" "Destroy Docker cluster for IBFT"
 
 # -----------------------------
 # XGRCHAIN CUSTOM BUILD & DEPLOY

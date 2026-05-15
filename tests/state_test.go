@@ -126,6 +126,12 @@ func RunSpecificTest(t *testing.T, file string, c testCase, name, fork string, i
 func TestState(t *testing.T) {
 	t.Parallel()
 
+	if _, err := os.Stat(stateTests); os.IsNotExist(err) {
+		if _, legacyErr := os.Stat(legacyStateTests); os.IsNotExist(legacyErr) {
+			t.Skip("state test fixtures are not present in this repository setup")
+		}
+	}
+
 	long := []string{
 		"static_Call50000",
 		"static_Return50000",

@@ -115,13 +115,13 @@ func (b *Blockchain) updateGasPriceAvg(newValues []*big.Int) {
 		sum = sum.Add(sum, val)
 	}
 	if len(newValues) == 0 {
-		// Kein neuer Wert, setze Default falls kein alter Wert existiert
+		// No new value; set a default only when no previous value exists
 		if b.gpAverage.count.Uint64() == 0 {
 			b.gpAverage.price = big.NewInt(int64(chain.MinBaseFee))
 			b.gpAverage.count = big.NewInt(1)
 			return
 		}
-		// Ansonsten nichts ändern
+		// Otherwise keep the current value unchanged
 		return
 	}
 
@@ -1417,12 +1417,12 @@ func mulDivClampU64(a, b, c, d uint64) uint64 {
 
 // CalculateBaseFee calculates the basefee of the header.
 func (b *Blockchain) CalculateBaseFee(parent *types.Header) uint64 {
-	// Minimum BaseFee (statisch oder dynamisch)
+	// Minimum base fee (static or dynamic)
 	minBaseFee := b.resolveMinBaseFee(parent)
 
 	var baseFee uint64
 
-	// Genesis oder erster London-Block?
+	// Genesis or first London block?
 	if parent.BaseFee == 0 {
 		if b.config.Genesis.BaseFee > 0 {
 			baseFee = b.config.Genesis.BaseFee
@@ -1466,7 +1466,7 @@ func (b *Blockchain) CalculateBaseFee(parent *types.Header) uint64 {
 		}
 	}
 
-	// Sicherheitsanker: niemals unter minBaseFee
+	// Safety guard: never go below minBaseFee.
 	if baseFee < minBaseFee {
 		return minBaseFee
 	}

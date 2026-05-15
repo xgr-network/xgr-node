@@ -157,3 +157,114 @@ func Test_Transition_checkDynamicFees(t *testing.T) {
 		})
 	}
 }
+
+func TestTransitionWriteEmitsXGRFeeAccounting(t *testing.T) {
+	t.Parallel()
+
+	feeLogDataWord := func(t *testing.T, data []byte, index int) *big.Int {
+		t.Helper()
+		require.GreaterOrEqual(t, len(data), (index+1)*32)
+
+		return new(big.Int).SetBytes(data[index*32 : (index+1)*32])
+	}
+
+	getLog := func(receipt *types.Receipt, topic types.Hash) *types.Log {
+		for _, log := range receipt.Logs {
+			if len(log.Topics) > 0 && log.Topics[0] == topic {
+				return log
+			}
+		}
+
+		return nil
+	}
+
+	findLog := func(t *testing.T, receipt *types.Receipt, topic types.Hash) *types.Log {
+		t.Helper()
+
+		log := getLog(receipt, topic)
+		require.NotNilf(t, log, "missing log topic %s", topic)
+
+		return log
+	}
+
+	newFeeAccountingTransition := func(t *testing.T, feePoolSplit bool) (*Transition, *types.Transaction) {
+		t.Helper()
+
+		snap := newStateWithPreState(map[types.Address]*PreState{
+			addr1: {Balance: 1_000_000_000_000_000_000},
+			addr2: {},
+		})
+		txn := newTxn(snap)
+		transition := NewTransition(chain.ForksInTime{FeePoolSplit: feePoolSplit}, snap, txn)
+		transition.ctx = runtime.TxContext{
+			BaseFee:  big.NewInt(0),
+			Coinbase: types.StringToAddress("0x0000000000000000000000000000000000000abc"),
+			Number:   7,
+		}
+		transition.gasPool = 100_000
+
+		return transition, &types.Transaction{
+			From:     addr1,
+			To:       &addr2,
+			Gas:      50_000,
+			GasPrice: big.NewInt(1_000_000_000),
+			Value:    big.NewInt(0),
+		}
+	}
+
+	t.Run("pre-PoS fee split does not emit accounting log", func(t *testing.T) {
+		t.Parallel()
+
+		transition, txn := newFeeAccountingTransition(t, false)
+		require.NoError(t, transition.Write(txn))
+		require.Len(t, transition.Receipts(), 1)
+
+		receipt := transition.Receipts()[0]
+		feeSplit := findLog(t, receipt, xgrFeeSplitTopic)
+		require.Nil(t, getLog(receipt, xgrFeeAccountingTopic))
+
+		require.Len(t, feeSplit.Data, 96)
+
+		donation := feeLogDataWord(t, feeSplit.Data, 0)
+		validator := feeLogDataWord(t, feeSplit.Data, 1)
+		burned := feeLogDataWord(t, feeSplit.Data, 2)
+
+		accounted := new(big.Int).Add(donation, validator)
+		accounted.Add(accounted, burned)
+		expectedTotal := new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), txn.GasPrice)
+		require.Equal(t, 0, expectedTotal.Cmp(accounted))
+	})
+
+	t.Run("PoS fee pool split accounting includes immediate and pooled validator shares", func(t *testing.T) {
+		t.Parallel()
+
+		transition, txn := newFeeAccountingTransition(t, true)
+		require.NoError(t, transition.Write(txn))
+		require.Len(t, transition.Receipts(), 1)
+
+		receipt := transition.Receipts()[0]
+		feeSplit := findLog(t, receipt, xgrFeeSplitTopic)
+		feeAccounting := findLog(t, receipt, xgrFeeAccountingTopic)
+
+		require.Len(t, feeSplit.Data, 96)
+		require.Len(t, feeAccounting.Data, 128)
+
+		donation := feeLogDataWord(t, feeAccounting.Data, 0)
+		validatorImmediate := feeLogDataWord(t, feeAccounting.Data, 1)
+		validatorPooled := feeLogDataWord(t, feeAccounting.Data, 2)
+		burned := feeLogDataWord(t, feeAccounting.Data, 3)
+		validatorAggregate := feeLogDataWord(t, feeSplit.Data, 1)
+
+		require.Positive(t, validatorImmediate.Sign())
+		require.Positive(t, validatorPooled.Sign())
+
+		validatorTotal := new(big.Int).Add(validatorImmediate, validatorPooled)
+		require.Equal(t, 0, validatorAggregate.Cmp(validatorTotal))
+
+		accounted := new(big.Int).Add(donation, validatorImmediate)
+		accounted.Add(accounted, validatorPooled)
+		accounted.Add(accounted, burned)
+		expectedTotal := new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), txn.GasPrice)
+		require.Equal(t, 0, expectedTotal.Cmp(accounted))
+	})
+}

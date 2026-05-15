@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/xgr-network/xgr-node/blockchain"
 	"github.com/xgr-network/xgr-node/chain"
 	"github.com/xgr-network/xgr-node/helper/hex"
@@ -12,7 +13,6 @@ import (
 	"github.com/xgr-network/xgr-node/state/runtime"
 	"github.com/xgr-network/xgr-node/txpool/proto"
 	"github.com/xgr-network/xgr-node/types"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestEth_Block_GetBlockByNumber(t *testing.T) {
@@ -621,6 +621,10 @@ func (m *mockBlockStore) GetBaseFee() uint64 {
 
 func (m *mockBlockStore) GetForksInTime(block uint64) chain.ForksInTime {
 	return m.forksInTime
+}
+
+func (m *mockBlockStore) GetChainParams() *chain.Params {
+	return nil
 }
 
 func (m *mockBlockStore) MaxPriorityFeePerGas() (*big.Int, error) {

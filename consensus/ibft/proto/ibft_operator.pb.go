@@ -128,10 +128,14 @@ type Snapshot struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Validators []*Snapshot_Validator `protobuf:"bytes,1,rep,name=validators,proto3" json:"validators,omitempty"`
-	Number     uint64                `protobuf:"varint,2,opt,name=number,proto3" json:"number,omitempty"`
-	Hash       string                `protobuf:"bytes,3,opt,name=hash,proto3" json:"hash,omitempty"`
-	Votes      []*Snapshot_Vote      `protobuf:"bytes,4,rep,name=votes,proto3" json:"votes,omitempty"`
+	Validators                  []*Snapshot_Validator `protobuf:"bytes,1,rep,name=validators,proto3" json:"validators,omitempty"`
+	Number                      uint64                `protobuf:"varint,2,opt,name=number,proto3" json:"number,omitempty"`
+	Hash                        string                `protobuf:"bytes,3,opt,name=hash,proto3" json:"hash,omitempty"`
+	Votes                       []*Snapshot_Vote      `protobuf:"bytes,4,rep,name=votes,proto3" json:"votes,omitempty"`
+	MicroEpoch                  uint64                `protobuf:"varint,5,opt,name=micro_epoch,json=microEpoch,proto3" json:"micro_epoch,omitempty"`
+	UptimeEpoch                 uint64                `protobuf:"varint,6,opt,name=uptime_epoch,json=uptimeEpoch,proto3" json:"uptime_epoch,omitempty"`
+	UptimeTotalEffectiveWeight  uint64                `protobuf:"varint,7,opt,name=uptime_total_effective_weight,json=uptimeTotalEffectiveWeight,proto3" json:"uptime_total_effective_weight,omitempty"`
+	UptimeActiveEffectiveWeight uint64                `protobuf:"varint,8,opt,name=uptime_active_effective_weight,json=uptimeActiveEffectiveWeight,proto3" json:"uptime_active_effective_weight,omitempty"`
 }
 
 func (x *Snapshot) Reset() {
@@ -192,6 +196,34 @@ func (x *Snapshot) GetVotes() []*Snapshot_Vote {
 		return x.Votes
 	}
 	return nil
+}
+
+func (x *Snapshot) GetMicroEpoch() uint64 {
+	if x != nil {
+		return x.MicroEpoch
+	}
+	return 0
+}
+
+func (x *Snapshot) GetUptimeEpoch() uint64 {
+	if x != nil {
+		return x.UptimeEpoch
+	}
+	return 0
+}
+
+func (x *Snapshot) GetUptimeTotalEffectiveWeight() uint64 {
+	if x != nil {
+		return x.UptimeTotalEffectiveWeight
+	}
+	return 0
+}
+
+func (x *Snapshot) GetUptimeActiveEffectiveWeight() uint64 {
+	if x != nil {
+		return x.UptimeActiveEffectiveWeight
+	}
+	return 0
 }
 
 type ProposeReq struct {
@@ -364,9 +396,12 @@ type Snapshot_Validator struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Type    string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	Address string `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
-	Data    []byte `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	Type                  string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Address               string `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	Data                  []byte `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	UptimeNominalWeight   uint64 `protobuf:"varint,4,opt,name=uptime_nominal_weight,json=uptimeNominalWeight,proto3" json:"uptime_nominal_weight,omitempty"`
+	UptimeEffectiveWeight uint64 `protobuf:"varint,5,opt,name=uptime_effective_weight,json=uptimeEffectiveWeight,proto3" json:"uptime_effective_weight,omitempty"`
+	UptimeInactivity      uint64 `protobuf:"varint,6,opt,name=uptime_inactivity,json=uptimeInactivity,proto3" json:"uptime_inactivity,omitempty"`
 }
 
 func (x *Snapshot_Validator) Reset() {
@@ -420,6 +455,27 @@ func (x *Snapshot_Validator) GetData() []byte {
 		return x.Data
 	}
 	return nil
+}
+
+func (x *Snapshot_Validator) GetUptimeNominalWeight() uint64 {
+	if x != nil {
+		return x.UptimeNominalWeight
+	}
+	return 0
+}
+
+func (x *Snapshot_Validator) GetUptimeEffectiveWeight() uint64 {
+	if x != nil {
+		return x.UptimeEffectiveWeight
+	}
+	return 0
+}
+
+func (x *Snapshot_Validator) GetUptimeInactivity() uint64 {
+	if x != nil {
+		return x.UptimeInactivity
+	}
+	return 0
 }
 
 type Snapshot_Vote struct {

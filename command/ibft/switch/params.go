@@ -9,6 +9,7 @@ import (
 	"github.com/xgr-network/xgr-node/command"
 	"github.com/xgr-network/xgr-node/command/helper"
 	"github.com/xgr-network/xgr-node/consensus/ibft/fork"
+	"github.com/xgr-network/xgr-node/consensus/ibft/signer"
 	"github.com/xgr-network/xgr-node/helper/common"
 	"github.com/xgr-network/xgr-node/validators"
 )
@@ -222,6 +223,16 @@ func (p *switchParams) initPoSConfig() error {
 		return nil
 	}
 
+	p.ibftValidators = validators.NewValidatorSetFromType(p.ibftValidatorType)
+
+	if err := p.setValidatorSetFromPrefixPath(); err != nil {
+		return err
+	}
+
+	if err := p.setValidatorSetFromCli(); err != nil {
+		return err
+	}
+
 	if p.minValidatorCountRaw != "" {
 		value, err := common.ParseUint64orHex(&p.minValidatorCountRaw)
 		if err != nil {
@@ -420,6 +431,12 @@ func appendIBFTForks(
 	case fork.PoA:
 		newFork.Validators = validators
 	case fork.PoS:
+		bootstrapValidators, err := resolvePoSBootstrapValidators(cc, lastFork, validators, validatorType)
+		if err != nil {
+			return err
+		}
+		newFork.Validators = bootstrapValidators
+
 		if deployment != nil {
 			newFork.Deployment = &common.JSONNumber{Value: *deployment}
 		}
@@ -442,4 +459,113 @@ func appendIBFTForks(
 	cc.Params.Engine["ibft"] = ibftConfig
 
 	return nil
+}
+
+func resolvePoSBootstrapValidators(
+	cc *chain.Chain,
+	lastFork *fork.IBFTFork,
+	cliValidators validators.Validators,
+	validatorType validators.ValidatorType,
+) (validators.Validators, error) {
+	if cliValidators != nil && cliValidators.Len() > 0 {
+		if err := validateBootstrapValidatorType(validatorType, cliValidators, "cli"); err != nil {
+			return nil, err
+		}
+
+		return cliValidators, nil
+	}
+
+	if lastFork != nil && lastFork.Validators != nil && lastFork.Validators.Len() > 0 {
+		if err := validateBootstrapValidatorType(validatorType, lastFork.Validators, "last-fork"); err != nil {
+			return nil, err
+		}
+
+		return lastFork.Validators, nil
+	}
+
+	bootstrapValidators, err := parseBootstrapValidatorsFromGenesisExtra(cc, validatorType)
+	if err != nil {
+		return nil, fmt.Errorf("unable to determine PoS bootstrap validators: %w", err)
+	}
+
+	return bootstrapValidators, nil
+}
+
+func validateBootstrapValidatorType(
+	expectedType validators.ValidatorType,
+	bootstrapValidators validators.Validators,
+	source string,
+) error {
+	if bootstrapValidators == nil {
+		return nil
+	}
+
+	actualType := bootstrapValidators.Type()
+	if actualType != expectedType {
+		return fmt.Errorf(
+			"bootstrap validators type mismatch: expected validator type %s, source %s, reason: type mismatch (got %s)",
+			expectedType,
+			source,
+			actualType,
+		)
+	}
+
+	return nil
+}
+
+func parseBootstrapValidatorsFromGenesisExtra(
+	cc *chain.Chain,
+	validatorType validators.ValidatorType,
+) (validators.Validators, error) {
+	if cc == nil || cc.Genesis == nil {
+		return nil, fmt.Errorf("missing chain genesis")
+	}
+	if len(cc.Genesis.ExtraData) < signer.IstanbulExtraVanity {
+		return nil, fmt.Errorf("genesis extra data is too short for IBFT validator extraction")
+	}
+
+	bootstrapValidators, err := decodeValidatorsFromGenesisExtra(cc.Genesis.ExtraData, validatorType)
+	if err != nil {
+		otherType := validators.BLSValidatorType
+		if validatorType == validators.BLSValidatorType {
+			otherType = validators.ECDSAValidatorType
+		}
+
+		if _, otherErr := decodeValidatorsFromGenesisExtra(cc.Genesis.ExtraData, otherType); otherErr == nil {
+			return nil, fmt.Errorf(
+				"bootstrap validators type mismatch: expected validator type %s, source genesis-extra, reason: type mismatch (got %s)",
+				validatorType,
+				otherType,
+			)
+		}
+
+		return nil, fmt.Errorf("failed to decode IBFT extra from genesis: %w", err)
+	}
+
+	if bootstrapValidators == nil || bootstrapValidators.Len() == 0 {
+		return nil, fmt.Errorf("genesis IBFT extra does not contain validators")
+	}
+
+	return bootstrapValidators, nil
+}
+
+func decodeValidatorsFromGenesisExtra(
+	extraData []byte,
+	validatorType validators.ValidatorType,
+) (validators.Validators, error) {
+	committedSeals := signer.Seals(&signer.SerializedSeal{})
+	if validatorType == validators.BLSValidatorType {
+		committedSeals = &signer.AggregatedSeal{}
+	}
+
+	extra := &signer.IstanbulExtra{
+		Validators:     validators.NewValidatorSetFromType(validatorType),
+		CommittedSeals: committedSeals,
+	}
+
+	if err := extra.UnmarshalRLP(extraData[signer.IstanbulExtraVanity:]); err != nil {
+		return nil, err
+	}
+
+	return extra.Validators, nil
 }
