@@ -1542,7 +1542,7 @@ func queryStakerInfo(srv *framework.TestServer, from, staker types.Address) (*st
 	return queryStakerInfoAt(srv, from, staker, ethgo.Latest)
 }
 
-func queryStakerInfoAt(srv *framework.TestServer, from, staker types.Address, block ethgo.BlockNumberOrHash) (*stakingStakerInfo, error) {
+func queryStakerInfoAt(srv *framework.TestServer, from, staker types.Address, block ethgo.BlockNumber) (*stakingStakerInfo, error) {
 	m := abis.StakingABI.Methods["stakerInfo"]
 	if m == nil {
 		return nil, errors.New("staking ABI missing stakerInfo")

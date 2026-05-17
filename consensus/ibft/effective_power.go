@@ -25,18 +25,36 @@ func (i *backendIBFT) effectiveVotingPowerSnapshot(
 	if parentHeader == nil {
 		return nil, effectivePowerSnapshot{}, fmt.Errorf("parent header required for stake-weighted snapshot at height %d", height)
 	}
-	stateTx, err = i.executor.BeginTxn(parentHeader.StateRoot, parentHeader, types.ZeroAddress)
-	if err != nil {
-		return nil, effectivePowerSnapshot{}, err
-	}
-
 	// Block 1 in direct-PoS chains has parent=genesis(0). Genesis bootstrap stakes
 	// are marked joinedAtBlock=1, so snapshot(0) is intentionally not mature yet.
 	// Keep block 1 in unit voting mode and enable stake-weighted mode from block 2.
 	parentPoSActive := parentHeader != nil && parentHeader.Number > 0 && i.forkManager.IsPosActive(parentHeader.Number)
 	heightPoSActive := i.forkManager.IsPosActive(height)
 	stakeWeightedActive := parentPoSActive
-	snapshotHeight, err := stakeSnapshotHeight(height, parentHeader, stakeWeightedActive)
+	snapshotHeight, err := i.stakeSnapshotHeight(height, parentHeader, stakeWeightedActive)
+	if err != nil {
+		return nil, effectivePowerSnapshot{}, err
+	}
+
+	snapshotHeader := parentHeader
+	if stakeWeightedActive && snapshotHeight != parentHeader.Number {
+		if i.blockchain == nil {
+			return nil, effectivePowerSnapshot{}, fmt.Errorf(
+				"stake-weighted voting power snapshot requires blockchain header lookup: height=%d snapshotHeight=%d parent=%d",
+				height,
+				snapshotHeight,
+				parentHeader.Number,
+			)
+		}
+
+		var ok bool
+		snapshotHeader, ok = i.blockchain.GetHeaderByNumber(snapshotHeight)
+		if !ok {
+			return nil, effectivePowerSnapshot{}, fmt.Errorf("stake-weighted voting power snapshot header not found at height %d", snapshotHeight)
+		}
+	}
+
+	stateTx, err = i.executor.BeginTxn(snapshotHeader.StateRoot, snapshotHeader, types.ZeroAddress)
 	if err != nil {
 		return nil, effectivePowerSnapshot{}, err
 	}
@@ -140,22 +158,51 @@ func (i *backendIBFT) snapshotVotingPowers(
 	}, nil
 }
 
-func stakeSnapshotHeight(height uint64, parentHeader *types.Header, stakeWeightedActive bool) (uint64, error) {
+func (i *backendIBFT) stakeSnapshotHeight(height uint64, parentHeader *types.Header, stakeWeightedActive bool) (uint64, error) {
 	if !stakeWeightedActive {
 		// Unit voting mode ignores stake snapshots entirely.
 		return 0, nil
 	}
 
-	if parentHeader != nil {
+	if parentHeader == nil {
+		if height == 0 {
+			return 0, fmt.Errorf("stake-weighted voting power snapshot requires parent state (height=0)")
+		}
+
+		return height - 1, nil
+	}
+
+	if i == nil || i.epochSize < 2 {
 		return parentHeader.Number, nil
 	}
 
-	if height == 0 {
-		return 0, fmt.Errorf("stake-weighted voting power snapshot requires parent state (height=0)")
+	var snapshotHeight uint64
+	if height%uint64(i.epochSize) == 0 {
+		if height == 0 {
+			return 0, fmt.Errorf("stake-weighted voting power snapshot requires parent state (height=0)")
+		}
+		snapshotHeight = height - 1
+	} else {
+		snapshotHeight = (height / uint64(i.epochSize)) * uint64(i.epochSize)
 	}
 
-	return height - 1, nil
+	if snapshotHeight > parentHeader.Number {
+		return parentHeader.Number, nil
+	}
+
+	if i.forkManager != nil && !i.forkManager.IsPosActive(snapshotHeight) {
+		for h := snapshotHeight + 1; h <= parentHeader.Number; h++ {
+			if i.forkManager.IsPosActive(h) {
+				return h, nil
+			}
+		}
+
+		return parentHeader.Number, nil
+	}
+
+	return snapshotHeight, nil
 }
+
 func hashEffectiveWeights(weights map[string]*big.Int, set validators.Validators, total, quorum *big.Int) types.Hash {
 	hasher := make([]byte, 0, set.Len()*64+64)
 	for idx := 0; idx < set.Len(); idx++ {
