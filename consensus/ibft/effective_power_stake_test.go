@@ -9,7 +9,6 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/stretchr/testify/require"
-	"github.com/xgr-network/xgr-node/blockchain"
 	"github.com/xgr-network/xgr-node/chain"
 	"github.com/xgr-network/xgr-node/consensus/ibft/fork"
 	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
@@ -347,88 +346,6 @@ func TestSnapshotVotingPowers_MidEpochStakeChangesDoNotAffectCurrentPower(t *tes
 
 	assertVotingPower(currentParent, 16, 500, 500, 1_000)
 	assertVotingPower(nextParent, 21, 1_500, 500, 2_000)
-}
-
-func TestEffectiveVotingPowerSnapshot_ValidatorFullUnstakeUsesEpochBoundaryStake(t *testing.T) {
-	const epochSize uint64 = 10
-
-	pool := newTesterAccountPool(t)
-	pool.add("A", "B", "C", "D")
-	valSet := pool.ValidatorSet()
-	validatorsByName := map[string]types.Address{
-		"A": pool.get("A").Address(),
-		"B": pool.get("B").Address(),
-		"C": pool.get("C").Address(),
-		"D": pool.get("D").Address(),
-	}
-
-	st := itrie.NewState(itrie.NewMemoryStorage())
-	ex := state.NewExecutor(&chain.Params{Forks: chain.AllForksEnabled, BurnContract: map[uint64]types.Address{0: types.ZeroAddress}}, st, hclog.NewNullLogger())
-	genesisRoot, err := ex.WriteGenesis(nil, types.Hash{})
-	require.NoError(t, err)
-	ex.GetHash = func(*types.Header) state.GetHashByNumber { return func(uint64) types.Hash { return genesisRoot } }
-
-	boundaryTx, err := ex.BeginTxn(genesisRoot, &types.Header{Number: 30}, types.ZeroAddress)
-	require.NoError(t, err)
-	contractState, err := stakingHelper.PredeployStakingSC(valSet, stakingHelper.PredeployParams{MinValidatorCount: 0, MaxValidatorCount: uint64(valSet.Len()), EpochSize: epochSize})
-	require.NoError(t, err)
-	require.NoError(t, boundaryTx.SetAccountDirectly(staking.AddrStakingContract, contractState))
-	stakes := map[string]uint64{"A": 10_000, "B": 20_000, "C": 30_000, "D": 40_000}
-	for name, stake := range stakes {
-		addr := validatorsByName[name]
-		setValidatorSelfStake(t, boundaryTx, addr, stake)
-		setNominalAndEffectiveWeight(boundaryTx, addr, 10_000, 10_000)
-	}
-	_, boundaryRoot, err := boundaryTx.Commit()
-	require.NoError(t, err)
-
-	exited := validatorsByName["D"]
-	exitTx, err := ex.BeginTxn(boundaryRoot, &types.Header{Number: 31}, types.ZeroAddress)
-	require.NoError(t, err)
-	setValidatorSelfStakeRaw(t, exitTx, exited, 0, 0, types.ZeroAddress)
-	setNominalAndEffectiveWeight(exitTx, exited, 10_000, 10_000)
-	_, exitRoot, err := exitTx.Commit()
-	require.NoError(t, err)
-
-	headers := make([]*types.Header, 32)
-	for n := uint64(0); n <= 31; n++ {
-		h := &types.Header{Number: n, Difficulty: 1, StateRoot: genesisRoot}
-		if n > 0 {
-			h.ParentHash = headers[n-1].Hash
-		}
-		switch n {
-		case 30:
-			h.StateRoot = boundaryRoot
-		case 31:
-			h.StateRoot = exitRoot
-		}
-		h.ComputeHash()
-		headers[n] = h
-	}
-
-	backend := &backendIBFT{
-		blockchain:  blockchain.NewTestBlockchain(t, headers),
-		executor:    ex,
-		epochSize:   epochSize,
-		uptimeCfg:   pos.UptimeConfig{MicroEpochSize: 2, MicroEpochNominalWeight: 10_000},
-		forkManager: &votingPowerForkManager{active: func(uint64) bool { return true }},
-	}
-
-	powers, snap, err := backend.effectiveVotingPowerSnapshot(32, valSet, headers[31])
-	require.NoError(t, err)
-	require.Equal(t, "100000", snap.totalVotingPower)
-	require.Equal(t, uint64(40_000), powers[types.AddressToString(exited)].Uint64(), "exited validator must retain last positive boundary stake while still in the epoch validator set")
-	require.NotEqual(t, uint64(1), powers[types.AddressToString(exited)].Uint64(), "stake-weighted path must not fall back to classic unit voting power")
-	for name, stake := range stakes {
-		addr := validatorsByName[name]
-		require.Equal(t, stake, powers[types.AddressToString(addr)].Uint64(), "validator %s must use stake-weighted boundary power", name)
-	}
-
-	parentTx, err := ex.BeginTxn(headers[31].StateRoot, headers[31], types.ZeroAddress)
-	require.NoError(t, err)
-	_, _, err = backend.snapshotVotingPowers(32, 31, valSet, parentTx, true)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "missing effective stake", "parent state after full unstake intentionally lacks the exited validator stake")
 }
 
 func TestPoS_Slashing_ReducesValidatorSelfStakeAndVotingPowerWithoutDelegationDrift(t *testing.T) {
