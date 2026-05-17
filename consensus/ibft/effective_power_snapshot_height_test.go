@@ -3,7 +3,12 @@ package ibft
 import (
 	"testing"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/stretchr/testify/require"
+	"github.com/xgr-network/xgr-node/chain"
+	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
+	"github.com/xgr-network/xgr-node/state"
+	itrie "github.com/xgr-network/xgr-node/state/immutable-trie"
 	"github.com/xgr-network/xgr-node/types"
 	"github.com/xgr-network/xgr-node/validators"
 )
@@ -54,15 +59,23 @@ func TestStakeSnapshotHeight_PosClampsToFirstActiveHeight(t *testing.T) {
 func TestEffectiveVotingPowerSnapshot_RequiresBlockchainLookupForHistoricalStakeSnapshot(t *testing.T) {
 	t.Parallel()
 
+	st := itrie.NewState(itrie.NewMemoryStorage())
+	ex := state.NewExecutor(&chain.Params{Forks: chain.AllForksEnabled, BurnContract: map[uint64]types.Address{0: types.ZeroAddress}}, st, hclog.NewNullLogger())
+	root, err := ex.WriteGenesis(nil, types.Hash{})
+	require.NoError(t, err)
+	ex.GetHash = func(*types.Header) state.GetHashByNumber { return func(uint64) types.Hash { return root } }
+
 	backend := &backendIBFT{
+		executor:    ex,
 		epochSize:   10,
+		uptimeCfg:   pos.UptimeConfig{MicroEpochNominalWeight: 10_000},
 		forkManager: &votingPowerForkManager{active: func(uint64) bool { return true }},
 	}
 	valSet := validators.NewECDSAValidatorSet(
 		validators.NewECDSAValidator(types.StringToAddress("0x1000000000000000000000000000000000000001")),
 	)
 
-	_, _, err := backend.effectiveVotingPowerSnapshot(32, valSet, &types.Header{Number: 31})
+	_, _, err = backend.effectiveVotingPowerSnapshot(32, valSet, &types.Header{Number: 31, StateRoot: root})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "requires blockchain header lookup")
 }

@@ -257,8 +257,36 @@ func (m *ForkManager) initializeKeyManager(valType validators.ValidatorType) err
 	return nil
 }
 
-// initializeValidatorStores initializes all validator sets based on Fork configuration
+// initializeValidatorStores initializes validator sets based on Fork configuration.
 func (m *ForkManager) initializeValidatorStores() error {
+	currentHeight := uint64(0)
+	if m.blockchain != nil {
+		currentHeader := m.blockchain.Header()
+		if currentHeader != nil {
+			currentHeight = currentHeader.Number
+		}
+	}
+
+	currentFork := m.forks.getFork(currentHeight)
+	if currentFork == nil {
+		return ErrForkNotFound
+	}
+
+	currentSourceType := ibftTypesToSourceType[currentFork.Type]
+	if err := m.initializeValidatorStore(currentSourceType); err != nil {
+		return err
+	}
+
+	// SnapshotValidatorStore is PoA-era header-vote state. If the node is already
+	// past the PoA -> PoS transition, initializing it would replay the current PoS
+	// epoch through SnapshotValidatorStore.ProcessHeader and reject valid PoS
+	// proposers. Keep the legacy eager initialization while the current head is in
+	// a snapshot/PoA fork, so fresh nodes that start before transition can still
+	// build and persist PoA snapshots.
+	if currentSourceType == store.Contract {
+		return nil
+	}
+
 	for _, fork := range m.forks {
 		sourceType := ibftTypesToSourceType[fork.Type]
 		if err := m.initializeValidatorStore(sourceType); err != nil {

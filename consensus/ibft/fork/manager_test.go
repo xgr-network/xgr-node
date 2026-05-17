@@ -250,6 +250,81 @@ func TestNewForkManager(t *testing.T) {
 		assert.NotNil(t, fm.hooksRegisters[PoA])
 	})
 
+	t.Run("should skip historical snapshot store initialization when current head is PoS", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			latestNumber   uint64 = 15
+			epochSize      uint64 = 10
+			getHeaderCalls uint64
+
+			blockchain = &store.MockBlockchain{
+				HeaderFn: func() *types.Header {
+					return &types.Header{Number: latestNumber}
+				},
+				GetHeaderByNumberFn: func(u uint64) (*types.Header, bool) {
+					getHeaderCalls++
+
+					return &types.Header{Number: u}, true
+				},
+			}
+
+			secretManager = &mockSecretManager{
+				HasSecretFunc: func(name string) bool {
+					assert.True(t, name == secrets.ValidatorKey || name == secrets.ValidatorBLSKey)
+
+					return true
+				},
+				GetSecretFunc: func(name string) ([]byte, error) {
+					assert.True(t, name == secrets.ValidatorKey || name == secrets.ValidatorBLSKey)
+
+					if name == secrets.ValidatorKey {
+						return ecdsaKeyBytes, nil
+					}
+
+					return blsKeyBytes, nil
+				},
+			}
+		)
+
+		dirPath := createTestTempDirectory(t)
+
+		fm, err := NewForkManager(
+			logger,
+			blockchain,
+			nil,
+			secretManager,
+			dirPath,
+			epochSize,
+			map[string]interface{}{
+				"types": []interface{}{
+					map[string]interface{}{
+						"type":           "PoA",
+						"validator_type": "ecdsa",
+						"from":           0,
+						"to":             10,
+					},
+					map[string]interface{}{
+						"type":           "PoS",
+						"validator_type": "bls",
+						"from":           11,
+					},
+				},
+			},
+		)
+
+		assert.NoError(t, err)
+		assert.NoError(t, fm.Initialize())
+
+		assert.Nil(t, fm.validatorStores[store.Snapshot])
+		assert.NotNil(t, fm.validatorStores[store.Contract])
+		assert.Equal(t, uint64(0), getHeaderCalls)
+
+		currentStore, err := fm.GetValidatorStore(latestNumber)
+		assert.NoError(t, err)
+		assert.Equal(t, fm.validatorStores[store.Contract], currentStore)
+	})
+
 	t.Run("PoS and BLS", func(t *testing.T) {
 		t.Parallel()
 
@@ -843,8 +918,12 @@ func TestForkManager_initializeValidatorStores(t *testing.T) {
 
 	var (
 		logger     = hclog.NewNullLogger()
-		blockchain = &store.MockBlockchain{}
-		executor   = &MockExecutor{}
+		blockchain = &store.MockBlockchain{
+			HeaderFn: func() *types.Header {
+				return &types.Header{Number: 0}
+			},
+		}
+		executor = &MockExecutor{}
 
 		forks = IBFTForks{
 			{

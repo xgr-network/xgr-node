@@ -353,13 +353,26 @@ func TestEffectiveVotingPowerSnapshot_ValidatorFullUnstakeUsesEpochBoundaryStake
 	const epochSize uint64 = 10
 
 	pool := newTesterAccountPool(t)
-	pool.add("A", "B", "C", "D")
-	valSet := pool.ValidatorSet()
+	pool.add("A", "B", "C", "D", "E")
+	valSet := validators.NewECDSAValidatorSet(
+		validators.NewECDSAValidator(pool.get("A").Address()),
+		validators.NewECDSAValidator(pool.get("B").Address()),
+		validators.NewECDSAValidator(pool.get("C").Address()),
+		validators.NewECDSAValidator(pool.get("D").Address()),
+	)
+	missingStakeSet := validators.NewECDSAValidatorSet(
+		validators.NewECDSAValidator(pool.get("A").Address()),
+		validators.NewECDSAValidator(pool.get("B").Address()),
+		validators.NewECDSAValidator(pool.get("C").Address()),
+		validators.NewECDSAValidator(pool.get("D").Address()),
+		validators.NewECDSAValidator(pool.get("E").Address()),
+	)
 	validatorsByName := map[string]types.Address{
 		"A": pool.get("A").Address(),
 		"B": pool.get("B").Address(),
 		"C": pool.get("C").Address(),
 		"D": pool.get("D").Address(),
+		"E": pool.get("E").Address(),
 	}
 
 	st := itrie.NewState(itrie.NewMemoryStorage())
@@ -370,7 +383,7 @@ func TestEffectiveVotingPowerSnapshot_ValidatorFullUnstakeUsesEpochBoundaryStake
 
 	boundaryTx, err := ex.BeginTxn(genesisRoot, &types.Header{Number: 30}, types.ZeroAddress)
 	require.NoError(t, err)
-	contractState, err := stakingHelper.PredeployStakingSC(valSet, stakingHelper.PredeployParams{MinValidatorCount: 0, MaxValidatorCount: uint64(valSet.Len()), EpochSize: epochSize})
+	contractState, err := stakingHelper.PredeployStakingSC(missingStakeSet, stakingHelper.PredeployParams{MinValidatorCount: 0, MaxValidatorCount: uint64(missingStakeSet.Len()), EpochSize: epochSize})
 	require.NoError(t, err)
 	require.NoError(t, boundaryTx.SetAccountDirectly(staking.AddrStakingContract, contractState))
 	stakes := map[string]uint64{"A": 10_000, "B": 20_000, "C": 30_000, "D": 40_000}
@@ -379,6 +392,8 @@ func TestEffectiveVotingPowerSnapshot_ValidatorFullUnstakeUsesEpochBoundaryStake
 		setValidatorSelfStake(t, boundaryTx, addr, stake)
 		setNominalAndEffectiveWeight(boundaryTx, addr, 10_000, 10_000)
 	}
+	setValidatorSelfStakeRaw(t, boundaryTx, validatorsByName["E"], 0, 0, types.ZeroAddress)
+	setNominalAndEffectiveWeight(boundaryTx, validatorsByName["E"], 10_000, 10_000)
 	_, boundaryRoot, err := boundaryTx.Commit()
 	require.NoError(t, err)
 
@@ -390,21 +405,7 @@ func TestEffectiveVotingPowerSnapshot_ValidatorFullUnstakeUsesEpochBoundaryStake
 	_, exitRoot, err := exitTx.Commit()
 	require.NoError(t, err)
 
-	headers := make([]*types.Header, 32)
-	for n := uint64(0); n <= 31; n++ {
-		h := &types.Header{Number: n, Difficulty: 1, StateRoot: genesisRoot}
-		if n > 0 {
-			h.ParentHash = headers[n-1].Hash
-		}
-		switch n {
-		case 30:
-			h.StateRoot = boundaryRoot
-		case 31:
-			h.StateRoot = exitRoot
-		}
-		h.ComputeHash()
-		headers[n] = h
-	}
+	headers := makeVotingPowerHeaders(genesisRoot, map[uint64]types.Hash{30: boundaryRoot, 31: exitRoot}, 31)
 
 	backend := &backendIBFT{
 		blockchain:  blockchain.NewTestBlockchain(t, headers),
@@ -421,14 +422,117 @@ func TestEffectiveVotingPowerSnapshot_ValidatorFullUnstakeUsesEpochBoundaryStake
 	require.NotEqual(t, uint64(1), powers[types.AddressToString(exited)].Uint64(), "stake-weighted path must not fall back to classic unit voting power")
 	for name, stake := range stakes {
 		addr := validatorsByName[name]
-		require.Equal(t, stake, powers[types.AddressToString(addr)].Uint64(), "validator %s must use stake-weighted boundary power", name)
+		require.Equal(t, stake, powers[types.AddressToString(addr)].Uint64(), "validator %s must use stake-weighted power", name)
 	}
+
+	_, _, err = backend.effectiveVotingPowerSnapshot(32, missingStakeSet, headers[31])
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "missing effective stake", "validator without current or fallback stake must still fail hard")
 
 	parentTx, err := ex.BeginTxn(headers[31].StateRoot, headers[31], types.ZeroAddress)
 	require.NoError(t, err)
 	_, _, err = backend.snapshotVotingPowers(32, 31, valSet, parentTx, true)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "missing effective stake", "parent state after full unstake intentionally lacks the exited validator stake")
+}
+
+func TestEffectiveVotingPowerSnapshot_MicroepochDecayUsesCurrentParentWeight(t *testing.T) {
+	const epochSize uint64 = 10
+
+	pool := newTesterAccountPool(t)
+	pool.add("A", "B", "C", "D")
+	valSet := pool.ValidatorSet()
+
+	st := itrie.NewState(itrie.NewMemoryStorage())
+	ex := state.NewExecutor(&chain.Params{Forks: chain.AllForksEnabled, BurnContract: map[uint64]types.Address{0: types.ZeroAddress}}, st, hclog.NewNullLogger())
+	genesisRoot, err := ex.WriteGenesis(nil, types.Hash{})
+	require.NoError(t, err)
+	ex.GetHash = func(*types.Header) state.GetHashByNumber { return func(uint64) types.Hash { return genesisRoot } }
+
+	boundaryTx, err := ex.BeginTxn(genesisRoot, &types.Header{Number: 30}, types.ZeroAddress)
+	require.NoError(t, err)
+	contractState, err := stakingHelper.PredeployStakingSC(valSet, stakingHelper.PredeployParams{MinValidatorCount: 0, MaxValidatorCount: uint64(valSet.Len()), EpochSize: epochSize})
+	require.NoError(t, err)
+	require.NoError(t, boundaryTx.SetAccountDirectly(staking.AddrStakingContract, contractState))
+	for idx := 0; idx < valSet.Len(); idx++ {
+		addr := valSet.At(uint64(idx)).Addr()
+		setValidatorSelfStake(t, boundaryTx, addr, 1_000)
+		setNominalAndEffectiveWeight(boundaryTx, addr, 10_000, 10_000)
+	}
+	_, boundaryRoot, err := boundaryTx.Commit()
+	require.NoError(t, err)
+
+	decayed := pool.get("A").Address()
+	currentTx, err := ex.BeginTxn(boundaryRoot, &types.Header{Number: 31}, types.ZeroAddress)
+	require.NoError(t, err)
+	setNominalAndEffectiveWeight(currentTx, decayed, 10_000, 5_000)
+	_, currentRoot, err := currentTx.Commit()
+	require.NoError(t, err)
+
+	headers := makeVotingPowerHeaders(genesisRoot, map[uint64]types.Hash{30: boundaryRoot, 31: currentRoot}, 31)
+	backend := &backendIBFT{
+		blockchain:  blockchain.NewTestBlockchain(t, headers),
+		executor:    ex,
+		epochSize:   epochSize,
+		uptimeCfg:   pos.UptimeConfig{MicroEpochSize: 2, MicroEpochNominalWeight: 10_000},
+		forkManager: &votingPowerForkManager{active: func(uint64) bool { return true }},
+	}
+
+	powers, snap, err := backend.effectiveVotingPowerSnapshot(32, valSet, headers[31])
+	require.NoError(t, err)
+	require.Equal(t, uint64(500), powers[types.AddressToString(decayed)].Uint64(), "microepoch decay must use the live parent effective weight")
+	require.NotEqual(t, uint64(1_000), powers[types.AddressToString(decayed)].Uint64(), "voting power must not freeze to the epoch-boundary effective weight")
+	require.Equal(t, "3500", snap.totalVotingPower)
+}
+
+func TestEffectiveVotingPowerSnapshot_StakeFallbackUsesCurrentParentWeight(t *testing.T) {
+	const epochSize uint64 = 10
+
+	pool := newTesterAccountPool(t)
+	pool.add("A", "B", "C", "D")
+	valSet := pool.ValidatorSet()
+
+	st := itrie.NewState(itrie.NewMemoryStorage())
+	ex := state.NewExecutor(&chain.Params{Forks: chain.AllForksEnabled, BurnContract: map[uint64]types.Address{0: types.ZeroAddress}}, st, hclog.NewNullLogger())
+	genesisRoot, err := ex.WriteGenesis(nil, types.Hash{})
+	require.NoError(t, err)
+	ex.GetHash = func(*types.Header) state.GetHashByNumber { return func(uint64) types.Hash { return genesisRoot } }
+
+	boundaryTx, err := ex.BeginTxn(genesisRoot, &types.Header{Number: 30}, types.ZeroAddress)
+	require.NoError(t, err)
+	contractState, err := stakingHelper.PredeployStakingSC(valSet, stakingHelper.PredeployParams{MinValidatorCount: 0, MaxValidatorCount: uint64(valSet.Len()), EpochSize: epochSize})
+	require.NoError(t, err)
+	require.NoError(t, boundaryTx.SetAccountDirectly(staking.AddrStakingContract, contractState))
+	for idx := 0; idx < valSet.Len(); idx++ {
+		addr := valSet.At(uint64(idx)).Addr()
+		setValidatorSelfStake(t, boundaryTx, addr, 1_000)
+		setNominalAndEffectiveWeight(boundaryTx, addr, 10_000, 10_000)
+	}
+	_, boundaryRoot, err := boundaryTx.Commit()
+	require.NoError(t, err)
+
+	unstakedAndDecayed := pool.get("A").Address()
+	currentTx, err := ex.BeginTxn(boundaryRoot, &types.Header{Number: 31}, types.ZeroAddress)
+	require.NoError(t, err)
+	setValidatorSelfStakeRaw(t, currentTx, unstakedAndDecayed, 0, 0, types.ZeroAddress)
+	setNominalAndEffectiveWeight(currentTx, unstakedAndDecayed, 10_000, 5_000)
+	_, currentRoot, err := currentTx.Commit()
+	require.NoError(t, err)
+
+	headers := makeVotingPowerHeaders(genesisRoot, map[uint64]types.Hash{30: boundaryRoot, 31: currentRoot}, 31)
+	backend := &backendIBFT{
+		blockchain:  blockchain.NewTestBlockchain(t, headers),
+		executor:    ex,
+		epochSize:   epochSize,
+		uptimeCfg:   pos.UptimeConfig{MicroEpochSize: 2, MicroEpochNominalWeight: 10_000},
+		forkManager: &votingPowerForkManager{active: func(uint64) bool { return true }},
+	}
+
+	powers, snap, err := backend.effectiveVotingPowerSnapshot(32, valSet, headers[31])
+	require.NoError(t, err)
+	require.Equal(t, uint64(500), powers[types.AddressToString(unstakedAndDecayed)].Uint64(), "fallback stake must be multiplied by the live reduced weight")
+	require.NotEqual(t, uint64(1_000), powers[types.AddressToString(unstakedAndDecayed)].Uint64(), "fallback stake must not import the epoch-boundary effective weight")
+	require.Equal(t, "3500", snap.totalVotingPower)
 }
 
 func TestPoS_Slashing_ReducesValidatorSelfStakeAndVotingPowerWithoutDelegationDrift(t *testing.T) {
@@ -1328,6 +1432,23 @@ func newVotingPowerTestTransitionWithFeePoolSplit(t *testing.T, vals validators.
 	return txn
 }
 
+func makeVotingPowerHeaders(genesisRoot types.Hash, roots map[uint64]types.Hash, max uint64) []*types.Header {
+	headers := make([]*types.Header, max+1)
+	for n := uint64(0); n <= max; n++ {
+		h := &types.Header{Number: n, Difficulty: 1, StateRoot: genesisRoot}
+		if n > 0 {
+			h.ParentHash = headers[n-1].Hash
+		}
+		if root, ok := roots[n]; ok {
+			h.StateRoot = root
+		}
+		h.ComputeHash()
+		headers[n] = h
+	}
+
+	return headers
+}
+
 func newBareVotingPowerTestTransition(t *testing.T, block uint64) *state.Transition {
 	t.Helper()
 	st := itrie.NewState(itrie.NewMemoryStorage())
@@ -1343,6 +1464,7 @@ func newBareVotingPowerTestTransition(t *testing.T, block uint64) *state.Transit
 }
 
 func setNominalAndEffectiveWeight(txn *state.Transition, addr types.Address, nominal, effective uint64) {
+	txn.Txn().SetNonce(pos.PosSysAddr, 1)
 	toHash := func(v uint64) types.Hash {
 		var b [32]byte
 		binary.BigEndian.PutUint64(b[24:], v)
