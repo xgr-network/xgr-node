@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"errors"
+	"fmt"
 	"math/big"
 	"testing"
 
@@ -420,9 +421,21 @@ func TestPoS_StakingV2_EconomicConservation_FullLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, delegatorBInfo.Exists)
 	require.Equal(t, 0, delegatorBInfo.Amount.Cmp(delegationB))
-	rawAfterDelegations, err := queryValidatorDelegatedStakeRaw(servers[0], validator, validator)
+	rawAfterDelegationsBlock, err := servers[0].JSONRPC().Eth().BlockNumber()
 	require.NoError(t, err)
-	require.Equal(t, 0, rawAfterDelegations.Cmp(new(big.Int).Add(delegationA, delegationB)))
+	rawAfterDelegations, err := queryValidatorDelegatedStakeRawAtBlock(servers[0], validator, validator, ethgo.BlockNumber(rawAfterDelegationsBlock))
+	require.NoError(t, err)
+	delegatorAInfo, err = queryStakerInfoAtBlock(servers[0], validator, delegatorA, ethgo.BlockNumber(rawAfterDelegationsBlock))
+	require.NoError(t, err)
+	require.True(t, delegatorAInfo.Exists)
+	delegatorBInfo, err = queryStakerInfoAtBlock(servers[0], validator, delegatorB, ethgo.BlockNumber(rawAfterDelegationsBlock))
+	require.NoError(t, err)
+	require.True(t, delegatorBInfo.Exists)
+	expectedRawAfterDelegations := new(big.Int).Add(
+		new(big.Int).Set(delegatorAInfo.Amount),
+		delegatorBInfo.Amount,
+	)
+	require.Equal(t, 0, rawAfterDelegations.Cmp(expectedRawAfterDelegations), "raw delegated stake must equal current delegator staker amounts")
 	assertStakingConservation(t, servers[0], validator, knownStakers)
 
 	// D. Wait for next epoch.
@@ -1203,25 +1216,17 @@ func TestPoS_StakingV2_Reentrancy_DelegatorUnstakeCannotDoubleSpend(t *testing.T
 func assertStakingConservation(t *testing.T, srv *framework.TestServer, queryFrom types.Address, knownStakers []types.Address) {
 	t.Helper()
 
-	contractBalance, err := srv.JSONRPC().Eth().GetBalance(ethgo.Address(staking.AddrStakingContract), ethgo.Latest)
+	blockNumber, err := srv.JSONRPC().Eth().BlockNumber()
 	require.NoError(t, err)
 
+	contractBalance, stakerAmounts := stakingEconomySnapshotAtBlock(t, srv, queryFrom, knownStakers, ethgo.BlockNumber(blockNumber))
 	summedExistingStakerAmounts := big.NewInt(0)
-	seen := make(map[types.Address]struct{}, len(knownStakers))
-	for _, staker := range knownStakers {
-		if _, ok := seen[staker]; ok {
-			continue
-		}
-		seen[staker] = struct{}{}
-
-		info, infoErr := queryStakerInfo(srv, queryFrom, staker)
-		require.NoError(t, infoErr)
-		if info.Exists {
-			summedExistingStakerAmounts.Add(summedExistingStakerAmounts, info.Amount)
-		}
+	for _, amount := range stakerAmounts {
+		summedExistingStakerAmounts.Add(summedExistingStakerAmounts, amount)
 	}
 
-	require.Equal(t, 0, contractBalance.Cmp(summedExistingStakerAmounts), "staking contract native balance must equal summed stakerInfo.amount for all existing known stakers")
+	diff := new(big.Int).Sub(contractBalance, summedExistingStakerAmounts)
+	require.Equal(t, 0, contractBalance.Cmp(summedExistingStakerAmounts), "staking contract native balance must equal summed stakerInfo.amount for all existing known stakers at one pinned block: blockNumber=%d contractBalance=%s summedExistingStakerAmounts=%s diff=%s includedStakers=%v", blockNumber, contractBalance.String(), summedExistingStakerAmounts.String(), diff.String(), formatStakerAmounts(stakerAmounts))
 }
 
 func assertRejectedStakingTxDoesNotChangeKnownStakes(
@@ -1239,12 +1244,12 @@ func assertRejectedStakingTxDoesNotChangeKnownStakes(
 		waitUntilMidEpoch(t, srv, epochSize)
 
 		beforeWindow := rejectedTxEpochWindowInfo(t, srv, epochSize)
-		balanceBefore, amountsBefore := stakingEconomySnapshot(t, srv, queryFrom, knownStakers)
+		balanceBefore, amountsBefore := stakingEconomySnapshotAtBlock(t, srv, queryFrom, knownStakers, ethgo.BlockNumber(beforeWindow.blockNumber))
 		receipt, err := sendTx()
 		require.NoError(t, err)
 		require.Equal(t, uint64(types.ReceiptFailed), receipt.Status, msg)
 		afterWindow := rejectedTxEpochWindowInfo(t, srv, epochSize)
-		balanceAfter, amountsAfter := stakingEconomySnapshot(t, srv, queryFrom, knownStakers)
+		balanceAfter, amountsAfter := stakingEconomySnapshotAtBlock(t, srv, queryFrom, knownStakers, ethgo.BlockNumber(afterWindow.blockNumber))
 
 		if beforeWindow.epoch != afterWindow.epoch {
 			if attempt == 0 {
@@ -1288,7 +1293,16 @@ func rejectedTxEpochWindowInfo(t *testing.T, srv *framework.TestServer, epochSiz
 func stakingEconomySnapshot(t *testing.T, srv *framework.TestServer, queryFrom types.Address, knownStakers []types.Address) (*big.Int, map[types.Address]*big.Int) {
 	t.Helper()
 
-	contractBalance, err := srv.JSONRPC().Eth().GetBalance(ethgo.Address(staking.AddrStakingContract), ethgo.Latest)
+	blockNumber, err := srv.JSONRPC().Eth().BlockNumber()
+	require.NoError(t, err)
+
+	return stakingEconomySnapshotAtBlock(t, srv, queryFrom, knownStakers, ethgo.BlockNumber(blockNumber))
+}
+
+func stakingEconomySnapshotAtBlock(t *testing.T, srv *framework.TestServer, queryFrom types.Address, knownStakers []types.Address, blockNumber ethgo.BlockNumber) (*big.Int, map[types.Address]*big.Int) {
+	t.Helper()
+
+	contractBalance, err := srv.JSONRPC().Eth().GetBalance(ethgo.Address(staking.AddrStakingContract), blockNumber)
 	require.NoError(t, err)
 
 	amounts := make(map[types.Address]*big.Int, len(knownStakers))
@@ -1296,7 +1310,7 @@ func stakingEconomySnapshot(t *testing.T, srv *framework.TestServer, queryFrom t
 		if _, ok := amounts[staker]; ok {
 			continue
 		}
-		info, infoErr := queryStakerInfo(srv, queryFrom, staker)
+		info, infoErr := queryStakerInfoAtBlock(srv, queryFrom, staker, blockNumber)
 		require.NoError(t, infoErr)
 		if info.Exists {
 			amounts[staker] = new(big.Int).Set(info.Amount)
@@ -1306,6 +1320,15 @@ func stakingEconomySnapshot(t *testing.T, srv *framework.TestServer, queryFrom t
 	}
 
 	return new(big.Int).Set(contractBalance), amounts
+}
+
+func formatStakerAmounts(amounts map[types.Address]*big.Int) []string {
+	formatted := make([]string, 0, len(amounts))
+	for staker, amount := range amounts {
+		formatted = append(formatted, fmt.Sprintf("%s=%s", staker.String(), amount.String()))
+	}
+
+	return formatted
 }
 
 func sendSetActiveReceiptTx(srv *framework.TestServer, from types.Address, key *ecdsa.PrivateKey, value bool) (*ethgo.Receipt, error) {
@@ -1411,6 +1434,10 @@ func sendUnstakeDelegationTx(srv *framework.TestServer, from types.Address, key 
 }
 
 func queryStakerInfo(srv *framework.TestServer, from, staker types.Address) (*stakingStakerInfo, error) {
+	return queryStakerInfoAtBlock(srv, from, staker, ethgo.Latest)
+}
+
+func queryStakerInfoAtBlock(srv *framework.TestServer, from, staker types.Address, blockNumber ethgo.BlockNumber) (*stakingStakerInfo, error) {
 	m := abis.StakingABI.Methods["stakerInfo"]
 	if m == nil {
 		return nil, errors.New("staking ABI missing stakerInfo")
@@ -1420,7 +1447,7 @@ func queryStakerInfo(srv *framework.TestServer, from, staker types.Address) (*st
 		return nil, err
 	}
 	to := ethgo.Address(staking.AddrStakingContract)
-	resp, err := srv.JSONRPC().Eth().Call(&ethgo.CallMsg{From: ethgo.Address(from), To: &to, Data: append(m.ID(), input...), GasPrice: framework.TestGasPriceUint64(), Value: big.NewInt(0)}, ethgo.Latest)
+	resp, err := srv.JSONRPC().Eth().Call(&ethgo.CallMsg{From: ethgo.Address(from), To: &to, Data: append(m.ID(), input...), GasPrice: framework.TestGasPriceUint64(), Value: big.NewInt(0)}, blockNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -1463,7 +1490,11 @@ func queryStakerInfo(srv *framework.TestServer, from, staker types.Address) (*st
 }
 
 func queryValidatorDelegatedStakeRaw(srv *framework.TestServer, from, validator types.Address) (*big.Int, error) {
-	return queryUintMethodByValidator(srv, from, validator, "validatorDelegatedStakeRaw")
+	return queryValidatorDelegatedStakeRawAtBlock(srv, from, validator, ethgo.Latest)
+}
+
+func queryValidatorDelegatedStakeRawAtBlock(srv *framework.TestServer, from, validator types.Address, blockNumber ethgo.BlockNumber) (*big.Int, error) {
+	return queryUintMethodByValidatorAtBlock(srv, from, validator, "validatorDelegatedStakeRaw", blockNumber)
 }
 
 func queryValidatorDelegatedStakeActive(srv *framework.TestServer, from, validator types.Address) (*big.Int, error) {
@@ -1552,6 +1583,10 @@ func waitUntilMidEpoch(t *testing.T, srv *framework.TestServer, epochSize uint64
 }
 
 func queryUintMethodByValidator(srv *framework.TestServer, from, validator types.Address, method string) (*big.Int, error) {
+	return queryUintMethodByValidatorAtBlock(srv, from, validator, method, ethgo.Latest)
+}
+
+func queryUintMethodByValidatorAtBlock(srv *framework.TestServer, from, validator types.Address, method string, blockNumber ethgo.BlockNumber) (*big.Int, error) {
 	m := abis.StakingABI.Methods[method]
 	if m == nil {
 		return nil, errors.New("staking ABI missing " + method)
@@ -1561,7 +1596,7 @@ func queryUintMethodByValidator(srv *framework.TestServer, from, validator types
 		return nil, err
 	}
 	to := ethgo.Address(staking.AddrStakingContract)
-	resp, err := srv.JSONRPC().Eth().Call(&ethgo.CallMsg{From: ethgo.Address(from), To: &to, Data: append(m.ID(), input...), GasPrice: framework.TestGasPriceUint64(), Value: big.NewInt(0)}, ethgo.Latest)
+	resp, err := srv.JSONRPC().Eth().Call(&ethgo.CallMsg{From: ethgo.Address(from), To: &to, Data: append(m.ID(), input...), GasPrice: framework.TestGasPriceUint64(), Value: big.NewInt(0)}, blockNumber)
 	if err != nil {
 		return nil, err
 	}
