@@ -18,6 +18,8 @@ import (
 )
 
 type validatorPoolConfigE2E struct {
+	exists            bool
+	active            bool
 	delegationEnabled bool
 	maxDelegatedStake *big.Int
 	minDelegatorStake *big.Int
@@ -112,6 +114,8 @@ func queryValidatorPoolConfig(srv *framework.TestServer, from, validator types.A
 	out := decoded.(map[string]interface{})["0"].(map[string]interface{})
 
 	cfg := &validatorPoolConfigE2E{}
+	cfg.exists, _ = out["exists"].(bool)
+	cfg.active, _ = out["active"].(bool)
 	cfg.delegationEnabled, _ = out["delegationEnabled"].(bool)
 	cfg.maxDelegatedStake, _ = out["maxTotalDelegatedStake"].(*big.Int)
 	cfg.minDelegatorStake, _ = out["minDelegatorStake"].(*big.Int)

@@ -563,6 +563,10 @@ func (t *TestServer) Start(ctx context.Context) error {
 }
 
 func (t *TestServer) SwitchIBFTType(typ fork.IBFTType, from uint64, to, deployment *uint64) error {
+	return t.SwitchIBFTTypeWithPoSConfig(typ, from, to, deployment, nil, nil)
+}
+
+func (t *TestServer) SwitchIBFTTypeWithPoSConfig(typ fork.IBFTType, from uint64, to, deployment, minValidators, maxValidators *uint64) error {
 	t.t.Helper()
 
 	ibftSwitchCmd := ibftSwitch.GetCommand()
@@ -587,6 +591,14 @@ func (t *TestServer) SwitchIBFTType(typ fork.IBFTType, from uint64, to, deployme
 
 	if deployment != nil {
 		args = append(args, "--deployment", strconv.FormatUint(*deployment, 10))
+	}
+
+	if minValidators != nil {
+		args = append(args, "--min-validator-count", strconv.FormatUint(*minValidators, 10))
+	}
+
+	if maxValidators != nil {
+		args = append(args, "--max-validator-count", strconv.FormatUint(*maxValidators, 10))
 	}
 
 	// Start the server

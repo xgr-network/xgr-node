@@ -505,6 +505,20 @@ func TestPoS_StakingV2_MaxValidatorsCutsLowestTier1Validator(t *testing.T) {
 	assert.Contains(t, snap, addrs[2], "incumbent C should remain in snapshot")
 }
 
+func waitUntilEpochOffsetAtMost(t *testing.T, srv *framework.TestServer, epochSize uint64, maxOffset uint64) {
+	t.Helper()
+
+	for {
+		height, err := srv.JSONRPC().Eth().BlockNumber()
+		require.NoError(t, err)
+		if height%epochSize <= maxOffset {
+			return
+		}
+
+		require.Empty(t, framework.WaitForServersToSeal([]*framework.TestServer{srv}, height+1))
+	}
+}
+
 func waitForNextEpochTransition(t *testing.T, servers []*framework.TestServer, epochSize uint64) {
 	t.Helper()
 

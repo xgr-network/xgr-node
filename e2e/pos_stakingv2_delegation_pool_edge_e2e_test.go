@@ -550,7 +550,7 @@ func TestPoS_StakingV2_DelegationPool_MaxDelegatedStakeCap(t *testing.T) {
 
 	delegatedRawAfterTopUp, err := queryValidatorDelegatedStakeRaw(servers[0], addrs[0], addrs[0])
 	require.NoError(t, err)
-	// In current PoS accounting, delegated raw can grow between reads due reward accrual.
+	// In PoS_3 accounting, delegated raw can grow between reads due reward accrual.
 	require.GreaterOrEqual(t, delegatedRawAfterTopUp.Cmp(maxDelegatedStake), 0)
 	require.GreaterOrEqual(t, delegatedRawAfterTopUp.Cmp(delegatedRawBeforeTopUp), 0)
 	delegatedRawSlot8AfterTopUp, err := queryStakingMappingUintStorage(servers[0], addrs[0], 8)

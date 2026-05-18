@@ -1,6 +1,6 @@
-# E2E Test Catalog (XGR 2.0 / StakingV2)
+# E2E Test Catalog (PoS_3 / StakingV2)
 
-This catalog documents the currently maintained E2E test surface under `e2e/...` (including `e2e/framework`) for the current XGR 2.0 / StakingV2 stack.
+This catalog documents the currently maintained E2E test surface under `e2e/...` (including `e2e/framework`) for the current PoS_3 / StakingV2 stack.
 
 ## Status legend
 
@@ -25,7 +25,7 @@ Representative active coverage:
 - `e2e/ibft_test.go` → IBFT transfer and fee-recipient semantics
 - `e2e/syncer_test.go` → cluster catch-up / block synchronization
 
-## XGR 2.0 / StakingV2 (selection, lifecycle, operations)
+## PoS_3 / StakingV2 (selection, lifecycle, operations)
 
 Primary coverage areas:
 
@@ -53,4 +53,4 @@ Harness tests in `e2e/framework/*` verify server manager behavior and binary res
 
 ## Removed legacy tests
 
-Legacy Polygon-origin PoS test suites are intentionally removed from the active catalog and are no longer part of the current XGR 2.0/StakingV2 baseline.
+Legacy Polygon-origin PoS test suites are intentionally removed from the active catalog and are no longer part of the current PoS_3/StakingV2 baseline.
