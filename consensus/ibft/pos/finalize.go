@@ -26,7 +26,7 @@ var (
 
 // Epoch policy parameters (consensus-critical; fork-gated by FeePoolSplit).
 const (
-	slashBpsDefault uint64 = 100 // 1%
+	slashBpsDefault uint64 = 20 // 0.2%
 
 	// Defense-in-depth only.
 	// Under current invariants, bootstrap stakes can only participate through emergency mode,
