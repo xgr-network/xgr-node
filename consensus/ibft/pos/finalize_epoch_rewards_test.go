@@ -330,15 +330,15 @@ func TestFinalizeEpoch_SlashingAndRewards_AccountingOrderAndConservation(t *test
 	require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyDelegatorReward(epoch, validatorB, delegatorB))).Sign())
 	require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyRewardTotal(epoch))).Sign())
 	require.Equal(t, "0", txn.Txn().GetBalance(state.FeePoolAddress).String())
-	require.Equal(t, "990", readStakedAmount(txn, validatorA).String())
-	require.Equal(t, "495", readStakedAmount(txn, delegatorA).String())
+	require.Equal(t, "998", readStakedAmount(txn, validatorA).String())
+	require.Equal(t, "499", readStakedAmount(txn, delegatorA).String())
 	require.Equal(t, "2630", readStakedAmount(txn, validatorB).String())
 	require.Equal(t, "1270", readStakedAmount(txn, delegatorB).String())
-	require.Equal(t, "495", readValidatorDelegatedAggregateForRewardTest(txn, validatorA, 8).String())
-	require.Equal(t, "495", readValidatorDelegatedAggregateForRewardTest(txn, validatorA, 9).String())
+	require.Equal(t, "499", readValidatorDelegatedAggregateForRewardTest(txn, validatorA, 8).String())
+	require.Equal(t, "499", readValidatorDelegatedAggregateForRewardTest(txn, validatorA, 9).String())
 	require.Equal(t, "1270", readValidatorDelegatedAggregateForRewardTest(txn, validatorB, 8).String())
 	require.Equal(t, "1270", readValidatorDelegatedAggregateForRewardTest(txn, validatorB, 9).String())
-	require.Equal(t, "5385", txn.Txn().GetBalance(staking.AddrStakingContract).String())
+	require.Equal(t, "5397", txn.Txn().GetBalance(staking.AddrStakingContract).String())
 	require.Equal(t, "0", txn.Txn().GetBalance(state.FeePoolAddress).String())
 }
 
@@ -485,7 +485,7 @@ func TestFinalizeEpoch_EmitsDeterministicPosSystemLogsAndClearsHistoryState(t *t
 	require.Equal(t, "900", word(logs[0].Data, 0).String()) // poolBalanceBefore
 	require.Equal(t, "900", word(logs[0].Data, 1).String()) // totalDistributed
 	require.Equal(t, "0", word(logs[0].Data, 2).String())   // poolRemainder
-	require.Equal(t, "15", word(logs[0].Data, 3).String())  // totalSlashed
+	require.Equal(t, "3", word(logs[0].Data, 3).String())   // totalSlashed
 	require.Equal(t, "1", word(logs[0].Data, 4).String())   // activeValidators
 
 	require.Equal(t, abiHashAddress(validatorA), logs[1].Topics[2])
@@ -525,25 +525,25 @@ func TestFinalizeEpoch_EmitsDeterministicPosSystemLogsAndClearsHistoryState(t *t
 	require.Equal(t, abiHashAddress(validatorA), logs[5].Topics[2])
 	require.Equal(t, abiHashAddress(validatorA), logs[5].Topics[3])
 	require.Equal(t, "1", word(logs[5].Data, 0).String())    // validator role
-	require.Equal(t, "10", word(logs[5].Data, 1).String())   // slash amount
+	require.Equal(t, "2", word(logs[5].Data, 1).String())    // slash amount
 	require.Equal(t, "1000", word(logs[5].Data, 2).String()) // stakeSnapshot
 	require.Equal(t, "1000", word(logs[5].Data, 3).String()) // stakeBefore
-	require.Equal(t, "990", word(logs[5].Data, 4).String())  // stakeAfter
+	require.Equal(t, "998", word(logs[5].Data, 4).String())  // stakeAfter
 	require.Equal(t, "1", word(logs[5].Data, 5).String())    // slots
 	require.Equal(t, "1", word(logs[5].Data, 6).String())    // missed
-	require.Equal(t, "100", word(logs[5].Data, 7).String())  // slashBps
+	require.Equal(t, "20", word(logs[5].Data, 7).String())   // slashBps
 	require.Equal(t, abiWordAddress(chain.DefaultBurnedAddress), logs[5].Data[8*32:9*32])
 
 	require.Equal(t, abiHashAddress(validatorA), logs[6].Topics[2])
 	require.Equal(t, abiHashAddress(delegatorA), logs[6].Topics[3])
 	require.Equal(t, "2", word(logs[6].Data, 0).String())   // delegator role
-	require.Equal(t, "5", word(logs[6].Data, 1).String())   // slash amount
+	require.Equal(t, "1", word(logs[6].Data, 1).String())   // slash amount
 	require.Equal(t, "500", word(logs[6].Data, 2).String()) // stakeSnapshot
 	require.Equal(t, "500", word(logs[6].Data, 3).String()) // stakeBefore
-	require.Equal(t, "495", word(logs[6].Data, 4).String()) // stakeAfter
+	require.Equal(t, "499", word(logs[6].Data, 4).String()) // stakeAfter
 	require.Equal(t, "1", word(logs[6].Data, 5).String())   // slots
 	require.Equal(t, "1", word(logs[6].Data, 6).String())   // missed
-	require.Equal(t, "100", word(logs[6].Data, 7).String()) // slashBps
+	require.Equal(t, "20", word(logs[6].Data, 7).String())  // slashBps
 	require.Equal(t, abiWordAddress(chain.DefaultBurnedAddress), logs[6].Data[8*32:9*32])
 
 	require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyRewardTotal(epoch))).Sign())
