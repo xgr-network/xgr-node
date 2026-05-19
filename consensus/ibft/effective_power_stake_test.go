@@ -589,23 +589,23 @@ func TestPoS_Slashing_ReducesValidatorSelfStakeAndVotingPowerWithoutDelegationDr
 	require.NoError(t, pos.FinalizeEpoch(header, epochSize, pos.UptimeConfig{}, headerSigner, tx))
 
 	logs := tx.Txn().Logs()
-	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, validatorA, 1, 10, 1_000, 1_000, 990)
-	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, delegatorA, 2, 5, 500, 500, 495)
+	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, validatorA, 1, 2, 1_000, 1_000, 998)
+	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, delegatorA, 2, 1, 500, 500, 499)
 	require.Zero(t, readPoSU64StateForVotingPowerTest(tx, "xgr.pos.slashed", slashEpoch, validatorA))
 	require.Zero(t, readPoSBigStateForVotingPowerTest(tx, "xgr.pos.slash.amount", slashEpoch, validatorA).Sign())
-	require.Equal(t, uint64(990), readStakerAmountForVotingPowerTest(tx, validatorA))
+	require.Equal(t, uint64(998), readStakerAmountForVotingPowerTest(tx, validatorA))
 	require.Equal(t, uint64(1_000), readStakerAmountForVotingPowerTest(tx, validatorB))
 
 	// Current production slashing intentionally allocates the epoch slash across
 	// effective self and delegated positions; these assertions ensure the raw and
 	// active delegation aggregates track the delegator staker amount exactly.
-	require.Equal(t, uint64(495), readStakerAmountForVotingPowerTest(tx, delegatorA))
-	require.Equal(t, uint64(495), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 8))
-	require.Equal(t, uint64(495), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 9))
+	require.Equal(t, uint64(499), readStakerAmountForVotingPowerTest(tx, delegatorA))
+	require.Equal(t, uint64(499), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 8))
+	require.Equal(t, uint64(499), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 9))
 	require.Positive(t, readStakerAmountForVotingPowerTest(tx, validatorA))
 	require.Positive(t, readStakerAmountForVotingPowerTest(tx, delegatorA))
 	require.False(t, isStakerActiveForVotingPowerTest(tx, validatorA), "zero-uptime validator is deactivated by finalize")
-	assertSnapshot(21, 20, 1_485, 1_000, 2_485)
+	assertSnapshot(21, 20, 1_497, 1_000, 2_497)
 }
 
 func TestPoS_Slashing_InactiveDelegationAccounting(t *testing.T) {
@@ -665,22 +665,21 @@ func TestPoS_Slashing_InactiveDelegationAccounting(t *testing.T) {
 	require.NoError(t, finalizeErr)
 
 	logs := tx.Txn().Logs()
-	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, validatorA, 1, 9, 1_000, 1_000, 991)
-	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, activeDelegator, 2, 4, 500, 500, 496)
-	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, inactiveDelegator, 2, 2, 300, 300, 298)
+	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, validatorA, 1, 2, 1_000, 1_000, 998)
+	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, activeDelegator, 2, 1, 500, 500, 499)
 	require.Zero(t, readPoSU64StateForVotingPowerTest(tx, "xgr.pos.slashed", slashEpoch, validatorA))
 	require.Zero(t, readPoSBigStateForVotingPowerTest(tx, "xgr.pos.slash.amount", slashEpoch, validatorA).Sign())
-	require.Equal(t, uint64(991), readStakerAmountForVotingPowerTest(tx, validatorA))
-	require.Equal(t, uint64(496), readStakerAmountForVotingPowerTest(tx, activeDelegator))
-	require.Equal(t, uint64(298), readStakerAmountForVotingPowerTest(tx, inactiveDelegator), "inactive delegator with an epoch stake snapshot is slashed, but does not contribute to active delegated aggregate")
-	require.Equal(t, uint64(794), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 8))
-	require.Equal(t, uint64(496), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 9))
+	require.Equal(t, uint64(998), readStakerAmountForVotingPowerTest(tx, validatorA))
+	require.Equal(t, uint64(499), readStakerAmountForVotingPowerTest(tx, activeDelegator))
+	require.Equal(t, uint64(300), readStakerAmountForVotingPowerTest(tx, inactiveDelegator), "inactive delegator with an epoch stake snapshot is slashed, but does not contribute to active delegated aggregate")
+	require.Equal(t, uint64(799), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 8))
+	require.Equal(t, uint64(499), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 9))
 	require.Equal(t, readStakerAmountForVotingPowerTest(tx, activeDelegator)+readStakerAmountForVotingPowerTest(tx, inactiveDelegator), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 8))
 	require.Equal(t, readStakerAmountForVotingPowerTest(tx, activeDelegator), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 9))
 	require.Equal(t, uint64(1_000), readStakerAmountForVotingPowerTest(tx, validatorB))
-	require.Equal(t, uint64(2_785), txnBalanceUint64ForVotingPowerTest(tx, staking.AddrStakingContract))
+	require.Equal(t, uint64(2_797), txnBalanceUint64ForVotingPowerTest(tx, staking.AddrStakingContract))
 	require.False(t, isStakerActiveForVotingPowerTest(tx, validatorA))
-	assertSnapshot(21, 20, 1_487, 1_000, 2_487)
+	assertSnapshot(21, 20, 1_497, 1_000, 2_497)
 }
 
 func TestPoS_Slashing_MultipleDelegators_ProportionalAndDustAccounting(t *testing.T) {
@@ -720,36 +719,35 @@ func TestPoS_Slashing_MultipleDelegators_ProportionalAndDustAccounting(t *testin
 
 	require.NoError(t, pos.FinalizeEpoch(&types.Header{Number: 20}, epochSize, pos.UptimeConfig{}, &sequenceSigner{extra: &signer.IstanbulExtra{Validators: valSet}}, tx))
 
-	const wantSlash uint64 = 22
+	const wantSlash uint64 = 4
 	reductions := (uint64(1_000) - readStakerAmountForVotingPowerTest(tx, validatorA)) +
 		(uint64(333) - readStakerAmountForVotingPowerTest(tx, delegator1)) +
 		(uint64(777) - readStakerAmountForVotingPowerTest(tx, delegator2)) +
 		(uint64(111) - readStakerAmountForVotingPowerTest(tx, delegator3))
 	logs := tx.Txn().Logs()
-	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, validatorA, 1, 10, 1_000, 1_000, 990)
-	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, delegator1, 2, 4, 333, 333, 329)
-	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, delegator2, 2, 7, 777, 777, 770)
-	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, delegator3, 2, 1, 111, 111, 110)
+	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, validatorA, 1, 2, 1_000, 1_000, 998)
+	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, delegator1, 2, 1, 333, 333, 332)
+	assertStakerSlashedLogForVotingPowerTest(t, logs, slashEpoch, validatorA, delegator2, 2, 1, 777, 777, 776)
 	require.Zero(t, readPoSU64StateForVotingPowerTest(tx, "xgr.pos.slashed", slashEpoch, validatorA))
 	require.Zero(t, readPoSBigStateForVotingPowerTest(tx, "xgr.pos.slash.amount", slashEpoch, validatorA).Sign())
 	require.Equal(t, wantSlash, reductions)
-	require.Equal(t, uint64(990), readStakerAmountForVotingPowerTest(tx, validatorA), "two wei of rounding dust are assigned to the first slashable positions in deterministic staker order")
-	require.Equal(t, uint64(329), readStakerAmountForVotingPowerTest(tx, delegator1))
-	require.Equal(t, uint64(770), readStakerAmountForVotingPowerTest(tx, delegator2))
-	require.Equal(t, uint64(110), readStakerAmountForVotingPowerTest(tx, delegator3))
-	require.Equal(t, uint64(1_209), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 8))
-	require.Equal(t, uint64(1_209), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 9))
+	require.Equal(t, uint64(998), readStakerAmountForVotingPowerTest(tx, validatorA), "two wei of rounding dust are assigned to the first slashable positions in deterministic staker order")
+	require.Equal(t, uint64(332), readStakerAmountForVotingPowerTest(tx, delegator1))
+	require.Equal(t, uint64(776), readStakerAmountForVotingPowerTest(tx, delegator2))
+	require.Equal(t, uint64(111), readStakerAmountForVotingPowerTest(tx, delegator3))
+	require.Equal(t, uint64(1_219), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 8))
+	require.Equal(t, uint64(1_219), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 9))
 	require.Equal(t, readStakerAmountForVotingPowerTest(tx, delegator1)+readStakerAmountForVotingPowerTest(tx, delegator2)+readStakerAmountForVotingPowerTest(tx, delegator3), readValidatorDelegatedStakeTotalForVotingPowerTest(tx, validatorA, 8))
 	require.Equal(t, uint64(2_000), readStakerAmountForVotingPowerTest(tx, validatorB))
-	require.Equal(t, uint64(4_199), txnBalanceUint64ForVotingPowerTest(tx, staking.AddrStakingContract))
+	require.Equal(t, uint64(4_217), txnBalanceUint64ForVotingPowerTest(tx, staking.AddrStakingContract))
 
 	backend := &backendIBFT{uptimeCfg: pos.UptimeConfig{MicroEpochSize: 2, MicroEpochNominalWeight: 10_000}, forkManager: &votingPowerForkManager{active: func(uint64) bool { return true }}}
 	powers, snap, err := backend.snapshotVotingPowers(21, 20, valSet, tx, true)
 	require.NoError(t, err)
-	require.Equal(t, uint64(2_199), powers[types.AddressToString(validatorA)].Uint64())
+	require.Equal(t, uint64(2_217), powers[types.AddressToString(validatorA)].Uint64())
 	require.Equal(t, uint64(2_000), powers[types.AddressToString(validatorB)].Uint64())
-	require.Equal(t, "4199", snap.totalVotingPower)
-	require.Equal(t, weightedQuorumThreshold(big.NewInt(4_199)).String(), snap.quorumThreshold)
+	require.Equal(t, "4217", snap.totalVotingPower)
+	require.Equal(t, weightedQuorumThreshold(big.NewInt(4_217)).String(), snap.quorumThreshold)
 }
 
 func TestPoS_Slashing_BelowMinimumStakeValidatorStateAndVotingPower(t *testing.T) {
@@ -763,7 +761,7 @@ func TestPoS_Slashing_BelowMinimumStakeValidatorStateAndVotingPower(t *testing.T
 	const epochSize uint64 = 10
 	const slashEpoch uint64 = 2
 	const validatorASelfStake uint64 = 2
-	const validatorADelegatedStake uint64 = 199
+	const validatorADelegatedStake uint64 = 999
 	const validatorBStake uint64 = 1_000
 
 	tx := newVotingPowerTestTransitionWithFeePoolSplit(t, valSet, 20)
@@ -815,7 +813,7 @@ func TestPoS_Slashing_BelowMinimumStakeValidatorStateAndVotingPower(t *testing.T
 
 	const wantSlashAmount uint64 = 2
 	const wantValidatorASelfStake uint64 = 1
-	const wantDelegatorAStake uint64 = 198
+	const wantDelegatorAStake uint64 = 998
 	const wantValidatorAPower uint64 = wantValidatorASelfStake + wantDelegatorAStake
 	const wantTotalPower uint64 = wantValidatorAPower + validatorBStake
 
@@ -1302,7 +1300,7 @@ func assertStakerSlashedLogForVotingPowerTest(
 		require.Equal(t, new(big.Int).SetUint64(stakeAfter), logWordBigIntForVotingPowerTest(log.Data, 4))
 		require.Equal(t, new(big.Int).SetUint64(1), logWordBigIntForVotingPowerTest(log.Data, 5), "slots")
 		require.Equal(t, new(big.Int).SetUint64(1), logWordBigIntForVotingPowerTest(log.Data, 6), "missed")
-		require.Equal(t, new(big.Int).SetUint64(100), logWordBigIntForVotingPowerTest(log.Data, 7), "slashBps")
+		require.Equal(t, new(big.Int).SetUint64(20), logWordBigIntForVotingPowerTest(log.Data, 7), "slashBps")
 		require.Equal(t, abiWordAddressForVotingPowerTest(chain.DefaultBurnedAddress), log.Data[8*32:9*32], "destination")
 		return
 	}
