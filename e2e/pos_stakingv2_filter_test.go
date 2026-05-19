@@ -430,7 +430,7 @@ func TestPoS_StakingV2_FinalizeEpoch_DeactivatesZeroUptimeValidator(t *testing.T
 	assert.True(t, infoOffline.Exists)
 	assert.False(t, infoOffline.Active, "validator with 0%% uptime in finalized epoch must be inactive")
 
-	expectedSlashAmount := new(big.Int).Div(new(big.Int).Mul(beforeStake, big.NewInt(100)), big.NewInt(10_000))
+	expectedSlashAmount := new(big.Int).Div(new(big.Int).Mul(beforeStake, big.NewInt(20)), big.NewInt(10_000))
 	require.Positive(t, expectedSlashAmount.Sign(), "test setup should produce a non-zero slash amount")
 	expectedStakeAfter := new(big.Int).Sub(beforeStake, expectedSlashAmount)
 	assert.Equal(t, expectedStakeAfter.String(), infoOffline.StakedAmount.String(), "0%% uptime slash must reduce validator stake")
@@ -450,7 +450,7 @@ func TestPoS_StakingV2_FinalizeEpoch_DeactivatesZeroUptimeValidator(t *testing.T
 			expectedStakeAfter,
 			slots,
 			missed,
-			100,
+			20,
 			chain.DefaultBurnedAddress,
 		)
 	}
