@@ -27,11 +27,8 @@ func setupStakingV2Cluster(t *testing.T, numValidators int, epochSize, minValida
 		numValidators,
 		IBFTDirPrefix,
 		func(_ int, config *framework.TestServerConfig) {
-			config.SetEpochSize(epochSize)
 			config.PremineValidatorBalance(defaultBalance)
-			config.SetIBFTPoS(true)
-			config.SetMinValidatorCount(minValidators)
-			config.SetMaxValidatorCount(maxValidators)
+			applyPoS3Config(config, epochSize, minValidators, maxValidators)
 		},
 	)
 	t.Cleanup(func() { ibftManager.StopServers() })
@@ -78,11 +75,8 @@ func setupStakingV2ClusterWithStandbyNode(t *testing.T, numNodes, numGenesisVali
 				config.SetIBFTDirPrefix("polygon-edge-non-validator-")
 				config.SetIBFTDir("polygon-edge-non-validator-" + fmt.Sprint(index))
 			}
-			config.SetEpochSize(epochSize)
 			config.PremineValidatorBalance(defaultBalance)
-			config.SetIBFTPoS(true)
-			config.SetMinValidatorCount(minValidators)
-			config.SetMaxValidatorCount(maxValidators)
+			applyPoS3Config(config, epochSize, minValidators, maxValidators)
 		},
 	)
 	t.Cleanup(func() { ibftManager.StopServers() })
@@ -123,11 +117,8 @@ func setupStakingV2ClusterNoAutoStake(t *testing.T, numValidators int, epochSize
 		numValidators,
 		IBFTDirPrefix,
 		func(_ int, config *framework.TestServerConfig) {
-			config.SetEpochSize(epochSize)
 			config.PremineValidatorBalance(defaultBalance)
-			config.SetIBFTPoS(true)
-			config.SetMinValidatorCount(minValidators)
-			config.SetMaxValidatorCount(maxValidators)
+			applyPoS3Config(config, epochSize, minValidators, maxValidators)
 		},
 	)
 	t.Cleanup(func() { ibftManager.StopServers() })

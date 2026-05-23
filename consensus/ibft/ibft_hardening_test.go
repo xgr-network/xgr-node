@@ -271,7 +271,6 @@ func TestStartSyncing_PostInsertBlock_UsesImportedBlockHooks(t *testing.T) {
 }
 
 func TestPreCommitState_DirectPoSBlock1SkipsGenesisParentUptimeButRunsHooks(t *testing.T) {
-	t.Parallel()
 
 	genesis := &types.Header{Number: 0, Difficulty: 1}
 	genesis.ComputeHash()

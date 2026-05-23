@@ -366,6 +366,83 @@ func (m *posOverviewMockStore) FeeHistory(uint64, uint64, []float64) (*gasprice.
 	return nil, nil
 }
 
+func TestResolveIBFTEpochSize_PoSAndLegacyBehavior(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  *chain.Params
+		want    uint64
+		wantErr bool
+	}{
+		{
+			name: "PoS uses micro epoch product even when legacy epochSize exists",
+			params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
+				"epochSize":             float64(100000),
+				"microEpochSize":        float64(10),
+				"macroEpochMicroFactor": float64(5),
+				"types":                 []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
+			}}},
+			want: 50,
+		},
+		{
+			name: "PoS with only legacy epochSize returns error",
+			params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
+				"epochSize": float64(100000),
+				"types":     []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
+			}}},
+			wantErr: true,
+		},
+		{
+			name: "PoS with microEpochSize=0 returns error",
+			params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
+				"epochSize":             float64(100000),
+				"microEpochSize":        float64(0),
+				"macroEpochMicroFactor": float64(5),
+				"types":                 []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
+			}}},
+			wantErr: true,
+		},
+		{
+			name: "PoS with macroEpochMicroFactor=0 returns error",
+			params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
+				"epochSize":             float64(100000),
+				"microEpochSize":        float64(10),
+				"macroEpochMicroFactor": float64(0),
+				"types":                 []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
+			}}},
+			wantErr: true,
+		},
+		{
+			name: "Legacy non-PoS allows epochSize",
+			params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
+				"epochSize": float64(123),
+				"types":     []interface{}{map[string]interface{}{"type": "PoA", "from": float64(0)}},
+			}}},
+			want: 123,
+		},
+		{
+			name: "PoS micro epoch product overflow returns error",
+			params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
+				"microEpochSize":        float64(1 << 63),
+				"macroEpochMicroFactor": float64(3),
+				"types":                 []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
+			}}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveIBFTEpochSize(tt.params)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestEth_GetPosValidatorsOverview(t *testing.T) {
 	v1 := types.StringToAddress("0x1000000000000000000000000000000000000001")
 	v2 := types.StringToAddress("0x1000000000000000000000000000000000000002")
@@ -405,9 +482,10 @@ func TestEth_GetPosValidatorsOverview(t *testing.T) {
 			v2: {d3},
 		},
 		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
-			"epochSize":      float64(5),
-			"types":          []interface{}{map[string]interface{}{"type": "PoS", "from": float64(8)}},
-			"microEpochSize": float64(4),
+			"epochSize":             float64(5),
+			"types":                 []interface{}{map[string]interface{}{"type": "PoS", "from": float64(8)}},
+			"microEpochSize":        float64(1),
+			"macroEpochMicroFactor": float64(5),
 		}}},
 		storage: map[types.Hash][]byte{
 			keyProposerSlots(2, v2):   uint256Bytes(10),
@@ -511,7 +589,7 @@ func TestEth_GetPosValidatorsOverview_ProposalRollingUptimeWindows(t *testing.T)
 		activeFlags:    map[types.Address]bool{v1: true, v2: true, v3: false},
 		deactiveBlocks: map[types.Address]uint64{v3: 18},
 		vals:           []types.Address{v1, v2, v3},
-		params:         &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}}}}},
+		params:         &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "microEpochSize": float64(1), "macroEpochMicroFactor": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}}}}},
 		joinedBlocks: map[types.Address]uint64{
 			v1: 0,
 			v2: 15, // joinEffectiveAtBlock=20, epoch 4 is first relevant epoch
@@ -589,7 +667,7 @@ func TestEth_GetPosValidatorsOverview_ProposalRollingUptime_NoObservedDuties(t *
 		activeFlags:    map[types.Address]bool{v1: true},
 		deactiveBlocks: map[types.Address]uint64{},
 		vals:           []types.Address{v1},
-		params:         &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}}}}},
+		params:         &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "microEpochSize": float64(1), "macroEpochMicroFactor": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}}}}},
 	}
 
 	ep := &Eth{logger: hclog.NewNullLogger(), store: store}
@@ -618,7 +696,7 @@ func TestEth_GetPosValidatorsOverview_LastFinalized(t *testing.T) {
 		receipt: map[types.Hash][]*types.Receipt{b10.Hash(): {}},
 		stakes:  map[types.Address]*big.Int{v1: big.NewInt(100)},
 		vals:    []types.Address{v1},
-		params:  &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(8)}}}}},
+		params:  &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "microEpochSize": float64(1), "macroEpochMicroFactor": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(8)}}}}},
 		storage: map[types.Hash][]byte{
 			keySlashed(2, v1): uint256Bytes(1),
 		},
@@ -645,7 +723,7 @@ func TestEth_GetPosValidatorsOverview_NoLegacyBeaconSummaryFields(t *testing.T) 
 		receipt: map[types.Hash][]*types.Receipt{b10.Hash(): {}},
 		stakes:  map[types.Address]*big.Int{v1: big.NewInt(100)},
 		vals:    []types.Address{v1},
-		params:  &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(8)}}}}},
+		params:  &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "microEpochSize": float64(1), "macroEpochMicroFactor": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(8)}}}}},
 		storage: map[types.Hash][]byte{},
 	}
 
@@ -681,7 +759,7 @@ func TestEth_GetPosValidatorsOverview_InvalidMode(t *testing.T) {
 		receipt: map[types.Hash][]*types.Receipt{b10.Hash(): {}},
 		stakes:  map[types.Address]*big.Int{},
 		vals:    []types.Address{},
-		params:  &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(8)}}}}},
+		params:  &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "microEpochSize": float64(1), "macroEpochMicroFactor": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(8)}}}}},
 	}
 
 	ep := &Eth{logger: hclog.NewNullLogger(), store: store}
@@ -714,7 +792,7 @@ func TestEth_GetPosValidatorsOverview_CurrentlyValidating_UsesEpochSnapshot(t *t
 		activeFlags:    map[types.Address]bool{v1: true, v2: true},
 		deactiveBlocks: map[types.Address]uint64{},
 		vals:           []types.Address{v1, v2},
-		params:         &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(8)}}}}},
+		params:         &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "microEpochSize": float64(1), "macroEpochMicroFactor": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(8)}}}}},
 		minValidators:  2,
 		threshold:      big.NewInt(500),
 		storage: map[types.Hash][]byte{
@@ -771,7 +849,7 @@ func TestEth_GetPosValidatorsOverview_PoSNotActive(t *testing.T) {
 		receipt: map[types.Hash][]*types.Receipt{},
 		stakes:  map[types.Address]*big.Int{},
 		vals:    []types.Address{},
-		params:  &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(100)}}}}},
+		params:  &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "microEpochSize": float64(1), "macroEpochMicroFactor": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(100)}}}}},
 	}
 
 	ep := &Eth{logger: hclog.NewNullLogger(), store: store}
@@ -790,7 +868,7 @@ func TestEth_GetPosValidatorsOverview_RewardIneligibleOnlyForEpochMembers(t *tes
 		receipt: map[types.Hash][]*types.Receipt{b10.Hash(): {}},
 		stakes:  map[types.Address]*big.Int{v1: big.NewInt(100)},
 		vals:    []types.Address{v1},
-		params:  &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(8)}}}}},
+		params:  &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "microEpochSize": float64(1), "macroEpochMicroFactor": float64(5), "types": []interface{}{map[string]interface{}{"type": "PoS", "from": float64(8)}}}}},
 		storage: map[types.Hash][]byte{
 			keyProposerSlots(2, v1):  uint256Bytes(10),
 			keyProposerMissed(2, v1): uint256Bytes(10),
@@ -823,12 +901,16 @@ func TestEth_GetPosValidatorDelegators_ReturnsPoolConfig(t *testing.T) {
 		deactiveBlocks: map[types.Address]uint64{},
 		vals:           []types.Address{validator},
 		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
-			"epochSize":              float64(5),
-			"type":                   "PoS",
-			"validator_type":         "ecdsa",
-			"deployment":             float64(0),
-			"minValidatorCount":      float64(1),
-			"maxValidatorCount":      float64(100),
+			"microEpochSize":         float64(1),
+			"macroEpochMicroFactor":  float64(5),
+			"types": []interface{}{map[string]interface{}{
+				"type":              "PoS",
+				"validator_type":    "ecdsa",
+				"from":              float64(0),
+				"deployment":        float64(0),
+				"minValidatorCount": float64(1),
+				"maxValidatorCount": float64(100),
+			}},
 			"blockTrackerPollInterv": "1s",
 		}}},
 		poolEnabled:    map[types.Address]bool{validator: false},
@@ -884,8 +966,13 @@ func TestEth_GetPosValidatorDelegators_UsesRenamedCurrentStakeFieldsInJSON(t *te
 		deactiveBlocks: map[types.Address]uint64{},
 		vals:           []types.Address{validator},
 		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
-			"epochSize": float64(5),
-			"type":      "PoS",
+			"microEpochSize":        float64(1),
+			"macroEpochMicroFactor": float64(5),
+			"types": []interface{}{map[string]interface{}{
+				"type":           "PoS",
+				"validator_type": "ecdsa",
+				"from":           float64(0),
+			}},
 		}}},
 		poolEnabled:    map[types.Address]bool{validator: true},
 		poolMax:        map[types.Address]*big.Int{validator: big.NewInt(10_000)},
@@ -951,8 +1038,10 @@ func TestEth_GetPosValidatorDelegators_ExcludesSelfValidatorAndReturnsRewardFiel
 		deactiveBlocks: map[types.Address]uint64{},
 		vals:           []types.Address{validator},
 		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
-			"epochSize": float64(5),
-			"types":     []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
+			"epochSize":             float64(5),
+			"microEpochSize":        float64(1),
+			"macroEpochMicroFactor": float64(5),
+			"types":                 []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
 		}}},
 		delegatorsByV: map[types.Address][]types.Address{validator: []types.Address{validator, delegator}},
 		stakerInfos: map[types.Address]map[string]interface{}{
@@ -1007,8 +1096,10 @@ func TestEth_GetPosValidatorDelegators_LastFinalizedUsesEpochEffectiveStake(t *t
 		deactiveBlocks: map[types.Address]uint64{},
 		vals:           []types.Address{validator},
 		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
-			"epochSize": float64(10),
-			"types":     []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
+			"epochSize":             float64(10),
+			"microEpochSize":        float64(2),
+			"macroEpochMicroFactor": float64(5),
+			"types":                 []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
 		}}},
 		delegatorsByV: map[types.Address][]types.Address{validator: {liveOnlyDelegatorA, liveOnlyDelegatorB}},
 		stakerInfos: map[types.Address]map[string]interface{}{
@@ -1061,8 +1152,10 @@ func TestEth_GetPosValidatorDelegators_LastFinalizedKeepsDeactivatedDelegatorEff
 		deactiveBlocks: map[types.Address]uint64{delegator: 19},
 		vals:           []types.Address{validator},
 		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
-			"epochSize": float64(10),
-			"types":     []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
+			"epochSize":             float64(10),
+			"microEpochSize":        float64(2),
+			"macroEpochMicroFactor": float64(5),
+			"types":                 []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
 		}}},
 		delegatorsByV: map[types.Address][]types.Address{validator: {delegator}},
 		stakerInfos: map[types.Address]map[string]interface{}{
@@ -1107,8 +1200,10 @@ func TestEth_GetPosValidatorDelegators_LastFinalizedDoesNotFallbackWhenTotalSnap
 		deactiveBlocks: map[types.Address]uint64{delegator: 19},
 		vals:           []types.Address{validator},
 		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
-			"epochSize": float64(10),
-			"types":     []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
+			"epochSize":             float64(10),
+			"microEpochSize":        float64(2),
+			"macroEpochMicroFactor": float64(5),
+			"types":                 []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
 		}}},
 		delegatorsByV: map[types.Address][]types.Address{validator: {delegator}},
 		stakerInfos: map[types.Address]map[string]interface{}{
@@ -1145,8 +1240,10 @@ func TestEth_GetPosValidatorsOverview_ExcludesDelegatorsFromValidatorList(t *tes
 		deactiveBlocks: map[types.Address]uint64{},
 		vals:           []types.Address{validator},
 		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
-			"epochSize": float64(5),
-			"types":     []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
+			"epochSize":             float64(5),
+			"microEpochSize":        float64(1),
+			"macroEpochMicroFactor": float64(5),
+			"types":                 []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
 		}}},
 		delegatorsByV: map[types.Address][]types.Address{validator: []types.Address{delegator}},
 		stakerInfos: map[types.Address]map[string]interface{}{
@@ -1187,6 +1284,7 @@ func TestEth_GetPosValidatorsOverview_ProvidesMicroEpochFields(t *testing.T) {
 		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
 			"epochSize":                    float64(5),
 			"microEpochSize":               float64(4),
+			"macroEpochMicroFactor":        float64(5),
 			"microEpochNominalWeightUnits": float64(10000),
 			"types":                        []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
 		}}},
@@ -1242,6 +1340,7 @@ func TestEth_GetPosValidatorsOverview_MicroWeights_DefaultWhenStateMissing(t *te
 		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
 			"epochSize":                    float64(5),
 			"microEpochSize":               float64(4),
+			"macroEpochMicroFactor":        float64(5),
 			"microEpochNominalWeightUnits": float64(10000),
 			"types":                        []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
 		}}},
@@ -1324,6 +1423,7 @@ func TestEth_GetPosValidatorsOverview_MicroWeights_DecayFromState(t *testing.T) 
 		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
 			"epochSize":                    float64(5),
 			"microEpochSize":               float64(4),
+			"macroEpochMicroFactor":        float64(5),
 			"microEpochNominalWeightUnits": float64(10000),
 			"types":                        []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
 		}}},
@@ -1357,8 +1457,10 @@ func TestEth_GetPosValidatorsOverview_ProvidesEpochTimingFields(t *testing.T) {
 		deactiveBlocks: map[types.Address]uint64{validator: 9},
 		vals:           []types.Address{validator},
 		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
-			"epochSize": float64(5),
-			"types":     []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
+			"epochSize":             float64(5),
+			"microEpochSize":        float64(1),
+			"macroEpochMicroFactor": float64(5),
+			"types":                 []interface{}{map[string]interface{}{"type": "PoS", "from": float64(1)}},
 		}}},
 		stakerInfos: map[types.Address]map[string]interface{}{
 			validator: {
@@ -1404,7 +1506,15 @@ func TestEth_GetPosValidatorDelegators_UsesCustomEffectiveMinDelegatorStake(t *t
 		stakes:         map[types.Address]*big.Int{validator: big.NewInt(200_000)},
 		activeFlags:    map[types.Address]bool{validator: true},
 		vals:           []types.Address{validator},
-		params:         &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{"epochSize": float64(5), "type": "PoS"}}},
+		params: &chain.Params{Engine: map[string]interface{}{"ibft": map[string]interface{}{
+			"microEpochSize":        float64(1),
+			"macroEpochMicroFactor": float64(5),
+			"types": []interface{}{map[string]interface{}{
+				"type":           "PoS",
+				"validator_type": "ecdsa",
+				"from":           float64(0),
+			}},
+		}}},
 		poolEnabled:    map[types.Address]bool{validator: true},
 		poolMax:        map[types.Address]*big.Int{validator: big.NewInt(55)},
 		poolMin:        map[types.Address]*big.Int{validator: custom},

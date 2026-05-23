@@ -38,11 +38,8 @@ func TestPoS_StakingV2_FilteringAndFallback(t *testing.T) {
 		numGenesisValidators,
 		IBFTDirPrefix,
 		func(_ int, config *framework.TestServerConfig) {
-			config.SetEpochSize(5)
 			config.PremineValidatorBalance(defaultBalance)
-			config.SetIBFTPoS(true)
-			config.SetMinValidatorCount(3)
-			config.SetMaxValidatorCount(uint64(numGenesisValidators))
+			applyPoS3Config(config, 5, 3, uint64(numGenesisValidators))
 		},
 	)
 	t.Cleanup(func() { ibftManager.StopServers() })
@@ -110,11 +107,8 @@ func TestPoS_StakingV2_Tier2UsedWhenTier1BelowMinValidators(t *testing.T) {
 		numGenesisValidators,
 		IBFTDirPrefix,
 		func(_ int, config *framework.TestServerConfig) {
-			config.SetEpochSize(5)
 			config.PremineValidatorBalance(defaultBalance)
-			config.SetIBFTPoS(true)
-			config.SetMinValidatorCount(3)
-			config.SetMaxValidatorCount(uint64(numGenesisValidators))
+			applyPoS3Config(config, 5, 3, uint64(numGenesisValidators))
 		},
 	)
 	t.Cleanup(func() { ibftManager.StopServers() })
@@ -167,11 +161,8 @@ func TestPoS_StakingV2_UnstakeDeletesValidatorState(t *testing.T) {
 		numGenesisValidators,
 		IBFTDirPrefix,
 		func(_ int, config *framework.TestServerConfig) {
-			config.SetEpochSize(epochSize)
 			config.PremineValidatorBalance(defaultBalance)
-			config.SetIBFTPoS(true)
-			config.SetMinValidatorCount(3)
-			config.SetMaxValidatorCount(uint64(numGenesisValidators))
+			applyPoS3Config(config, epochSize, 3, uint64(numGenesisValidators))
 		},
 	)
 	t.Cleanup(func() { ibftManager.StopServers() })
@@ -240,11 +231,8 @@ func TestPoS_StakingV2_WithdrawCannotDropBelowMinStake(t *testing.T) {
 		numGenesisValidators,
 		IBFTDirPrefix,
 		func(_ int, config *framework.TestServerConfig) {
-			config.SetEpochSize(5)
 			config.PremineValidatorBalance(defaultBalance)
-			config.SetIBFTPoS(true)
-			config.SetMinValidatorCount(3)
-			config.SetMaxValidatorCount(uint64(numGenesisValidators))
+			applyPoS3Config(config, 5, 3, uint64(numGenesisValidators))
 		},
 	)
 	t.Cleanup(func() { ibftManager.StopServers() })
@@ -304,11 +292,8 @@ func TestPoS_StakingV2_FinalizeEpoch_DeactivatesZeroUptimeValidator(t *testing.T
 		numGenesisValidators,
 		IBFTDirPrefix,
 		func(_ int, config *framework.TestServerConfig) {
-			config.SetEpochSize(epochSize)
 			config.PremineValidatorBalance(defaultBalance)
-			config.SetIBFTPoS(true)
-			config.SetMinValidatorCount(3)
-			config.SetMaxValidatorCount(numGenesisValidators)
+			applyPoS3Config(config, epochSize, 3, numGenesisValidators)
 		},
 	)
 	t.Cleanup(func() { ibftManager.StopServers() })

@@ -15,12 +15,14 @@ import (
 
 func TestPoA_PoS_Cutover_FirstBoundaryDoesNotStall(t *testing.T) {
 	const (
-		nodeCount     = 4
-		epochSize     = uint64(50)
-		poSFrom       = epochSize
-		poSDeployment = uint64(5)
-		premineEth    = 7_000_000
-		stakeEth      = 2_000_000
+		nodeCount             = 4
+		epochSize             = uint64(50)
+		microEpochSize        = uint64(10)
+		macroEpochMicroFactor = uint64(5)
+		poSFrom               = epochSize
+		poSDeployment         = uint64(5)
+		premineEth            = 7_000_000
+		stakeEth              = 2_000_000
 	)
 	nextBoundary := poSFrom + epochSize
 
@@ -32,6 +34,7 @@ func TestPoA_PoS_Cutover_FirstBoundaryDoesNotStall(t *testing.T) {
 			cfg.SetBlockTime(1)
 			cfg.SetIBFTBaseTimeout(2)
 			cfg.SetEpochSize(epochSize)
+			cfg.SetMicroEpochConfig(microEpochSize, macroEpochMicroFactor, 10_000, 9_000)
 			cfg.PremineValidatorBalance(framework.EthToWei(premineEth))
 		},
 	)

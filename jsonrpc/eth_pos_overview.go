@@ -21,10 +21,6 @@ import (
 	validatorTypes "github.com/xgr-network/xgr-node/validators"
 )
 
-const (
-	defaultIBFTEpochSize uint64 = 100000
-)
-
 type stakingQueryRuntime struct {
 	store      ethStore
 	header     *types.Header
@@ -157,7 +153,10 @@ func (e *Eth) GetPosValidatorsOverview(reportEpoch *string) (interface{}, error)
 		return nil, fmt.Errorf("header has a nil value")
 	}
 
-	epochSize := resolveIBFTEpochSize(e.store.GetChainParams())
+	epochSize, err := resolveIBFTEpochSize(e.store.GetChainParams())
+	if err != nil {
+		return nil, err
+	}
 	posFrom, hasPoS := resolvePoSFromBlock(e.store.GetChainParams())
 
 	currentEpoch := epochOf(head.Number, epochSize)
@@ -465,7 +464,10 @@ func (e *Eth) GetPosValidatorDelegators(validator types.Address, reportEpoch *st
 	if head == nil {
 		return nil, fmt.Errorf("header has a nil value")
 	}
-	epochSize := resolveIBFTEpochSize(e.store.GetChainParams())
+	epochSize, err := resolveIBFTEpochSize(e.store.GetChainParams())
+	if err != nil {
+		return nil, err
+	}
 	currentEpoch := epochOf(head.Number, epochSize)
 	lastFinalizedEpoch := head.Number / epochSize
 	reportedEpoch := currentEpoch
@@ -713,29 +715,46 @@ func extractTopicAddress(topic types.Hash) types.Address {
 	return types.BytesToAddress(topic[12:])
 }
 
-func resolveIBFTEpochSize(params *chain.Params) uint64 {
+func resolveIBFTEpochSize(params *chain.Params) (uint64, error) {
 	if params == nil {
-		return defaultIBFTEpochSize
+		return 0, fmt.Errorf("missing chain params")
 	}
 
 	rawIBFT, ok := params.Engine["ibft"]
 	if !ok {
-		return defaultIBFTEpochSize
+		return 0, fmt.Errorf("missing ibft engine config")
 	}
 	ibftMap, ok := rawIBFT.(map[string]interface{})
 	if !ok {
-		return defaultIBFTEpochSize
-	}
-	rawEpoch, ok := ibftMap["epochSize"]
-	if !ok {
-		return defaultIBFTEpochSize
-	}
-	epochFloat, ok := rawEpoch.(float64)
-	if !ok || epochFloat <= 0 {
-		return defaultIBFTEpochSize
+		return 0, fmt.Errorf("invalid ibft engine config type %T", rawIBFT)
 	}
 
-	return uint64(epochFloat)
+	microEpoch, hasMicro := parsePositiveUint64FromInterface(ibftMap["microEpochSize"])
+	macroFactor, hasFactor := parsePositiveUint64FromInterface(ibftMap["macroEpochMicroFactor"])
+	_, isPoS := resolvePoSFromBlock(params)
+	if isPoS {
+		if !hasMicro || !hasFactor {
+			return 0, fmt.Errorf("unable to resolve PoS epoch size: missing valid microEpochSize/macroEpochMicroFactor")
+		}
+		if macroFactor > ^uint64(0)/microEpoch {
+			return 0, fmt.Errorf("macro epoch size overflow: microEpochSize=%d macroEpochMicroFactor=%d", microEpoch, macroFactor)
+		}
+		return microEpoch * macroFactor, nil
+	}
+
+	if epochSize, ok := parsePositiveUint64FromInterface(ibftMap["epochSize"]); ok {
+		return epochSize, nil
+	}
+
+	return 0, fmt.Errorf("unable to resolve IBFT epoch size: missing valid epoch configuration")
+}
+
+func parsePositiveUint64FromInterface(raw interface{}) (uint64, bool) {
+	v, ok := raw.(float64)
+	if !ok || v <= 0 {
+		return 0, false
+	}
+	return uint64(v), true
 }
 
 func resolvePoSFromBlock(params *chain.Params) (uint64, bool) {
@@ -752,43 +771,49 @@ func resolvePoSFromBlock(params *chain.Params) (uint64, bool) {
 		return 0, false
 	}
 	rawTypes, ok := ibftMap["types"]
-	if !ok {
-		return 0, false
-	}
-	typesSlice, ok := rawTypes.([]interface{})
-	if !ok {
-		return 0, false
-	}
-
-	var (
-		minFrom uint64
-		found   bool
-	)
-
-	for _, rawType := range typesSlice {
-		typeMap, ok := rawType.(map[string]interface{})
+	if ok {
+		typesSlice, ok := rawTypes.([]interface{})
 		if !ok {
-			continue
+			return 0, false
 		}
 
-		tv, ok := typeMap["type"].(string)
-		if !ok || tv != "PoS" {
-			continue
+		var (
+			minFrom uint64
+			found   bool
+		)
+
+		for _, rawType := range typesSlice {
+			typeMap, ok := rawType.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			tv, ok := typeMap["type"].(string)
+			if !ok || tv != "PoS" {
+				continue
+			}
+
+			fromFloat, ok := typeMap["from"].(float64)
+			if !ok || fromFloat < 0 {
+				continue
+			}
+
+			from := uint64(fromFloat)
+			if !found || from < minFrom {
+				minFrom = from
+				found = true
+			}
 		}
 
-		fromFloat, ok := typeMap["from"].(float64)
-		if !ok || fromFloat < 0 {
-			continue
-		}
-
-		from := uint64(fromFloat)
-		if !found || from < minFrom {
-			minFrom = from
-			found = true
-		}
+		return minFrom, found
 	}
 
-	return minFrom, found
+	tv, ok := ibftMap["type"].(string)
+	if !ok || tv != "PoS" {
+		return 0, false
+	}
+
+	return 0, true
 }
 
 type uptimeOverviewMeta struct {

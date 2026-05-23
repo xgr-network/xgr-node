@@ -13,15 +13,18 @@ import (
 
 func TestPoA_PoS_Cutover_BLS_DeploymentEqualsPosFrom(t *testing.T) {
 	const (
-		nodeCount = 4
-		epochSize = uint64(10)
-		posFrom   = uint64(10)
+		nodeCount             = 4
+		epochSize             = uint64(10)
+		microEpochSize        = uint64(10)
+		macroEpochMicroFactor = uint64(1)
+		posFrom               = uint64(10)
 	)
 
 	mgr := framework.NewIBFTServersManager(t, nodeCount, "poa-pos-cutover-bls-", func(_ int, cfg *framework.TestServerConfig) {
 		cfg.SetBlockTime(1)
 		cfg.SetIBFTBaseTimeout(2)
 		cfg.SetEpochSize(epochSize)
+		cfg.SetMicroEpochConfig(microEpochSize, macroEpochMicroFactor, 10_000, 9_000)
 		cfg.SetValidatorType(validators.BLSValidatorType)
 		cfg.PremineValidatorBalance(framework.EthToWei(2_000_000))
 	})

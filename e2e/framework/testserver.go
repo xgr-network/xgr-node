@@ -431,7 +431,14 @@ func (t *TestServer) GenesisPredeploy() error {
 }
 
 func (t *TestServer) patchMicroEpochGenesisConfig() error {
-	if t.Config.MicroEpochSize == 0 {
+	if t.Config.MicroEpochSize == 0 || t.Config.MacroEpochMicroFactor == 0 {
+		if t.Config.IsPos {
+			return fmt.Errorf("invalid PoS IBFT config: microEpochSize (%d) and macroEpochMicroFactor (%d) must be set",
+				t.Config.MicroEpochSize,
+				t.Config.MacroEpochMicroFactor,
+			)
+		}
+
 		return nil
 	}
 
@@ -470,6 +477,32 @@ func (t *TestServer) patchMicroEpochGenesisConfig() error {
 	}
 	if t.Config.MicroEpochDecayBps > 0 {
 		ibftCfg["microEpochInactivityDecayBps"] = t.Config.MicroEpochDecayBps
+	}
+	if rawTypes, ok := ibftCfg["types"]; ok {
+		if _, valid := rawTypes.([]interface{}); valid {
+			delete(ibftCfg, "type")
+		}
+	} else if t.Config.IsPos {
+		validatorType := string(t.Config.ValidatorType)
+		if validatorType == "" {
+			validatorType = "ecdsa"
+		}
+
+		posType := map[string]interface{}{
+			"type":           "PoS",
+			"validator_type": validatorType,
+			"from":           float64(0),
+		}
+
+		if t.Config.MinValidatorCount > 0 {
+			posType["minValidatorCount"] = float64(t.Config.MinValidatorCount)
+		}
+		if t.Config.MaxValidatorCount > 0 {
+			posType["maxValidatorCount"] = float64(t.Config.MaxValidatorCount)
+		}
+
+		ibftCfg["types"] = []interface{}{posType}
+		delete(ibftCfg, "type")
 	}
 
 	out, err := json.MarshalIndent(doc, "", "  ")
