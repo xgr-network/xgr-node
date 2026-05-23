@@ -34,6 +34,11 @@ type weightedBLS struct {
 	bls   []byte
 }
 
+type ValidatorSelection struct {
+	Validators validators.Validators
+	NoSlash    bool
+}
+
 // FetchValidators fetches validators from staking state and applies filtering policy.
 func FetchValidators(
 	validatorType validators.ValidatorType,
@@ -51,6 +56,14 @@ func FetchValidators(
 }
 
 func FetchECDSAValidators(transition *state.Transition, _ types.Address) (validators.Validators, error) {
+	selection, err := FetchECDSAValidatorSelection(transition, types.ZeroAddress)
+	if err != nil {
+		return nil, err
+	}
+	return selection.Validators, nil
+}
+
+func FetchECDSAValidatorSelection(transition *state.Transition, _ types.Address) (*ValidatorSelection, error) {
 	valAddrs := readValidators(transition)
 	minCount := readMinNumValidators(transition)
 	maxCount := readMaxNumValidators(transition)
@@ -92,29 +105,28 @@ func FetchECDSAValidators(transition *state.Transition, _ types.Address) (valida
 		eligibleWeighted = append(eligibleWeighted, weightedAddr{addr: addr, stake: totalStake})
 	}
 
+	noSlash := false
+	selected := eligible
 	if uint64(eligible.Len()) < minCount {
+		noSlash = true
 		if uint64(emergency.Len()) >= minCount {
-			return trimECDSASetToMax(emergency, maxCount), nil
+			selected = trimECDSASetToMax(emergency, maxCount)
+		} else {
+			res, err := weightedECDSASet(emergencyWeighted)
+			if err != nil {
+				return nil, err
+			}
+			selected = trimECDSASetToMax(res, maxCount)
 		}
-
-		res, err := weightedECDSASet(emergencyWeighted)
-		if err != nil {
-			return nil, err
-		}
-
-		return trimECDSASetToMax(res, maxCount), nil
-	}
-
-	if maxCount > 0 && uint64(eligible.Len()) > maxCount {
+	} else if maxCount > 0 && uint64(eligible.Len()) > maxCount {
 		res, err := weightedECDSASet(eligibleWeighted)
 		if err != nil {
 			return nil, err
 		}
-
-		return trimECDSASetToMax(res, maxCount), nil
+		selected = trimECDSASetToMax(res, maxCount)
 	}
 
-	return eligible, nil
+	return &ValidatorSelection{Validators: selected, NoSlash: noSlash}, nil
 }
 
 // IsEmergencyModeActive returns true when the normal eligibility filter would
@@ -144,6 +156,14 @@ func IsEmergencyModeActive(transition *state.Transition) bool {
 }
 
 func FetchBLSValidators(transition *state.Transition, _ types.Address) (validators.Validators, error) {
+	selection, err := FetchBLSValidatorSelection(transition, types.ZeroAddress)
+	if err != nil {
+		return nil, err
+	}
+	return selection.Validators, nil
+}
+
+func FetchBLSValidatorSelection(transition *state.Transition, _ types.Address) (*ValidatorSelection, error) {
 	valAddrs := readValidators(transition)
 	minCount := readMinNumValidators(transition)
 	maxCount := readMaxNumValidators(transition)
@@ -187,29 +207,28 @@ func FetchBLSValidators(transition *state.Transition, _ types.Address) (validato
 		eligibleWeighted = append(eligibleWeighted, weightedBLS{addr: addr, stake: totalStake, bls: blsKey})
 	}
 
+	noSlash := false
+	selected := eligible
 	if uint64(eligible.Len()) < minCount {
+		noSlash = true
 		if uint64(emergency.Len()) >= minCount {
-			return trimBLSSetToMax(emergency, maxCount), nil
+			selected = trimBLSSetToMax(emergency, maxCount)
+		} else {
+			res, err := weightedBLSSet(emergencyWeighted)
+			if err != nil {
+				return nil, err
+			}
+			selected = trimBLSSetToMax(res, maxCount)
 		}
-
-		res, err := weightedBLSSet(emergencyWeighted)
-		if err != nil {
-			return nil, err
-		}
-
-		return trimBLSSetToMax(res, maxCount), nil
-	}
-
-	if maxCount > 0 && uint64(eligible.Len()) > maxCount {
+	} else if maxCount > 0 && uint64(eligible.Len()) > maxCount {
 		res, err := weightedBLSSet(eligibleWeighted)
 		if err != nil {
 			return nil, err
 		}
-
-		return trimBLSSetToMax(res, maxCount), nil
+		selected = trimBLSSetToMax(res, maxCount)
 	}
 
-	return eligible, nil
+	return &ValidatorSelection{Validators: selected, NoSlash: noSlash}, nil
 }
 
 func readValidators(transition *state.Transition) []types.Address {
