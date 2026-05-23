@@ -1003,3 +1003,31 @@ func TestForkManager_initializeHooksRegisters(t *testing.T) {
 		fm.hooksRegisters[PoS],
 	)
 }
+
+func TestForkManagerGetValidatorStakeSnapshot(t *testing.T) {
+	t.Parallel()
+
+	t.Run("poa returns error", func(t *testing.T) {
+		fm := &ForkManager{forks: IBFTForks{{Type: PoA, From: common.JSONNumber{Value: 0}}}}
+		_, err := fm.GetValidatorStakeSnapshot(1, validators.NewECDSAValidatorSet())
+		assert.Error(t, err)
+	})
+
+	t.Run("pos delegates to contract wrapper", func(t *testing.T) {
+		dir := t.TempDir()
+		fm := &ForkManager{
+			forks:           IBFTForks{{Type: PoS, From: common.JSONNumber{Value: 50}}},
+			epochSize:       10,
+			validatorStores: map[store.SourceType]ValidatorStore{},
+		}
+		w, err := NewContractValidatorStoreWrapper(hclog.NewNullLogger(), &store.MockBlockchain{
+			GetHeaderByNumberFn: func(uint64) (*types.Header, bool) { return nil, false },
+		}, &MockExecutor{}, func(uint64) (signer.Signer, error) { return nil, nil }, dir)
+		assert.NoError(t, err)
+		vals := validators.NewECDSAValidatorSet(validators.NewECDSAValidator(types.StringToAddress("0x1000000000000000000000000000000000000001")))
+		fm.validatorStores[store.Contract] = w
+
+		_, err = fm.GetValidatorStakeSnapshot(61, vals)
+		assert.Error(t, err)
+	})
+}

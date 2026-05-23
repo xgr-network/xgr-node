@@ -96,9 +96,13 @@ func FinalizeEpoch(header *types.Header, epochSize uint64, uptimeCfg UptimeConfi
 
 	// Resolve donation address (slash target).
 	donationAddr := resolveDonationAddress(txn)
-	slashingEnabled := !contractstore.IsEmergencyModeActive(txn)
+	noSlashMode, hasNoSlashMode := LoadMacroEpochNoSlashMode(txn, epoch)
+	if !hasNoSlashMode {
+		return fmt.Errorf("missing no-slash mode for epoch %d", epoch)
+	}
+	slashingEnabled := !noSlashMode
 	posDiagLogger.Debug("FinalizeEpoch donation address", "block", header.Number, "epoch", epoch, "donationAddr", donationAddr)
-	posDiagLogger.Debug("FinalizeEpoch slashing mode", "block", header.Number, "epoch", epoch, "slashingEnabled", slashingEnabled)
+	posDiagLogger.Debug("FinalizeEpoch slashing mode", "block", header.Number, "epoch", epoch, "slashingEnabled", slashingEnabled, "hasNoSlashMode", hasNoSlashMode, "noSlashMode", noSlashMode)
 
 	// Collect per-validator effective weights.
 	type vinfo struct {
@@ -110,7 +114,6 @@ func FinalizeEpoch(header *types.Header, epochSize uint64, uptimeCfg UptimeConfi
 	sumWeights := new(big.Int)
 	slashEvents := make([]posStakerSlashEvent, 0)
 	uptimeEvents := make([]posValidatorUptimeFinalizedEvent, 0, len(epochValidators))
-	snapshotStakers := make([]types.Address, 0, len(epochValidators))
 
 	for _, addr := range epochValidators {
 
@@ -194,9 +197,6 @@ func FinalizeEpoch(header *types.Header, epochSize uint64, uptimeCfg UptimeConfi
 					if len(slashEvent) > 0 {
 						slashed = true
 						slashEvents = append(slashEvents, slashEvent...)
-						for _, stakerEvent := range slashEvent {
-							snapshotStakers = append(snapshotStakers, stakerEvent.Staker)
-						}
 					}
 				} else {
 					posDiagLogger.Debug("FinalizeEpoch slashing skipped: emergency mode active", "epoch", epoch, "validator", addr)
@@ -295,9 +295,6 @@ func FinalizeEpoch(header *types.Header, epochSize uint64, uptimeCfg UptimeConfi
 		rewardEvent := creditStakeReward(txn, epoch, plan.addr, plan.parts)
 		rewardEvents = append(rewardEvents, rewardEvent...)
 		totalDistributed.Add(totalDistributed, plan.share)
-		for _, stakerEvent := range rewardEvent {
-			snapshotStakers = append(snapshotStakers, stakerEvent.Staker)
-		}
 		posDiagLogger.Debug("FinalizeEpoch payout", "epoch", epoch, "validator", plan.addr, "share", plan.share)
 	}
 
@@ -307,8 +304,7 @@ func FinalizeEpoch(header *types.Header, epochSize uint64, uptimeCfg UptimeConfi
 	}
 	remainder := new(big.Int).Sub(new(big.Int).Set(poolBal), totalDistributed)
 	activeValidatorsAfter := countActiveEpochValidators(txn, epochValidators)
-	snapshotStakers = append(snapshotStakers, collectEpochValidatorStakers(txn, epochValidators)...)
-	cleanupFinalizedEpochState(txn, epoch, epochValidators, snapshotStakers)
+	pruneFinalizedEpochUptimeCounters(txn, epoch, epochValidators)
 
 	appendPosEpochFinalizedLog(txn, epoch, header.Number, poolBal, totalDistributed, remainder, totalSlashed, activeValidatorsAfter)
 	for _, ev := range uptimeEvents {
@@ -842,40 +838,15 @@ func creditStakeReward(txn *state.Transition, epoch uint64, addr types.Address, 
 	return rewardEvents
 }
 
-func cleanupFinalizedEpochState(txn *state.Transition, epoch uint64, validators, stakers []types.Address) {
-	if txn == nil || epoch == 0 {
+func pruneFinalizedEpochUptimeCounters(txn *state.Transition, epoch uint64, epochValidators []types.Address) {
+	if txn == nil || epoch == 0 || len(epochValidators) == 0 {
 		return
 	}
-	// No ringbuffer or marker history is retained: finalized epoch working keys are deleted.
-	zero := types.Hash{}
-	for _, validator := range validators {
+	zero := types.ZeroHash
+	for _, validator := range epochValidators {
 		txn.Txn().SetState(PosSysAddr, keyProposerSlots(epoch, validator), zero)
 		txn.Txn().SetState(PosSysAddr, keyProposerMissed(epoch, validator), zero)
-		txn.Txn().SetState(PosSysAddr, keyStakeSnapshot(epoch, validator), zero)
-		txn.Txn().SetState(PosSysAddr, keyStakerStakeSnapshot(epoch, validator), zero)
-		txn.Txn().SetState(PosSysAddr, keySlashed(epoch, validator), zero)
-		txn.Txn().SetState(PosSysAddr, keySlashAmount(epoch, validator), zero)
 	}
-	uniq := make(map[types.Address]struct{}, len(stakers)+len(validators))
-	for _, validator := range validators {
-		uniq[validator] = struct{}{}
-	}
-	for _, staker := range stakers {
-		uniq[staker] = struct{}{}
-	}
-	ordered := make([]types.Address, 0, len(uniq))
-	for staker := range uniq {
-		ordered = append(ordered, staker)
-	}
-	sort.Slice(ordered, func(i, j int) bool { return bytes.Compare(ordered[i].Bytes(), ordered[j].Bytes()) < 0 })
-	for _, staker := range ordered {
-		txn.Txn().SetState(PosSysAddr, keyStakerStakeSnapshot(epoch, staker), zero)
-	}
-	l := u64FromHash(txn.Txn().GetState(PosSysAddr, keyEpochValidatorsLen(epoch)))
-	for i := uint64(0); i < l && i < maxEpochValidatorsSnapshot; i++ {
-		txn.Txn().SetState(PosSysAddr, keyEpochValidator(epoch, i), zero)
-	}
-	txn.Txn().SetState(PosSysAddr, keyEpochValidatorsLen(epoch), zero)
 }
 
 func readStakedAmount(txn *state.Transition, addr types.Address) *big.Int {

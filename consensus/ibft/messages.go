@@ -12,7 +12,7 @@ func (i *backendIBFT) signMessage(msg *protoIBFT.IbftMessage) *protoIBFT.IbftMes
 		return nil
 	}
 
-	if msg.Signature, err = i.currentSigner.SignIBFTMessage(raw); err != nil {
+	if msg.Signature, err = i.getCurrentSigner().SignIBFTMessage(raw); err != nil {
 		return nil
 	}
 
@@ -67,7 +67,7 @@ func (i *backendIBFT) BuildPrepareMessage(proposalHash []byte, view *protoIBFT.V
 }
 
 func (i *backendIBFT) BuildCommitMessage(proposalHash []byte, view *protoIBFT.View) *protoIBFT.IbftMessage {
-	committedSeal, err := i.currentSigner.CreateCommittedSeal(proposalHash)
+	committedSeal, err := i.getCurrentSigner().CreateCommittedSeal(proposalHash)
 	if err != nil {
 		i.logger.Error("Unable to build commit message, %v", err)
 

@@ -3,6 +3,9 @@ package e2e
 import (
 	"context"
 	"math/big"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,7 +47,7 @@ func TestPoS_StakingV2_CrossLayerLifecycle_ConsensusSurvives(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, framework.WaitForServersToSeal(activeWhileOffline, heightAfterStop+6))
 	waitForAllServersSameHead(t, activeWhileOffline)
-	assertServerLogsDoNotContain(t, servers, criticalConsensusLogPatterns()...)
+	assertServerLogsDoNotContain(t, activeWhileOffline, criticalConsensusLogPatterns()...)
 
 	// Restart the offline validator and ensure the post-PoS snapshot store is used
 	// consistently by the restarted node.
@@ -54,7 +57,9 @@ func TestPoS_StakingV2_CrossLayerLifecycle_ConsensusSurvives(t *testing.T) {
 	cancel()
 	require.Empty(t, framework.WaitForServersToSeal(servers, heightAfterStop+epochSize+8))
 	waitForAllServersSameHead(t, servers)
-	assertServerLogsDoNotContain(t, servers, criticalConsensusLogPatterns()...)
+	logOffsetsAfterOfflineRestart, err := captureServerLogOffsets(servers)
+	require.NoError(t, err)
+	assertServerLogsDoNotContainSince(t, servers, logOffsetsAfterOfflineRestart, criticalConsensusLogPatterns()...)
 
 	// Exercise the one-epoch validator exit path while all validators are online.
 	removedIdx := 3
@@ -108,7 +113,7 @@ func TestPoS_StakingV2_CrossLayerLifecycle_ConsensusSurvives(t *testing.T) {
 	require.LessOrEqual(t, len(snapshotAfterExit), 4)
 	require.NotContains(t, snapshotAfterExit, removed)
 	waitForAllServersSameHead(t, servers)
-	assertServerLogsDoNotContain(t, servers, criticalConsensusLogPatterns()...)
+	assertServerLogsDoNotContainSince(t, servers, logOffsetsAfterOfflineRestart, criticalConsensusLogPatterns()...)
 
 	// Restart one still-active validator after the full exit to cover consensus
 	// recovery against the shrunken validator set.
@@ -118,13 +123,16 @@ func TestPoS_StakingV2_CrossLayerLifecycle_ConsensusSurvives(t *testing.T) {
 	manager.StopServer(restartedActiveIdx)
 	activeDuringRestart := manager.ActiveServers(restartedActiveIdx)
 	require.Empty(t, framework.WaitForServersToSeal(activeDuringRestart, heightBeforeActiveRestart+6))
+	assertServerLogsDoNotContain(t, activeDuringRestart, criticalConsensusLogPatterns()...)
 	restartActiveCtx, cancelActive := context.WithTimeout(context.Background(), 3*time.Minute)
 	require.NoError(t, manager.GetServer(restartedActiveIdx).Start(restartActiveCtx))
 	require.NoError(t, manager.GetServer(restartedActiveIdx).WaitForReady(restartActiveCtx))
 	cancelActive()
 	require.Empty(t, framework.WaitForServersToSeal(servers, heightBeforeActiveRestart+10))
 	waitForAllServersSameHead(t, servers)
-	assertServerLogsDoNotContain(t, servers, criticalConsensusLogPatterns()...)
+	logOffsetsAfterActiveRestart, err := captureServerLogOffsets(servers)
+	require.NoError(t, err)
+	assertServerLogsDoNotContainSince(t, servers, logOffsetsAfterActiveRestart, criticalConsensusLogPatterns()...)
 
 	// Delegation lifecycle/accounting on a validator that remains active after the
 	// validator full exit.
@@ -197,7 +205,42 @@ func TestPoS_StakingV2_CrossLayerLifecycle_ConsensusSurvives(t *testing.T) {
 	require.NotEmpty(t, finalSnapshot)
 	require.LessOrEqual(t, len(finalSnapshot), 4)
 	require.NotContains(t, finalSnapshot, removed)
-	assertServerLogsDoNotContain(t, servers, criticalConsensusLogPatterns()...)
+	assertServerLogsDoNotContainSince(t, servers, logOffsetsAfterActiveRestart, criticalConsensusLogPatterns()...)
+}
+
+func captureServerLogOffsets(servers []*framework.TestServer) (map[*framework.TestServer]int64, error) {
+	offsets := make(map[*framework.TestServer]int64, len(servers))
+	for _, srv := range servers {
+		logPath := filepath.Join(srv.Config.LogsDir, srv.Config.Name+".log")
+		raw, err := os.ReadFile(logPath)
+		if err != nil {
+			return nil, err
+		}
+		offsets[srv] = int64(len(raw))
+	}
+
+	return offsets, nil
+}
+
+func assertServerLogsDoNotContainSince(t *testing.T, servers []*framework.TestServer, sinceOffsets map[*framework.TestServer]int64, needles ...string) {
+	t.Helper()
+
+	for _, srv := range servers {
+		logPath := filepath.Join(srv.Config.LogsDir, srv.Config.Name+".log")
+		raw, err := os.ReadFile(logPath)
+		require.NoError(t, err)
+		start := sinceOffsets[srv]
+		if start < 0 {
+			start = 0
+		}
+		if start > int64(len(raw)) {
+			start = int64(len(raw))
+		}
+		lower := strings.ToLower(string(raw[start:]))
+		for _, needle := range needles {
+			assert.NotContains(t, lower, strings.ToLower(needle), "%s must not contain consensus safety error %q after offset %d", logPath, needle, start)
+		}
+	}
 }
 
 func waitForAllServersSameHead(t *testing.T, servers []*framework.TestServer) {

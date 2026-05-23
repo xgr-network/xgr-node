@@ -10,9 +10,13 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/xgr-network/xgr-node/chain"
+	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
 	"github.com/xgr-network/xgr-node/consensus/ibft/signer"
 	testHelper "github.com/xgr-network/xgr-node/helper/tests"
 	"github.com/xgr-network/xgr-node/state"
+	itrie "github.com/xgr-network/xgr-node/state/immutable-trie"
 	"github.com/xgr-network/xgr-node/types"
 	"github.com/xgr-network/xgr-node/validators"
 	"github.com/xgr-network/xgr-node/validators/store"
@@ -48,6 +52,18 @@ func (m *mockSigner) EcrecoverFromHeader(h *types.Header) (types.Address, error)
 
 func (m *mockSigner) GetValidators(h *types.Header) (validators.Validators, error) {
 	return m.GetValidatorsFn(h)
+}
+
+func macroTestTransition(t *testing.T) *state.Transition {
+	t.Helper()
+	st := itrie.NewState(itrie.NewMemoryStorage())
+	ex := state.NewExecutor(&chain.Params{Forks: chain.AllForksEnabled, BurnContract: map[uint64]types.Address{0: types.ZeroAddress}}, st, hclog.NewNullLogger())
+	root, err := ex.WriteGenesis(nil, types.Hash{})
+	require.NoError(t, err)
+	ex.GetHash = func(*types.Header) state.GetHashByNumber { return func(uint64) types.Hash { return root } }
+	tx, err := ex.BeginTxn(root, &types.Header{Number: 1, StateRoot: root}, types.ZeroAddress)
+	require.NoError(t, err)
+	return tx
 }
 
 func Test_isJSONSyntaxError(t *testing.T) {
@@ -420,6 +436,7 @@ func TestNewContractValidatorStoreWrapper(t *testing.T) {
 		func(u uint64) (signer.Signer, error) {
 			return nil, nil
 		},
+		"",
 	)
 
 	assert.NoError(t, err)
@@ -435,6 +452,7 @@ func TestNewContractValidatorStoreWrapperClose(t *testing.T) {
 		func(u uint64) (signer.Signer, error) {
 			return nil, nil
 		},
+		"",
 	)
 
 	assert.NoError(t, err)
@@ -454,11 +472,12 @@ func TestNewContractValidatorStoreWrapperGetValidators(t *testing.T) {
 			func(u uint64) (signer.Signer, error) {
 				return nil, errTest
 			},
+			t.TempDir(),
 		)
 
 		assert.NoError(t, err)
 
-		res, err := wrapper.GetValidators(0, 0, 0)
+		res, err := wrapper.GetValidators(1, 10, 0)
 		assert.Nil(t, res)
 		assert.ErrorIs(t, errTest, err)
 	})
@@ -480,22 +499,70 @@ func TestNewContractValidatorStoreWrapperGetValidators(t *testing.T) {
 					nil,
 				), nil
 			},
+			t.TempDir(),
 		)
 
 		assert.NoError(t, err)
 
 		res, err := wrapper.GetValidators(10, 10, 0)
 		assert.Nil(t, res)
-		assert.ErrorContains(t, err, "header not found at 9")
+		assert.ErrorContains(t, err, "failed to load parent header for validator snapshot")
 	})
 
-	t.Run("should not use contract store before forkFrom", func(t *testing.T) {
+	t.Run("should return hard error before forkFrom in contract store wrapper", func(t *testing.T) {
 		t.Parallel()
 
 		var beginTxnCalls int
 
 		expected := validators.NewECDSAValidatorSet(
 			validators.NewECDSAValidator(types.StringToAddress("1")),
+		)
+
+		wrapper, err := NewContractValidatorStoreWrapper(
+			hclog.NewNullLogger(),
+			&store.MockBlockchain{
+				GetHeaderByNumberFn: func(u uint64) (*types.Header, bool) {
+					if u == 49 {
+						return &types.Header{Number: 49}, true
+					}
+
+					return nil, false
+				},
+			},
+			&MockExecutor{
+				BeginTxnFunc: func(types.Hash, *types.Header, types.Address) (*state.Transition, error) {
+					beginTxnCalls++
+
+					return nil, errTest
+				},
+			},
+			func(u uint64) (signer.Signer, error) {
+				return &mockSigner{
+					TypeFn: func() validators.ValidatorType {
+						return validators.ECDSAValidatorType
+					},
+					GetValidatorsFn: func(*types.Header) (validators.Validators, error) {
+						return expected, nil
+					},
+				}, nil
+			},
+			t.TempDir(),
+		)
+
+		assert.NoError(t, err)
+
+		res, err := wrapper.GetValidators(10, 10, 50)
+		assert.Nil(t, res)
+		assert.ErrorContains(t, err, "failed to load parent header for validator snapshot")
+		assert.Zero(t, beginTxnCalls)
+	})
+
+	t.Run("should use parent header validators at cutover block and not read pos snapshot", func(t *testing.T) {
+		t.Parallel()
+
+		var beginTxnCalls int
+		expected := validators.NewBLSValidatorSet(
+			validators.NewBLSValidator(types.StringToAddress("0x1000000000000000000000000000000000000001"), []byte{1}),
 		)
 
 		wrapper, err := NewContractValidatorStoreWrapper(
@@ -519,34 +586,38 @@ func TestNewContractValidatorStoreWrapperGetValidators(t *testing.T) {
 			func(u uint64) (signer.Signer, error) {
 				return &mockSigner{
 					TypeFn: func() validators.ValidatorType {
-						return validators.ECDSAValidatorType
+						return validators.BLSValidatorType
 					},
 					GetValidatorsFn: func(*types.Header) (validators.Validators, error) {
 						return expected, nil
 					},
 				}, nil
 			},
+			t.TempDir(),
 		)
 
 		assert.NoError(t, err)
 
-		res, err := wrapper.GetValidators(10, 10, 50)
+		res, err := wrapper.GetValidators(10, 10, 10)
 		assert.NoError(t, err)
-		assert.Equal(t, expected, res)
-		assert.Zero(t, beginTxnCalls)
+		assert.True(t, res.Equal(expected))
+		assert.Equal(t, 0, beginTxnCalls)
 	})
 
-	t.Run("should use contract store at fork boundary", func(t *testing.T) {
+	t.Run("should use parent header validators at genesis boundary in pure pos mode", func(t *testing.T) {
 		t.Parallel()
 
 		var beginTxnCalls int
+		expected := validators.NewECDSAValidatorSet(
+			validators.NewECDSAValidator(types.StringToAddress("0x1000000000000000000000000000000000000001")),
+		)
 
 		wrapper, err := NewContractValidatorStoreWrapper(
 			hclog.NewNullLogger(),
 			&store.MockBlockchain{
 				GetHeaderByNumberFn: func(u uint64) (*types.Header, bool) {
-					if u == 49 {
-						return &types.Header{Number: 49}, true
+					if u == 0 {
+						return &types.Header{Number: 0}, true
 					}
 
 					return nil, false
@@ -560,94 +631,109 @@ func TestNewContractValidatorStoreWrapperGetValidators(t *testing.T) {
 				},
 			},
 			func(u uint64) (signer.Signer, error) {
-				return signer.NewSigner(
-					&signer.ECDSAKeyManager{},
-					nil,
-				), nil
+				return &mockSigner{
+					TypeFn: func() validators.ValidatorType {
+						return validators.ECDSAValidatorType
+					},
+					GetValidatorsFn: func(*types.Header) (validators.Validators, error) {
+						return expected, nil
+					},
+				}, nil
 			},
+			t.TempDir(),
 		)
 
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
-		res, err := wrapper.GetValidators(50, 10, 50)
-		assert.Nil(t, res)
-		assert.ErrorIs(t, err, errTest)
-		assert.Equal(t, 1, beginTxnCalls)
+		res, err := wrapper.GetValidators(1, 10, 0)
+		require.NoError(t, err)
+		require.True(t, res.Equal(expected))
+		require.Zero(t, beginTxnCalls)
+	})
+
+	t.Run("should read pos snapshot after cutover", func(t *testing.T) {
+		t.Parallel()
+
+		txn := macroTestTransition(t)
+		epoch := uint64(2)
+		expected := validators.NewECDSAValidatorSet(validators.NewECDSAValidator(types.StringToAddress("0x1000000000000000000000000000000000000011")))
+		require.NoError(t, pos.StoreMacroEpochValidatorSet(txn, epoch, expected))
+		header := &types.Header{Number: 10}
+		wrapper, err := NewContractValidatorStoreWrapper(
+			hclog.NewNullLogger(),
+			&store.MockBlockchain{
+				GetHeaderByNumberFn: func(u uint64) (*types.Header, bool) {
+					if u == 10 {
+						return header, true
+					}
+					return nil, false
+				},
+			},
+			&MockExecutor{
+				BeginTxnFunc: func(hash types.Hash, h *types.Header, _ types.Address) (*state.Transition, error) {
+					return txn, nil
+				},
+			},
+			func(u uint64) (signer.Signer, error) {
+				return &mockSigner{TypeFn: func() validators.ValidatorType { return validators.ECDSAValidatorType }}, nil
+			},
+			t.TempDir(),
+		)
+		require.NoError(t, err)
+		res, err := wrapper.GetValidators(11, 10, 10)
+		require.NoError(t, err)
+		require.True(t, res.Equal(expected))
+	})
+
+	t.Run("should hard fail if post-cutover snapshot missing", func(t *testing.T) {
+		t.Parallel()
+		header := &types.Header{Number: 10}
+		wrapper, err := NewContractValidatorStoreWrapper(
+			hclog.NewNullLogger(),
+			&store.MockBlockchain{GetHeaderByNumberFn: func(u uint64) (*types.Header, bool) { return header, true }},
+			&MockExecutor{BeginTxnFunc: func(types.Hash, *types.Header, types.Address) (*state.Transition, error) { return macroTestTransition(t), nil }},
+			func(u uint64) (signer.Signer, error) { return &mockSigner{TypeFn: func() validators.ValidatorType { return validators.ECDSAValidatorType }}, nil },
+			t.TempDir(),
+		)
+		require.NoError(t, err)
+		res, err := wrapper.GetValidators(11, 10, 10)
+		require.Nil(t, res)
+		require.ErrorIs(t, err, errMissingCanonicalSnapshot)
 	})
 }
 
-func Test_calculateContractStoreFetchingHeight(t *testing.T) {
+func TestContractValidatorStoreWrapper_GetStakeSnapshotCutoverHardError(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name      string
-		height    uint64
-		epochSize uint64
-		forkFrom  uint64
-		expected  uint64
-	}{
-		{
-			name:      "should return 0 if the height is 2 (in the first epoch)",
-			height:    2,
-			epochSize: 10,
-			forkFrom:  0,
-			expected:  0,
-		},
-		{
-			name:      "should return 0 if the height is 9 (in the first epoch)",
-			height:    9,
-			epochSize: 10,
-			forkFrom:  0,
-			expected:  0,
-		},
-		{
-			name:      "should return 9 if the height is 10 (in the second epoch)",
-			height:    10,
-			epochSize: 10,
-			forkFrom:  0,
-			expected:  9,
-		},
-		{
-			name:      "should return 10 if the height is 19 (in the second epoch)",
-			height:    19,
-			epochSize: 10,
-			forkFrom:  0,
-			expected:  10,
-		},
-		{
-			name:      "should return 49 if the height is 10 but forkFrom is 50",
-			height:    10,
-			epochSize: 10,
-			forkFrom:  50,
-			expected:  49,
-		},
-		{
-			name:      "should return 59 if the height is 60 and forkFrom is 50",
-			height:    60,
-			epochSize: 10,
-			forkFrom:  50,
-			expected:  59,
-		},
-		{
-			name:      "should return 60 if the height is 61 and forkFrom is 50",
-			height:    61,
-			epochSize: 10,
-			forkFrom:  50,
-			expected:  60,
-		},
-	}
+	wrapper, err := NewContractValidatorStoreWrapper(
+		hclog.NewNullLogger(),
+		&store.MockBlockchain{},
+		&MockExecutor{},
+		func(u uint64) (signer.Signer, error) { return nil, nil },
+		t.TempDir(),
+	)
+	require.NoError(t, err)
 
-	for _, test := range tests {
-		test := test
+	stake, err := wrapper.GetStakeSnapshot(10, 10, 10, validators.NewECDSAValidatorSet(validators.NewECDSAValidator(types.StringToAddress("0x1"))))
+	require.Nil(t, stake)
+	require.ErrorContains(t, err, "stake snapshot is unavailable at cutover block")
+}
 
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
+func TestMacroSnapshotEpoch(t *testing.T) {
+	t.Parallel()
 
-			assert.Equal(
-				t,
-				test.expected,
-				calculateContractStoreFetchingHeight(test.height, test.epochSize, test.forkFrom),
-			)
-		})
-	}
+	epoch, err := macroSnapshotEpoch(10, 10)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), epoch)
+
+	epoch, err = macroSnapshotEpoch(11, 10)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), epoch)
+
+	epoch, err = macroSnapshotEpoch(20, 10)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), epoch)
+
+	_, err = macroSnapshotEpoch(0, 10)
+	require.Error(t, err)
 }

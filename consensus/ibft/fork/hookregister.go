@@ -111,12 +111,19 @@ func NewPoSHookRegister(
 
 // RegisterHooks registers hooks of PoA for additional block verification and contract deployment
 func (r *PoSHookRegister) RegisterHooks(hooks *hook.Hooks, height uint64) {
-	if currentFork := r.posForks.getFork(height); currentFork != nil {
+	currentFork := r.posForks.getFork(height)
+	if currentFork != nil {
 		// in PoS mode currently
 		registerTxInclusionGuardHooks(hooks, r.epochSize, r.uptimeCfg, r.getSigner, r.firstPoSFrom)
+		registerRegularMacroSnapshotHooks(hooks, currentFork, r.epochSize)
+		registerCutoverMacroSnapshotHooks(hooks, currentFork, r.epochSize)
 	}
 
 	if deploymentFork, ok := r.deployContractForks[height]; ok {
+		// deploy or update staking contract in deployment height
+		registerStakingContractDeploymentHooks(hooks, deploymentFork, r.epochSize)
+	}
+	if deploymentFork, ok := r.deployContractForks[height+1]; ok {
 		// deploy or update staking contract in deployment height
 		registerStakingContractDeploymentHooks(hooks, deploymentFork, r.epochSize)
 	}

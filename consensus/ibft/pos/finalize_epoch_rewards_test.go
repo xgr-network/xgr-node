@@ -430,12 +430,12 @@ func TestFinalizeEpoch_MissedSlotsCauseExplainedRewardDifference(t *testing.T) {
 	require.Equal(t, uint64(0), u64FromHash(txn.Txn().GetState(PosSysAddr, keyProposerSlots(epoch, v2))))
 	require.Equal(t, uint64(0), u64FromHash(txn.Txn().GetState(PosSysAddr, keyProposerMissed(epoch, v1))))
 	require.Equal(t, uint64(0), u64FromHash(txn.Txn().GetState(PosSysAddr, keyProposerMissed(epoch, v2))))
-	require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakeSnapshot(epoch, v1))).Sign())
-	require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakeSnapshot(epoch, v2))).Sign())
+	require.NotZero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakeSnapshot(epoch, v1))).Sign())
+	require.NotZero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakeSnapshot(epoch, v2))).Sign())
 	require.Equal(t, int64(1), txn.Txn().GetBalance(state.FeePoolAddress).Int64())
 }
 
-func TestFinalizeEpoch_EmitsDeterministicPosSystemLogsAndClearsHistoryState(t *testing.T) {
+func TestFinalizeEpoch_EmitsDeterministicPosSystemLogsAndPrunesOnlyUptimeCounters(t *testing.T) {
 	validatorA := types.StringToAddress("0x2721")
 	validatorB := types.StringToAddress("0x2722")
 	delegatorA := types.StringToAddress("0x2723")
@@ -549,10 +549,10 @@ func TestFinalizeEpoch_EmitsDeterministicPosSystemLogsAndClearsHistoryState(t *t
 	require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyRewardTotal(epoch))).Sign())
 	require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyValidatorReward(epoch, validatorB))).Sign())
 	require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyDelegatorReward(epoch, validatorB, delegatorB))).Sign())
-	require.Zero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyEpochValidatorsLen(epoch))))
+	require.NotZero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyEpochValidatorsLen(epoch))))
 	require.Zero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyProposerSlots(epoch, validatorB))))
-	require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakeSnapshot(epoch, validatorA))).Sign())
-	require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakerStakeSnapshot(epoch, delegatorB))).Sign())
+	require.NotZero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakeSnapshot(epoch, validatorA))).Sign())
+	require.NotZero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakerStakeSnapshot(epoch, delegatorB))).Sign())
 }
 
 func TestFinalizeEpoch_ValidatorUptimeFinalized_EmitsAllValidatorsWithoutRewardsOrSlash(t *testing.T) {
@@ -625,11 +625,13 @@ func TestFinalizeEpoch_ValidatorUptimeFinalized_EmitsAllValidatorsWithoutRewards
 	for _, v := range []types.Address{v1, v2, v3, v4} {
 		require.Zero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyProposerSlots(epoch, v))))
 		require.Zero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyProposerMissed(epoch, v))))
-		require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakeSnapshot(epoch, v))).Sign())
 		require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keySlashed(epoch, v))).Sign())
 		require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keySlashAmount(epoch, v))).Sign())
 	}
-	require.Zero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyEpochValidatorsLen(epoch))))
+	require.NotZero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakeSnapshot(epoch, v1))).Sign())
+	require.NotZero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakeSnapshot(epoch, v2))).Sign())
+	require.NotZero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakeSnapshot(epoch, v3))).Sign())
+	require.NotZero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyEpochValidatorsLen(epoch))))
 }
 
 func TestFinalizeEpoch_NonPayableDoesNotEmitPosSystemLogs(t *testing.T) {
@@ -648,7 +650,7 @@ func TestFinalizeEpoch_NonPayableDoesNotEmitPosSystemLogs(t *testing.T) {
 	require.Empty(t, txn.Txn().Logs())
 }
 
-func TestFinalizeEpoch_ClearsZeroRewardDelegatorSnapshot(t *testing.T) {
+func TestFinalizeEpoch_KeepsZeroRewardDelegatorSnapshot(t *testing.T) {
 	validator := types.StringToAddress("0x2921")
 	delegator := types.StringToAddress("0x2922")
 	set := validators.NewECDSAValidatorSet(validators.NewECDSAValidator(validator))
@@ -666,7 +668,7 @@ func TestFinalizeEpoch_ClearsZeroRewardDelegatorSnapshot(t *testing.T) {
 
 	require.NotZero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakerStakeSnapshot(epoch, delegator))).Sign())
 	require.NoError(t, FinalizeEpoch(header, 10, UptimeConfig{}, testHeaderSigner(), txn))
-	require.Zero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakerStakeSnapshot(epoch, delegator))).Sign())
+	require.NotZero(t, bigFromHash(txn.Txn().GetState(PosSysAddr, keyStakerStakeSnapshot(epoch, delegator))).Sign())
 }
 
 func TestFinalizeEpochLogsPersistInSystemReceipt(t *testing.T) {

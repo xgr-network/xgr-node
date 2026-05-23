@@ -15,6 +15,7 @@ func requireSnapshotCreated(t *testing.T, txn *state.Transition, epoch uint64, v
 	created, err := ensureEpochValidatorsSnapshot(txn, epoch, vals)
 	require.NoError(t, err)
 	require.True(t, created)
+	require.NoError(t, StoreMacroEpochNoSlashMode(txn, epoch, false))
 }
 
 func makeEpochValidatorSet(t *testing.T, count uint64) validators.Validators {

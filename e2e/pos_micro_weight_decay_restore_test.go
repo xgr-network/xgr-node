@@ -44,8 +44,7 @@ func TestPoS_MicroWeightDecayAndRestore(t *testing.T) {
 	defaultBalance := framework.EthToWei(7_000_000)
 	stakeAmount := framework.EthToWei(3_000_000)
 	ibftManager := framework.NewIBFTServersManager(t, n, IBFTDirPrefix, func(_ int, config *framework.TestServerConfig) {
-		config.SetEpochSize(5)
-		config.SetMicroEpochConfig(8, 10_000, 9_000)
+		config.SetMicroEpochConfig(10, 1, 10_000, 9_000)
 		config.PremineValidatorBalance(defaultBalance)
 		config.SetIBFTPoS(true)
 		config.SetMinValidatorCount(3)

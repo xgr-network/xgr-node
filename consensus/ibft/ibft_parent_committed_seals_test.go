@@ -1,6 +1,7 @@
 package ibft
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/hashicorp/go-hclog"
@@ -74,6 +75,9 @@ func (m *parentSealsForkManager) GetValidatorStore(uint64) (fork.ValidatorStore,
 }
 func (m *parentSealsForkManager) GetValidators(uint64) (validators.Validators, error) {
 	return m.vals, nil
+}
+func (m *parentSealsForkManager) GetValidatorStakeSnapshot(uint64, validators.Validators) (map[types.Address]*big.Int, error) {
+	return nil, nil
 }
 func (m *parentSealsForkManager) GetHooks(uint64) fork.HooksInterface { return nil }
 func (m *parentSealsForkManager) IsPosActive(uint64) bool             { return m.pos }

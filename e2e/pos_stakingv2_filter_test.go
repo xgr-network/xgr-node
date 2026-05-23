@@ -841,12 +841,20 @@ func queryJoinEffectiveAtBlock(srv *framework.TestServer, from, account types.Ad
 	return nil, assert.AnError
 }
 
-func epochFromFinalizedBoundary(boundary, epochSize uint64) uint64 {
-	if boundary < epochSize || epochSize == 0 {
+func epochFromFinalizedBoundary(finalizeBoundary, epochSize uint64) uint64 {
+	if finalizeBoundary == 0 || epochSize == 0 {
 		return 0
 	}
 
-	return boundary/epochSize - 1
+	n := finalizeBoundary - 1
+	if n == 0 {
+		return 0
+	}
+	if n%epochSize == 0 {
+		return n / epochSize
+	}
+
+	return n/epochSize + 1
 }
 
 func queryValidatorMinSelfStake(srv *framework.TestServer, from types.Address) (*big.Int, error) {

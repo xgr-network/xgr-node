@@ -64,6 +64,7 @@ type TestServerConfig struct {
 	MicroEpochSize          uint64                   // PoS micro-epoch size for uptime weighting
 	MicroEpochNominalWeight uint64                   // PoS micro-epoch nominal weight units
 	MicroEpochDecayBps      uint64                   // PoS micro-epoch inactivity decay bps
+	MacroEpochMicroFactor   uint64                   // Number of micro-epochs per macro epoch when micro-epochs are enabled                   // PoS micro-epoch inactivity decay bps
 	PredeployParams         *PredeployParams
 	BurnContracts           map[uint64]types.Address
 	ExtraEnv                map[string]string
@@ -197,8 +198,9 @@ func (t *TestServerConfig) SetEpochSize(epochSize uint64) {
 	t.EpochSize = epochSize
 }
 
-func (t *TestServerConfig) SetMicroEpochConfig(size, nominalWeight, decayBps uint64) {
+func (t *TestServerConfig) SetMicroEpochConfig(size, factor, nominalWeight, decayBps uint64) {
 	t.MicroEpochSize = size
+	t.MacroEpochMicroFactor = factor
 	t.MicroEpochNominalWeight = nominalWeight
 	t.MicroEpochDecayBps = decayBps
 }

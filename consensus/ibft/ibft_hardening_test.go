@@ -2,6 +2,7 @@ package ibft
 
 import (
 	"errors"
+	"math/big"
 	"sync"
 	"testing"
 	"time"
@@ -64,6 +65,7 @@ func (m *hardeningTxPool) seenTrue() bool {
 type hardeningHooks struct {
 	mu                sync.Mutex
 	postInsertHeights []uint64
+	preCommitHeights  []uint64
 }
 
 func (h *hardeningHooks) ShouldWriteTransactions(uint64) bool { return true }
@@ -75,7 +77,11 @@ func (h *hardeningHooks) VerifyBlock(*types.Block) error   { return nil }
 func (h *hardeningHooks) ProcessHeader(*types.Header) error {
 	return nil
 }
-func (h *hardeningHooks) PreCommitState(*types.Header, *state.Transition) error {
+func (h *hardeningHooks) PreCommitState(header *types.Header, _ *state.Transition) error {
+	h.mu.Lock()
+	h.preCommitHeights = append(h.preCommitHeights, header.Number)
+	h.mu.Unlock()
+
 	return nil
 }
 func (h *hardeningHooks) PostInsertBlock(block *types.Block) error {
@@ -96,6 +102,16 @@ func (h *hardeningHooks) heights() []uint64 {
 	return cloned
 }
 
+func (h *hardeningHooks) preCommitCalls() []uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	cloned := make([]uint64, len(h.preCommitHeights))
+	copy(cloned, h.preCommitHeights)
+
+	return cloned
+}
+
 type hardeningForkManager struct {
 	signer         signer.Signer
 	validators     validators.Validators
@@ -103,6 +119,7 @@ type hardeningForkManager struct {
 	getValidators  func(uint64) (validators.Validators, error)
 	hooksByHeight  map[uint64]fork.HooksInterface
 	getSignerError map[uint64]error
+	isPosActiveFn  func(uint64) bool
 }
 
 func (m *hardeningForkManager) Initialize() error { return nil }
@@ -128,6 +145,9 @@ func (m *hardeningForkManager) GetValidators(height uint64) (validators.Validato
 
 	return m.validators, nil
 }
+func (m *hardeningForkManager) GetValidatorStakeSnapshot(uint64, validators.Validators) (map[types.Address]*big.Int, error) {
+	return nil, nil
+}
 func (m *hardeningForkManager) GetHooks(height uint64) fork.HooksInterface {
 	if hooks, ok := m.hooksByHeight[height]; ok {
 		return hooks
@@ -135,7 +155,13 @@ func (m *hardeningForkManager) GetHooks(height uint64) fork.HooksInterface {
 
 	return &hardeningHooks{}
 }
-func (m *hardeningForkManager) IsPosActive(uint64) bool { return false }
+func (m *hardeningForkManager) IsPosActive(height uint64) bool {
+	if m.isPosActiveFn != nil {
+		return m.isPosActiveFn(height)
+	}
+
+	return false
+}
 
 type hardeningSyncer struct {
 	syncFn func(func(*types.FullBlock) bool) error
@@ -242,6 +268,40 @@ func TestStartSyncing_PostInsertBlock_UsesImportedBlockHooks(t *testing.T) {
 
 	require.Empty(t, staleHooks.heights(), "stale currentHooks must not be used for PostInsertBlock")
 	require.Equal(t, []uint64{7}, importedHooks.heights(), "PostInsertBlock must run on hooks resolved for imported height")
+}
+
+func TestPreCommitState_DirectPoSBlock1SkipsGenesisParentUptimeButRunsHooks(t *testing.T) {
+	t.Parallel()
+
+	genesis := &types.Header{Number: 0, Difficulty: 1}
+	genesis.ComputeHash()
+	block1 := &types.Header{Number: 1, ParentHash: genesis.Hash, Difficulty: 1}
+	block1.ComputeHash()
+	bc := blockchain.NewTestBlockchain(t, []*types.Header{genesis, block1})
+
+	hooks := &hardeningHooks{}
+	getValidatorsCalls := make([]uint64, 0, 1)
+	fm := &hardeningForkManager{
+		getValidators: func(height uint64) (validators.Validators, error) {
+			getValidatorsCalls = append(getValidatorsCalls, height)
+			return nil, errors.New("height must be greater than 0")
+		},
+		hooksByHeight: map[uint64]fork.HooksInterface{
+			1: hooks,
+		},
+		isPosActiveFn: func(uint64) bool { return true },
+	}
+
+	backend := &backendIBFT{
+		blockchain:  bc,
+		forkManager: fm,
+		epochSize:   10,
+	}
+
+	err := backend.PreCommitState(&types.Block{Header: block1}, nil)
+	require.NoError(t, err)
+	require.Empty(t, getValidatorsCalls)
+	require.Equal(t, []uint64{1}, hooks.preCommitCalls())
 }
 
 func TestStartConsensus_ValidatorToNonValidator_DoesNotReuseClosedSequenceChannel(t *testing.T) {

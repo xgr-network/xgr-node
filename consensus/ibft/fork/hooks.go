@@ -3,7 +3,9 @@ package fork
 import (
 	"errors"
 	"fmt"
+	"math/big"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/xgr-network/xgr-node/consensus/ibft/hook"
 	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
 	"github.com/xgr-network/xgr-node/consensus/ibft/signer"
@@ -13,6 +15,7 @@ import (
 	"github.com/xgr-network/xgr-node/types"
 	"github.com/xgr-network/xgr-node/validators"
 	"github.com/xgr-network/xgr-node/validators/store"
+	contractstore "github.com/xgr-network/xgr-node/validators/store/contract"
 )
 
 var (
@@ -297,6 +300,135 @@ func registerStakingContractDeploymentHooks(
 	}
 	// Deploy/update must run first in the deployment block, before any other pre-commit hooks.
 	hooks.PreCommitStateFunc = chainPreCommitState(deployOrUpdate, hooks.PreCommitStateFunc)
+}
+
+func registerCutoverMacroSnapshotHooks(
+	hooks *hook.Hooks,
+	fork *IBFTFork,
+	epochSize uint64,
+) {
+	targetBlock := fork.From.Value
+	if fork.From.Value == 0 {
+		targetBlock = 1
+	}
+
+	writeCutoverSnapshots := func(header *types.Header, txn *state.Transition) error {
+		if header == nil || txn == nil {
+			return nil
+		}
+		if header.Number != targetBlock {
+			return nil
+		}
+
+		bootstrapVals := fork.Validators
+		if bootstrapVals == nil || bootstrapVals.Len() == 0 {
+			parsedBootstrapVals, err := parseValidatorsFromHeader(header, fork.ValidatorType)
+			if err != nil {
+				return fmt.Errorf("cutover snapshot validator fallback failed at block %d: %w", header.Number, err)
+			}
+			bootstrapVals = parsedBootstrapVals
+			if bootstrapVals == nil || bootstrapVals.Len() == 0 {
+				return fmt.Errorf("cutover snapshot validator fallback returned empty set at block %d", header.Number)
+			}
+		}
+
+		return ensureCutoverMacroSnapshots(txn, header, epochSize, bootstrapVals)
+	}
+
+	hooks.PreCommitStateFunc = chainPreCommitState(hooks.PreCommitStateFunc, writeCutoverSnapshots)
+}
+
+func registerRegularMacroSnapshotHooks(
+	hooks *hook.Hooks,
+	fork *IBFTFork,
+	epochSize uint64,
+) {
+	writeRegularSnapshots := func(header *types.Header, txn *state.Transition) error {
+		if header == nil || txn == nil {
+			return nil
+		}
+		if header.Number <= fork.From.Value || header.Number%epochSize != 0 {
+			return nil
+		}
+
+		nextEpoch := (header.Number / epochSize) + 1
+		var (
+			selection *contractstore.ValidatorSelection
+			err       error
+		)
+		switch fork.ValidatorType {
+		case validators.BLSValidatorType:
+			selection, err = contractstore.FetchBLSValidatorSelection(txn, types.ZeroAddress)
+		case validators.ECDSAValidatorType:
+			selection, err = contractstore.FetchECDSAValidatorSelection(txn, types.ZeroAddress)
+		default:
+			return fmt.Errorf("unsupported validator type: %s", fork.ValidatorType)
+		}
+		if err != nil {
+			return fmt.Errorf("regular snapshot validator fetch failed at block %d epoch %d: %w", header.Number, nextEpoch, err)
+		}
+		vals := selection.Validators
+		if vals == nil || vals.Len() == 0 {
+			return fmt.Errorf("regular snapshot validator fetch returned empty set at block %d epoch %d", header.Number, nextEpoch)
+		}
+		stakes := make(map[types.Address]*big.Int, vals.Len())
+		for i := 0; i < vals.Len(); i++ {
+			addr := vals.At(uint64(i)).Addr()
+			stake := contractstore.ReadValidatorVotingStakeAt(txn, addr, header.Number)
+			if stake == nil || stake.Sign() <= 0 {
+				return fmt.Errorf("missing non-positive voting stake for validator %s at regular epoch %d", addr, nextEpoch)
+			}
+			stakes[addr] = new(big.Int).Set(stake)
+		}
+		if err := pos.StoreMacroEpochNoSlashMode(txn, nextEpoch, selection.NoSlash); err != nil {
+			return fmt.Errorf("store macro epoch no-slash mode at block %d epoch %d: %w", header.Number, nextEpoch, err)
+		}
+		if err := pos.EnsureMacroEpochSnapshots(txn, nextEpoch, vals, stakes); err != nil {
+			return fmt.Errorf("ensure regular macro epoch snapshots at block %d epoch %d: %w", header.Number, nextEpoch, err)
+		}
+
+		hclog.L().Named("ibft-regular-snapshot").Debug("regular macro snapshot writer invoked",
+			"header", header.Number,
+			"epoch", nextEpoch,
+			"validators", vals.Len(),
+			"noSlash", selection.NoSlash,
+			"stakes", len(stakes),
+		)
+
+		return nil
+	}
+
+	hooks.PreCommitStateFunc = chainPreCommitState(hooks.PreCommitStateFunc, writeRegularSnapshots)
+}
+
+func ensureCutoverMacroSnapshots(txn *state.Transition, header *types.Header, epochSize uint64, vals validators.Validators) error {
+	epoch := ((header.Number + 1 - 1) / epochSize) + 1
+	stakes := make(map[types.Address]*big.Int, vals.Len())
+	for i := 0; i < vals.Len(); i++ {
+		addr := vals.At(uint64(i)).Addr()
+		stake := contractstore.ReadValidatorVotingStakeAt(txn, addr, header.Number)
+		if stake == nil || stake.Sign() <= 0 {
+			return fmt.Errorf("missing non-positive stake for validator %s at cutover epoch %d", addr, epoch)
+		}
+		stakes[addr] = new(big.Int).Set(stake)
+	}
+	if err := pos.StoreMacroEpochNoSlashMode(txn, epoch, false); err != nil {
+		return fmt.Errorf("store macro epoch no-slash mode at cutover block %d epoch %d: %w", header.Number, epoch, err)
+	}
+
+	if err := pos.EnsureMacroEpochSnapshots(txn, epoch, vals, stakes); err != nil {
+		return fmt.Errorf("ensure macro epoch snapshots at cutover block %d epoch %d: %w", header.Number, epoch, err)
+	}
+	hclog.L().Named("ibft-cutover").Debug("cutover macro snapshot writer invoked",
+		"header", header.Number,
+		"epoch", epoch,
+		"validators", vals.Len(),
+		"stakes", len(stakes),
+		"hasValidatorSnapshot", pos.HasMacroEpochValidatorSet(txn, epoch),
+		"hasStakeSnapshot", pos.HasMacroEpochStakeSnapshot(txn, epoch, vals),
+	)
+
+	return nil
 }
 
 func parseValidatorsFromHeader(

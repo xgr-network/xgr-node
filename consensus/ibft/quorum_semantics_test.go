@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
 )
 
 func TestHasWeightedQuorum_ThresholdMatrix(t *testing.T) {
@@ -87,10 +88,9 @@ func TestSnapshotVotingPowers_UsesUnifiedWeightedThreshold(t *testing.T) {
 	t.Parallel()
 
 	pool := newTesterAccountPool(t, 6)
-	backend := &backendIBFT{}
-
-	_, snapshot, err := backend.snapshotVotingPowers(1, 0, pool.ValidatorSet(), nil, false)
+	weights, snapshot, err := computeVotingPowersFromStakeSnapshot(1, pool.ValidatorSet(), nil, nil, false, pos.UptimeConfig{MicroEpochNominalWeight: 10_000})
 	require.NoError(t, err)
+	require.Len(t, weights, 6)
 	require.Equal(t, "6", snapshot.totalVotingPower)
 	require.Equal(t, "4", snapshot.quorumThreshold)
 }

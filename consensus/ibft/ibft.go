@@ -3,9 +3,11 @@ package ibft
 import (
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	ibftProtoMessages "github.com/0xPolygon/go-ibft/messages/proto"
@@ -72,6 +74,7 @@ type forkManagerInterface interface {
 	GetSigner(uint64) (signer.Signer, error)
 	GetValidatorStore(uint64) (fork.ValidatorStore, error)
 	GetValidators(uint64) (validators.Validators, error)
+	GetValidatorStakeSnapshot(uint64, validators.Validators) (map[types.Address]*big.Int, error)
 	GetHooks(uint64) fork.HooksInterface
 	IsPosActive(uint64) bool
 }
@@ -97,6 +100,7 @@ type backendIBFT struct {
 	currentSigner     signer.Signer         // Signer at current sequence
 	currentValidators validators.Validators // signer at current sequence
 	currentHooks      fork.HooksInterface   // Hooks at current sequence
+	currentModulesMu  sync.RWMutex
 
 	// Configurations
 	config             *consensus.Config // Consensus configuration
@@ -117,27 +121,14 @@ func Factory(params *consensus.Params) (consensus.Consensus, error) {
 
 	// defaults for user set fields in genesis
 	var (
-		epochSize          = uint64(DefaultEpochSize)
 		quorumSizeBlockNum = uint64(0)
-		uptimeCfg          = pos.ParseUptimeConfig(params.Config.Config)
 	)
+
+	epochSize, uptimeCfg, err := resolveEpochSizeAndUptimeConfig(params.Config.Config)
+	if err != nil {
+		return nil, err
+	}
 	uptimeCfg.ChainID = params.Config.Params.ChainID
-
-	if definedEpochSize, ok := params.Config.Config[KeyEpochSize]; ok {
-		// Epoch size is defined, use the passed in one
-		readSize, ok := definedEpochSize.(float64)
-		if !ok {
-			return nil, errors.New("invalid type assertion")
-		}
-
-		epochSize = uint64(readSize)
-	}
-	if err := validateEpochSize(epochSize); err != nil {
-		return nil, err
-	}
-	if err := validateUptimeConfig(uptimeCfg); err != nil {
-		return nil, err
-	}
 
 	if rawBlockNum, ok := params.Config.Config["quorumSizeBlockNum"]; ok {
 		// Block number specified for quorum size switch
@@ -270,7 +261,7 @@ func (i *backendIBFT) Initialize() error {
 		return err
 	}
 
-	i.logger.Info("validator key", "addr", i.currentSigner.Address().String())
+	i.logger.Info("validator key", "addr", i.getCurrentSigner().Address().String())
 
 	i.consensus = newIBFT(
 		i.logger.Named("consensus"),
@@ -394,7 +385,7 @@ func (i *backendIBFT) startConsensus() {
 		}
 
 		// Update the No.of validator metric
-		metrics.SetGauge([]string{consensusMetrics, "validators"}, float32(i.currentValidators.Len()))
+		metrics.SetGauge([]string{consensusMetrics, "validators"}, float32(i.getCurrentValidators().Len()))
 
 		isValidator = i.isActiveValidator()
 
@@ -429,7 +420,10 @@ func (i *backendIBFT) startConsensus() {
 
 // isActiveValidator returns whether my signer belongs to current validators
 func (i *backendIBFT) isActiveValidator() bool {
-	return i.currentValidators.Includes(i.currentSigner.Address())
+	currentValidators := i.getCurrentValidators()
+	currentSigner := i.getCurrentSigner()
+
+	return currentValidators.Includes(currentSigner.Address())
 }
 
 // RoundStarts notifies the backend that IBFT is about to start a new round.
@@ -638,7 +632,7 @@ func (i *backendIBFT) PreCommitState(block *types.Block, txn *state.Transition) 
 		return fmt.Errorf("parent header %s not found for block %d", block.Header.ParentHash, block.Number())
 	}
 
-	parentPosActive := i.forkManager.IsPosActive(parentHeader.Number)
+	parentPosActive := parentHeader.Number > 0 && i.forkManager.IsPosActive(parentHeader.Number)
 	requiresValidators := parentPosActive
 	var parentValidators validators.Validators
 	if requiresValidators {
@@ -736,20 +730,42 @@ func (i *backendIBFT) FilterExtra(extra []byte) ([]byte, error) {
 // that are used at specified height
 // by fetching from ForkManager
 func (i *backendIBFT) updateCurrentModules(height uint64) error {
-	lastSigner := i.currentSigner
-
 	signer, validators, hooks, err := getModulesFromForkManager(i.forkManager, height)
 	if err != nil {
 		return err
 	}
 
+	i.currentModulesMu.Lock()
+	lastSigner := i.currentSigner
 	i.currentSigner = signer
 	i.currentValidators = validators
 	i.currentHooks = hooks
+	i.currentModulesMu.Unlock()
 
 	i.logFork(lastSigner, signer)
 
 	return nil
+}
+
+func (i *backendIBFT) getCurrentHooks() fork.HooksInterface {
+	i.currentModulesMu.RLock()
+	defer i.currentModulesMu.RUnlock()
+
+	return i.currentHooks
+}
+
+func (i *backendIBFT) getCurrentSigner() signer.Signer {
+	i.currentModulesMu.RLock()
+	defer i.currentModulesMu.RUnlock()
+
+	return i.currentSigner
+}
+
+func (i *backendIBFT) getCurrentValidators() validators.Validators {
+	i.currentModulesMu.RLock()
+	defer i.currentModulesMu.RUnlock()
+
+	return i.currentValidators
 }
 
 // logFork logs validation type switch
@@ -853,11 +869,63 @@ func (i *backendIBFT) verifyParentCommittedSeals(
 	)
 }
 
+func resolveEpochSizeAndUptimeConfig(ibftConfig map[string]interface{}) (uint64, pos.UptimeConfig, error) {
+	uptimeCfg := pos.ParseUptimeConfig(ibftConfig)
+	isPoS := false
+	if forks, err := fork.GetIBFTForks(ibftConfig); err == nil {
+		for _, f := range forks {
+			if f.Type == fork.PoS {
+				isPoS = true
+				break
+			}
+		}
+	}
+
+	if isPoS {
+		if _, ok := ibftConfig[KeyEpochSize]; ok {
+			return 0, pos.UptimeConfig{}, errors.New("epochSize must not be set; macro epoch size is derived from microEpochSize * macroEpochMicroFactor")
+		}
+		if uptimeCfg.MicroEpochSize == 0 {
+			return 0, pos.UptimeConfig{}, errors.New("microEpochSize is required for PoS")
+		}
+		if uptimeCfg.MacroEpochMicroFactor == 0 {
+			return 0, pos.UptimeConfig{}, errors.New("macroEpochMicroFactor is required for PoS")
+		}
+		if uptimeCfg.MicroEpochSize > math.MaxUint64/uptimeCfg.MacroEpochMicroFactor {
+			return 0, pos.UptimeConfig{}, errors.New("invalid PoS uptime config: microEpochSize * macroEpochMicroFactor overflows uint64")
+		}
+		epochSize := uptimeCfg.MicroEpochSize * uptimeCfg.MacroEpochMicroFactor
+		if err := validateEpochSize(epochSize); err != nil {
+			return 0, pos.UptimeConfig{}, err
+		}
+		if err := validateUptimeConfig(uptimeCfg); err != nil {
+			return 0, pos.UptimeConfig{}, err
+		}
+		return epochSize, uptimeCfg, nil
+	}
+
+	epochSize := uint64(DefaultEpochSize)
+	if definedEpochSize, ok := ibftConfig[KeyEpochSize]; ok {
+		readSize, ok := definedEpochSize.(float64)
+		if !ok {
+			return 0, pos.UptimeConfig{}, errors.New("invalid type assertion")
+		}
+		epochSize = uint64(readSize)
+	}
+	if err := validateEpochSize(epochSize); err != nil {
+		return 0, pos.UptimeConfig{}, err
+	}
+	return epochSize, uptimeCfg, nil
+}
+
 func validateUptimeConfig(cfg pos.UptimeConfig) error {
 	if cfg.MicroEpochSize == 0 {
 		return nil
 	}
 
+	if cfg.MacroEpochMicroFactor == 0 {
+		return errors.New("macroEpochMicroFactor must be greater than 0 when microEpochSize is enabled")
+	}
 	if cfg.MicroEpochNominalWeight == 0 {
 		return errors.New("microEpochNominalWeightUnits must be greater than 0 when microEpochSize is enabled")
 	}

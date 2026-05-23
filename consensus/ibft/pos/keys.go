@@ -18,7 +18,9 @@ const (
 	keyPrefixLastProp        = "xgr.pos.last.proposer"
 	keyPrefixEpochValsLen    = "xgr.pos.epoch.validators.len"
 	keyPrefixEpochVal        = "xgr.pos.epoch.validators.val"
+	keyPrefixEpochValBLSPub  = "xgr.pos.epoch.validators.bls.pub"
 	keyPrefixStakeSnap       = "xgr.pos.stake.snapshot"
+	keyPrefixEpochNoSlash    = "xgr.pos.epoch.no_slash_mode"
 	keyPrefixStakerStakeSnap = "xgr.pos.staker.stake.snapshot"
 	keyPrefixSlashed         = "xgr.pos.slashed"
 	keyPrefixSlashAmt        = "xgr.pos.slash.amount"
@@ -94,11 +96,29 @@ func keyEpochValidator(epoch, idx uint64) types.Hash {
 	return types.BytesToHash(crypto.Keccak256([]byte(keyPrefixEpochVal), eb[:], ib[:]))
 }
 
+func keyEpochValidatorBLSPub(epoch, idx uint64, part uint64) types.Hash {
+	var eb [8]byte
+	var ib [8]byte
+	var pb [8]byte
+	binary.BigEndian.PutUint64(eb[:], epoch)
+	binary.BigEndian.PutUint64(ib[:], idx)
+	binary.BigEndian.PutUint64(pb[:], part)
+
+	return types.BytesToHash(crypto.Keccak256([]byte(keyPrefixEpochValBLSPub), eb[:], ib[:], pb[:]))
+}
+
 func keyStakeSnapshot(epoch uint64, addr types.Address) types.Hash {
 	var eb [8]byte
 	binary.BigEndian.PutUint64(eb[:], epoch)
 
 	return types.BytesToHash(crypto.Keccak256([]byte(keyPrefixStakeSnap), eb[:], addr.Bytes()))
+}
+
+func keyEpochNoSlashMode(epoch uint64) types.Hash {
+	var eb [8]byte
+	binary.BigEndian.PutUint64(eb[:], epoch)
+
+	return types.BytesToHash(crypto.Keccak256([]byte(keyPrefixEpochNoSlash), eb[:]))
 }
 
 func keyStakerStakeSnapshot(epoch uint64, addr types.Address) types.Hash {

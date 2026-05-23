@@ -1,35 +1,79 @@
 package ibft
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
 )
 
-func TestValidateUptimeConfig(t *testing.T) {
-	t.Run("disabled micro epoch is valid", func(t *testing.T) {
-		require.NoError(t, validateUptimeConfig(pos.UptimeConfig{MicroEpochSize: 0}))
+func TestResolveEpochSizeAndUptimeConfig(t *testing.T) {
+	t.Run("micro enabled derives epoch size 50", func(t *testing.T) {
+		epochSize, _, err := resolveEpochSizeAndUptimeConfig(map[string]interface{}{
+			"microEpochSize":               float64(10),
+			"macroEpochMicroFactor":        float64(5),
+			"microEpochNominalWeightUnits": float64(10000),
+			"microEpochInactivityDecayBps": float64(9000),
+		})
+		require.NoError(t, err)
+		require.Equal(t, uint64(50), epochSize)
 	})
 
-	t.Run("enabled micro epoch requires nominal weight", func(t *testing.T) {
-		err := validateUptimeConfig(pos.UptimeConfig{MicroEpochSize: 8, MicroEpochInactivityDecayBps: 9000, MicroEpochNominalWeight: 0})
-		require.Error(t, err)
+	t.Run("micro enabled derives epoch size 500", func(t *testing.T) {
+		epochSize, _, err := resolveEpochSizeAndUptimeConfig(map[string]interface{}{
+			"microEpochSize":               float64(25),
+			"macroEpochMicroFactor":        float64(20),
+			"microEpochNominalWeightUnits": float64(10000),
+			"microEpochInactivityDecayBps": float64(9000),
+		})
+		require.NoError(t, err)
+		require.Equal(t, uint64(500), epochSize)
 	})
 
-	t.Run("enabled micro epoch requires decay bps", func(t *testing.T) {
-		err := validateUptimeConfig(pos.UptimeConfig{MicroEpochSize: 8, MicroEpochInactivityDecayBps: 0, MicroEpochNominalWeight: 10000})
-		require.Error(t, err)
+	t.Run("micro enabled rejects explicit epoch size", func(t *testing.T) {
+		_, _, err := resolveEpochSizeAndUptimeConfig(map[string]interface{}{
+			"type":                         "PoS",
+			"epochSize":                    float64(50),
+			"microEpochSize":               float64(10),
+			"macroEpochMicroFactor":        float64(5),
+			"microEpochNominalWeightUnits": float64(10000),
+			"microEpochInactivityDecayBps": float64(9000),
+		})
+		require.EqualError(t, err, "epochSize must not be set; macro epoch size is derived from microEpochSize * macroEpochMicroFactor")
 	})
 
-	t.Run("enabled micro epoch rejects decay over 10000", func(t *testing.T) {
-		err := validateUptimeConfig(pos.UptimeConfig{MicroEpochSize: 8, MicroEpochInactivityDecayBps: 10001, MicroEpochNominalWeight: 10000})
-		require.Error(t, err)
+	t.Run("micro enabled requires factor", func(t *testing.T) {
+		_, _, err := resolveEpochSizeAndUptimeConfig(map[string]interface{}{
+			"type":                         "PoS",
+			"microEpochSize":               float64(10),
+			"macroEpochMicroFactor":        float64(0),
+			"microEpochNominalWeightUnits": float64(10000),
+			"microEpochInactivityDecayBps": float64(9000),
+		})
+		require.EqualError(t, err, "macroEpochMicroFactor is required for PoS")
 	})
-}
 
-func TestValidateEpochSize(t *testing.T) {
-	require.EqualError(t, validateEpochSize(0), "epochSize must be greater than or equal to 2")
-	require.EqualError(t, validateEpochSize(1), "epochSize must be greater than or equal to 2")
-	require.NoError(t, validateEpochSize(2))
+	t.Run("pos requires micro epoch size", func(t *testing.T) {
+		_, _, err := resolveEpochSizeAndUptimeConfig(map[string]interface{}{
+			"type":                  "PoS",
+			"macroEpochMicroFactor": float64(2),
+		})
+		require.EqualError(t, err, "microEpochSize is required for PoS")
+	})
+
+	t.Run("legacy mode valid", func(t *testing.T) {
+		epochSize, _, err := resolveEpochSizeAndUptimeConfig(map[string]interface{}{"epochSize": float64(100000)})
+		require.NoError(t, err)
+		require.Equal(t, uint64(100000), epochSize)
+	})
+
+	t.Run("micro enabled overflow", func(t *testing.T) {
+		_, _, err := resolveEpochSizeAndUptimeConfig(map[string]interface{}{
+			"microEpochSize":               float64(math.MaxUint64),
+			"macroEpochMicroFactor":        float64(2),
+			"microEpochNominalWeightUnits": float64(10000),
+			"microEpochInactivityDecayBps": float64(9000),
+		})
+		require.EqualError(t, err, "invalid PoS uptime config: microEpochSize * macroEpochMicroFactor overflows uint64")
+	})
 }

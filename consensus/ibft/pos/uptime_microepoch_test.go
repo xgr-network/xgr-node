@@ -33,7 +33,7 @@ func TestApplyMicroEpochUptime_DutySeenSemantics(t *testing.T) {
 	txn.Txn().SetState(PosSysAddr, keyMicroEpochDuty(0, v1), u64ToHash(1))
 	txn.Txn().SetState(PosSysAddr, keyMicroEpochSeen(0, v1), u64ToHash(1))
 
-	require.NoError(t, applyMicroEpochUptime(txn, set, 3, types.ZeroAddress, cfg))
+	require.NoError(t, applyMicroEpochUptime(txn, 3, cfg, func(uint64) (validators.Validators, error) { return set, nil }))
 	require.Equal(t, uint64(9000), UptimeEffectiveWeight(txn.Txn(), v0))
 	require.Equal(t, uint64(10000), UptimeEffectiveWeight(txn.Txn(), v1))
 	require.Equal(t, uint64(10000), UptimeEffectiveWeight(txn.Txn(), v2))
@@ -50,7 +50,7 @@ func TestApplyMicroEpochUptime_RestoreUsesNominalNotEffective(t *testing.T) {
 	txn.Txn().SetState(PosSysAddr, keyUptimeNominalWeight(v), u64ToHash(10000))
 	txn.Txn().SetState(PosSysAddr, keyUptimeEffectiveWeight(v), u64ToHash(5000))
 	txn.Txn().SetState(PosSysAddr, keyMicroEpochSeen(0, v), u64ToHash(1))
-	require.NoError(t, applyMicroEpochUptime(txn, set, 3, types.ZeroAddress, cfg))
+	require.NoError(t, applyMicroEpochUptime(txn, 3, cfg, func(uint64) (validators.Validators, error) { return set, nil }))
 	require.Equal(t, uint64(10000), UptimeEffectiveWeight(txn.Txn(), v))
 }
 
@@ -62,7 +62,7 @@ func TestApplyMicroEpochUptime_DoesNotRestoreFromCurrentBlockActual(t *testing.T
 	txn.Txn().SetState(PosSysAddr, keyUptimeNominalWeight(v), u64ToHash(10000))
 	txn.Txn().SetState(PosSysAddr, keyUptimeEffectiveWeight(v), u64ToHash(10000))
 	txn.Txn().SetState(PosSysAddr, keyMicroEpochDuty(0, v), u64ToHash(1))
-	require.NoError(t, applyMicroEpochUptime(txn, set, 3, v, cfg))
+	require.NoError(t, applyMicroEpochUptime(txn, 3, cfg, func(uint64) (validators.Validators, error) { return set, nil }))
 	require.Equal(t, uint64(9000), UptimeEffectiveWeight(txn.Txn(), v))
 	require.Equal(t, uint64(1), u64FromHash(txn.Txn().GetState(PosSysAddr, keyUptimeInactivity(v))))
 }
@@ -73,7 +73,7 @@ func TestApplyMicroEpochUptime_NoOpWhenMicroEpochSizeZero(t *testing.T) {
 	set := validators.NewECDSAValidatorSet(validators.NewECDSAValidator(v))
 	cfg := UptimeConfig{MicroEpochSize: 0, MicroEpochNominalWeight: 10000, MicroEpochInactivityDecayBps: 9000}
 	txn.Txn().SetState(PosSysAddr, keyUptimeEffectiveWeight(v), u64ToHash(7777))
-	require.NoError(t, applyMicroEpochUptime(txn, set, 3, v, cfg))
+	require.NoError(t, applyMicroEpochUptime(txn, 3, cfg, func(uint64) (validators.Validators, error) { return set, nil }))
 	require.Equal(t, uint64(7777), UptimeEffectiveWeight(txn.Txn(), v))
 	require.Equal(t, uint64(0), u64FromHash(txn.Txn().GetState(PosSysAddr, keyMicroEpochApplied())))
 }
@@ -86,6 +86,7 @@ func TestRecordBlockUptime_MicroEpochMarksDutyAndSeen(t *testing.T) {
 	h := &types.Header{Number: 11, ExtraData: extra.MarshalRLPTo(make([]byte, signer.IstanbulExtraVanity))}
 	s := &fixedSigner{proposer: v, extra: extra}
 	txn := newPosTestTransitionWithStaking(t, v)
+	requireSnapshotCreated(t, txn, 1, set)
 	cfg := UptimeConfig{MicroEpochSize: 2, MicroEpochNominalWeight: 10000, MicroEpochInactivityDecayBps: 9000}
 	require.NoError(t, RecordBlockUptime(h, 10, set, s, cfg, txn))
 	me := microEpochOfBlock(h.Number, cfg.MicroEpochSize)
@@ -103,7 +104,7 @@ func TestRecordBlockUptime_MicroEpochMissedDutyDecaysAfterBoundary(t *testing.T)
 	txn.Txn().SetState(PosSysAddr, keyUptimeNominalWeight(v), u64ToHash(10000))
 	txn.Txn().SetState(PosSysAddr, keyUptimeEffectiveWeight(v), u64ToHash(10000))
 	txn.Txn().SetState(PosSysAddr, keyMicroEpochDuty(0, v), u64ToHash(1))
-	require.NoError(t, applyMicroEpochUptime(txn, set, 3, types.ZeroAddress, cfg))
+	require.NoError(t, applyMicroEpochUptime(txn, 3, cfg, func(uint64) (validators.Validators, error) { return set, nil }))
 	require.Equal(t, uint64(9000), UptimeEffectiveWeight(txn.Txn(), v))
 }
 
@@ -112,6 +113,7 @@ func TestRecordBlockUptime_MicroEpochMismatchStillMarksDutyAndDecays(t *testing.
 	b := types.StringToAddress("0x7002")
 	set := validators.NewECDSAValidatorSet(validators.NewECDSAValidator(a), validators.NewECDSAValidator(b))
 	txn := newPosTestTransitionWithStakingValidators(t, set, 1, uint64(set.Len()))
+	requireSnapshotCreated(t, txn, 1, set)
 	cfg := UptimeConfig{MicroEpochSize: 2, MicroEpochNominalWeight: 10000, MicroEpochInactivityDecayBps: 9000}
 
 	for _, addr := range []types.Address{a, b} {
@@ -176,3 +178,40 @@ func (m *fixedSigner) CalculateHeaderHash(*types.Header) (types.Hash, error) {
 	return types.ZeroHash, nil
 }
 func (m *fixedSigner) FilterHeaderForHash(h *types.Header) (*types.Header, error) { return h, nil }
+
+func TestApplyMicroEpochUptime_UsesEpochSnapshotValidatorSetAcrossBoundary(t *testing.T) {
+	txn := newPosTestTransition(t)
+	cfg := UptimeConfig{MicroEpochSize: 5, MicroEpochNominalWeight: 10000, MicroEpochInactivityDecayBps: 9000}
+	epochSize := uint64(10)
+	a := types.StringToAddress("0x8101")
+	b := types.StringToAddress("0x8102")
+	c := types.StringToAddress("0x8103")
+	setEpoch1 := validators.NewECDSAValidatorSet(validators.NewECDSAValidator(a), validators.NewECDSAValidator(b))
+	setEpoch2 := validators.NewECDSAValidatorSet(validators.NewECDSAValidator(a), validators.NewECDSAValidator(c))
+
+	requireSnapshotCreated(t, txn, 1, setEpoch1)
+	requireSnapshotCreated(t, txn, 2, setEpoch2)
+	for _, addr := range []types.Address{a, b, c} {
+		txn.Txn().SetState(PosSysAddr, keyUptimeNominalWeight(addr), u64ToHash(10000))
+		txn.Txn().SetState(PosSysAddr, keyUptimeEffectiveWeight(addr), u64ToHash(10000))
+	}
+	me := uint64(1)
+	txn.Txn().SetState(PosSysAddr, keyMicroEpochDuty(me, a), u64ToHash(1))
+	txn.Txn().SetState(PosSysAddr, keyMicroEpochSeen(me, a), u64ToHash(1))
+	txn.Txn().SetState(PosSysAddr, keyMicroEpochDuty(me, b), u64ToHash(1))
+
+	require.NoError(t, applyMicroEpochUptime(txn, 11, cfg, func(me uint64) (validators.Validators, error) {
+		return resolveMicroEpochValidatorSetFromSnapshots(txn, me, cfg.MicroEpochSize, epochSize)
+	}))
+	require.Equal(t, uint64(10000), UptimeEffectiveWeight(txn.Txn(), a))
+	require.Equal(t, uint64(9000), UptimeEffectiveWeight(txn.Txn(), b))
+	require.Equal(t, uint64(10000), UptimeEffectiveWeight(txn.Txn(), c))
+	require.Equal(t, uint64(1), u64FromHash(txn.Txn().GetState(PosSysAddr, keyUptimeInactivity(b))))
+	require.Zero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyUptimeInactivity(c))))
+	require.Zero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyMicroEpochSeen(me, a))))
+	require.Zero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyMicroEpochDuty(me, a))))
+	require.Zero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyMicroEpochDuty(me, b))))
+	require.Zero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyMicroEpochSeen(me, b))))
+	require.Zero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyMicroEpochDuty(me, c))))
+	require.Zero(t, u64FromHash(txn.Txn().GetState(PosSysAddr, keyMicroEpochSeen(me, c))))
+}

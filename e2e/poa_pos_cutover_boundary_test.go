@@ -76,3 +76,44 @@ func collectValidatorCredentials(t *testing.T, m *framework.IBFTServersManager, 
 }
 
 func u64ptr(v uint64) *uint64 { return &v }
+
+func TestPoA_PoS_Cutover_MicroEpochAlignedDoesNotStall(t *testing.T) {
+	const (
+		nodeCount             = 4
+		epochSize             = uint64(50)
+		microEpochSize        = uint64(10)
+		macroEpochMicroFactor = uint64(5)
+		poSFrom               = epochSize
+		poSDeployment         = uint64(5)
+		premineEth            = 7_000_000
+		stakeEth              = 2_000_000
+	)
+	ibftManager := framework.NewIBFTServersManager(
+		t,
+		nodeCount,
+		"poa-pos-cutover-microaligned-",
+		func(_ int, cfg *framework.TestServerConfig) {
+			cfg.SetBlockTime(1)
+			cfg.SetIBFTBaseTimeout(2)
+			cfg.SetMicroEpochConfig(microEpochSize, macroEpochMicroFactor, 10_000, 9_000)
+			cfg.PremineValidatorBalance(framework.EthToWei(premineEth))
+		},
+	)
+
+	require.NoError(t, ibftManager.GetServer(0).SwitchIBFTType(fork.PoS, poSFrom, nil, u64ptr(poSDeployment)))
+
+	startCtx, startCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer startCancel()
+	ibftManager.StartServers(startCtx)
+
+	servers := ibftManager.ActiveServers()
+	require.Empty(t, framework.WaitForServersToSeal(servers, poSDeployment+1))
+
+	addrs, keys := collectValidatorCredentials(t, ibftManager, nodeCount)
+	for i := 0; i < nodeCount; i++ {
+		require.NoError(t, framework.StakeAmount(addrs[i], keys[i], framework.EthToWei(stakeEth), ibftManager.GetServer(0)))
+	}
+
+	require.Empty(t, framework.WaitForServersToSeal(servers, 70), "aligned micro-epochs must not stall after cutover")
+	assertNoPermanentHeightDivergence(t, servers)
+}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/xgr-network/xgr-node/chain"
 	"github.com/xgr-network/xgr-node/consensus/ibft/hook"
 	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
@@ -20,6 +21,7 @@ import (
 	"github.com/xgr-network/xgr-node/types"
 	"github.com/xgr-network/xgr-node/validators"
 	"github.com/xgr-network/xgr-node/validators/store"
+	contractstore "github.com/xgr-network/xgr-node/validators/store/contract"
 )
 
 type mockHeaderModifierStore struct {
@@ -564,6 +566,23 @@ func newTestTransition(
 	return transition
 }
 
+func newTestExecutorAndTransition(t *testing.T) (*state.Executor, *state.Transition) {
+	t.Helper()
+	st := itrie.NewState(itrie.NewMemoryStorage())
+	ex := state.NewExecutor(&chain.Params{
+		Forks: chain.AllForksEnabled,
+		BurnContract: map[uint64]types.Address{
+			0: types.ZeroAddress,
+		},
+	}, st, hclog.NewNullLogger())
+	rootHash, err := ex.WriteGenesis(nil, types.Hash{})
+	require.NoError(t, err)
+	ex.GetHash = func(*types.Header) state.GetHashByNumber { return func(uint64) types.Hash { return rootHash } }
+	tx, err := ex.BeginTxn(rootHash, &types.Header{}, types.ZeroAddress)
+	require.NoError(t, err)
+	return ex, tx
+}
+
 func Test_registerStakingContractDeploymentHooks(t *testing.T) {
 	t.Parallel()
 
@@ -630,6 +649,243 @@ func Test_registerStakingContractDeploymentHooks(t *testing.T) {
 		txn.AccountExists(staking.AddrStakingContract),
 	)
 	assert.Equal(t, expectedState.Code, txn.GetCode(staking.AddrStakingContract))
+}
+
+func TestPoSHookRegister_RegisterHooks_DeploymentHeightBinding(t *testing.T) {
+	t.Parallel()
+
+	posFork := &IBFTFork{
+		Type:          PoS,
+		From:          common.JSONNumber{Value: 10},
+		Deployment:    &common.JSONNumber{Value: 10},
+		ValidatorType: validators.BLSValidatorType,
+		Validators: validators.NewBLSValidatorSet(
+			validators.NewBLSValidator(types.StringToAddress("0x1000000000000000000000000000000000000001"), []byte{1}),
+		),
+		MinValidatorCount: &common.JSONNumber{Value: 1},
+		MaxValidatorCount: &common.JSONNumber{Value: 2},
+	}
+	reg := NewPoSHookRegister(IBFTForks{posFork}, 10, pos.DefaultUptimeConfig(), func(uint64) (signer.Signer, error) { return nil, nil })
+
+	h9 := &hook.Hooks{}
+	reg.RegisterHooks(h9, 9)
+	require.NotNil(t, h9.PreCommitStateFunc)
+
+	h10 := &hook.Hooks{}
+	reg.RegisterHooks(h10, 10)
+	require.NotNil(t, h10.PreCommitStateFunc)
+}
+
+func TestPoSHookRegister_RegisterHooks_DeploymentThenCutoverSnapshotsAtBlock10(t *testing.T) {
+	t.Parallel()
+
+	sk1, _ := crypto.GenerateBLSKey()
+	pk1, _ := crypto.BLSSecretKeyToPubkeyBytes(sk1)
+	sk2, _ := crypto.GenerateBLSKey()
+	pk2, _ := crypto.BLSSecretKeyToPubkeyBytes(sk2)
+	vals := validators.NewBLSValidatorSet(
+		validators.NewBLSValidator(types.StringToAddress("0x1000000000000000000000000000000000000001"), pk1),
+		validators.NewBLSValidator(types.StringToAddress("0x1000000000000000000000000000000000000002"), pk2),
+	)
+	hooks := &hook.Hooks{}
+	f := &IBFTFork{
+		Type:              PoS,
+		From:              common.JSONNumber{Value: 10},
+		Deployment:        &common.JSONNumber{Value: 10},
+		MinValidatorCount: &common.JSONNumber{Value: 1},
+		MaxValidatorCount: &common.JSONNumber{Value: 4},
+		ValidatorType:     validators.BLSValidatorType,
+		Validators:        vals,
+	}
+	reg := NewPoSHookRegister(IBFTForks{f}, 10, pos.DefaultUptimeConfig(), func(uint64) (signer.Signer, error) { return nil, nil })
+	reg.RegisterHooks(hooks, 10)
+	txn := newTestTransition(t)
+
+	require.NoError(t, hooks.PreCommitState(&types.Header{Number: 10}, txn))
+	require.True(t, txn.AccountExists(staking.AddrStakingContract))
+	require.True(t, pos.HasMacroEpochValidatorSet(txn, 2))
+	require.True(t, pos.HasMacroEpochStakeSnapshot(txn, 2, vals))
+
+	loadedVals, ok, err := pos.LoadMacroEpochValidatorSet(txn, 2, validators.BLSValidatorType)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.True(t, loadedVals.Equal(vals))
+
+	loadedStake, ok, err := pos.LoadMacroEpochStakeSnapshot(txn, 2, vals)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Len(t, loadedStake, vals.Len())
+	for i := 0; i < vals.Len(); i++ {
+		addr := vals.At(uint64(i)).Addr()
+		require.NotNil(t, loadedStake[addr])
+		require.True(t, loadedStake[addr].Sign() > 0)
+	}
+}
+
+func TestPoSHookRegister_RegisterHooks_CutoverSnapshotsPersistInCommittedStateRoot(t *testing.T) {
+	t.Parallel()
+	sk, _ := crypto.GenerateBLSKey()
+	pk, _ := crypto.BLSSecretKeyToPubkeyBytes(sk)
+	vals := validators.NewBLSValidatorSet(validators.NewBLSValidator(types.StringToAddress("0x1000000000000000000000000000000000000001"), pk))
+	hooks := &hook.Hooks{}
+	f := &IBFTFork{
+		Type:              PoS,
+		Deployment:        &common.JSONNumber{Value: 10},
+		From:              common.JSONNumber{Value: 10},
+		MinValidatorCount: &common.JSONNumber{Value: 1},
+		MaxValidatorCount: &common.JSONNumber{Value: 4},
+		ValidatorType:     validators.BLSValidatorType,
+		Validators:        vals,
+	}
+	reg := NewPoSHookRegister(IBFTForks{f}, 10, pos.DefaultUptimeConfig(), func(uint64) (signer.Signer, error) { return nil, nil })
+	reg.RegisterHooks(hooks, 10)
+	_, tx := newTestExecutorAndTransition(t)
+	require.NoError(t, hooks.PreCommitState(&types.Header{Number: 10}, tx))
+	require.True(t, pos.HasMacroEpochValidatorSet(tx, 2))
+	require.True(t, pos.HasMacroEpochStakeSnapshot(tx, 2, vals))
+	_, root, err := tx.Commit()
+	require.NoError(t, err)
+	require.NotEqual(t, types.ZeroHash, root)
+}
+
+func TestPoSHookRegister_RegisterHooks_DirectPoSBlock1WritesEpoch1Snapshots(t *testing.T) {
+	t.Parallel()
+
+	vals := validators.NewECDSAValidatorSet(
+		validators.NewECDSAValidator(types.StringToAddress("0x1000000000000000000000000000000000000001")),
+		validators.NewECDSAValidator(types.StringToAddress("0x1000000000000000000000000000000000000002")),
+	)
+	f := &IBFTFork{
+		Type:              PoS,
+		From:              common.JSONNumber{Value: 0},
+		ValidatorType:     validators.ECDSAValidatorType,
+		Validators:        vals,
+		MinValidatorCount: &common.JSONNumber{Value: 1},
+		MaxValidatorCount: &common.JSONNumber{Value: 4},
+	}
+	reg := NewPoSHookRegister(IBFTForks{f}, 10, pos.DefaultUptimeConfig(), func(uint64) (signer.Signer, error) { return nil, nil })
+	hooks := &hook.Hooks{}
+	reg.RegisterHooks(hooks, 1)
+	require.NotNil(t, hooks.PreCommitStateFunc)
+
+	_, tx := newTestExecutorAndTransition(t)
+	bootstrapState, err := stakingHelper.PredeployStakingSCBootstrap(vals, stakingHelper.PredeployParams{
+		MinValidatorCount: 1,
+		MaxValidatorCount: 4,
+		EpochSize:         10,
+	})
+	require.NoError(t, err)
+	require.NoError(t, tx.SetAccountDirectly(staking.AddrStakingContract, bootstrapState))
+
+	require.NoError(t, hooks.PreCommitState(&types.Header{Number: 1}, tx))
+	require.True(t, pos.HasMacroEpochValidatorSet(tx, 1))
+	require.True(t, pos.HasMacroEpochStakeSnapshot(tx, 1, vals))
+
+	loadedVals, ok, err := pos.LoadMacroEpochValidatorSet(tx, 1, validators.ECDSAValidatorType)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.True(t, loadedVals.Equal(vals))
+
+	loadedStakes, ok, err := pos.LoadMacroEpochStakeSnapshot(tx, 1, vals)
+	require.NoError(t, err)
+	require.True(t, ok)
+	for i := 0; i < vals.Len(); i++ {
+		addr := vals.At(uint64(i)).Addr()
+		require.True(t, loadedStakes[addr].Sign() > 0)
+		require.Equal(t, 0, loadedStakes[addr].Cmp(contractstore.ReadValidatorVotingStakeAt(tx, addr, 1)))
+	}
+}
+
+func TestPoSHookRegister_RegisterHooks_RegularMacroSnapshotsAtBoundaryBlock20(t *testing.T) {
+	t.Parallel()
+	sk1, _ := crypto.GenerateBLSKey()
+	pk1, _ := crypto.BLSSecretKeyToPubkeyBytes(sk1)
+	sk2, _ := crypto.GenerateBLSKey()
+	pk2, _ := crypto.BLSSecretKeyToPubkeyBytes(sk2)
+	vals := validators.NewBLSValidatorSet(
+		validators.NewBLSValidator(types.StringToAddress("0x1000000000000000000000000000000000000001"), pk1),
+		validators.NewBLSValidator(types.StringToAddress("0x1000000000000000000000000000000000000002"), pk2),
+	)
+	f := &IBFTFork{
+		Type:              PoS,
+		From:              common.JSONNumber{Value: 10},
+		Deployment:        &common.JSONNumber{Value: 10},
+		MinValidatorCount: &common.JSONNumber{Value: 1},
+		MaxValidatorCount: &common.JSONNumber{Value: 4},
+		ValidatorType:     validators.BLSValidatorType,
+		Validators:        vals,
+	}
+	key, err := crypto.GenerateECDSAKey()
+	require.NoError(t, err)
+	keyManager := signer.NewECDSAKeyManagerFromKey(key)
+	headerSigner := signer.NewSigner(keyManager, keyManager)
+	reg := NewPoSHookRegister(IBFTForks{f}, 10, pos.DefaultUptimeConfig(), func(uint64) (signer.Signer, error) { return headerSigner, nil })
+	_, tx := newTestExecutorAndTransition(t)
+
+	h10 := &hook.Hooks{}
+	reg.RegisterHooks(h10, 10)
+	require.NoError(t, h10.PreCommitState(&types.Header{Number: 10}, tx))
+
+	h20 := &hook.Hooks{}
+	reg.RegisterHooks(h20, 20)
+	require.NoError(t, h20.PreCommitState(&types.Header{Number: 20}, tx))
+	require.True(t, pos.HasMacroEpochValidatorSet(tx, 3))
+	require.True(t, pos.HasMacroEpochStakeSnapshot(tx, 3, vals))
+
+	loadedVals, ok, err := pos.LoadMacroEpochValidatorSet(tx, 3, validators.BLSValidatorType)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.True(t, loadedVals.Equal(vals))
+
+	loadedStakes, ok, err := pos.LoadMacroEpochStakeSnapshot(tx, 3, vals)
+	require.NoError(t, err)
+	require.True(t, ok)
+	for i := 0; i < vals.Len(); i++ {
+		addr := vals.At(uint64(i)).Addr()
+		require.NotNil(t, loadedStakes[addr])
+		require.Equal(t, 0, loadedStakes[addr].Cmp(contractstore.ReadValidatorEffectiveTotalStakeAt(tx, addr, 20)))
+	}
+
+	delegator := types.StringToAddress("0x10000000000000000000000000000000000000d1")
+	require.Nil(t, loadedStakes[delegator])
+	_, _, err = pos.LoadMacroEpochStakeSnapshot(tx, 3, validators.NewBLSValidatorSet(
+		vals.At(0).(*validators.BLSValidator),
+		vals.At(1).(*validators.BLSValidator),
+		validators.NewBLSValidator(delegator, pk1),
+	))
+	require.Error(t, err)
+}
+
+func TestPoSHookRegister_RegisterHooks_RegularMacroSnapshotsNotRunAt19OrCutover10(t *testing.T) {
+	t.Parallel()
+	sk, _ := crypto.GenerateBLSKey()
+	pk, _ := crypto.BLSSecretKeyToPubkeyBytes(sk)
+	vals := validators.NewBLSValidatorSet(validators.NewBLSValidator(types.StringToAddress("0x1000000000000000000000000000000000000001"), pk))
+	f := &IBFTFork{
+		Type:              PoS,
+		From:              common.JSONNumber{Value: 10},
+		Deployment:        &common.JSONNumber{Value: 10},
+		MinValidatorCount: &common.JSONNumber{Value: 1},
+		MaxValidatorCount: &common.JSONNumber{Value: 4},
+		ValidatorType:     validators.BLSValidatorType,
+		Validators:        vals,
+	}
+	key, err := crypto.GenerateECDSAKey()
+	require.NoError(t, err)
+	keyManager := signer.NewECDSAKeyManagerFromKey(key)
+	headerSigner := signer.NewSigner(keyManager, keyManager)
+	reg := NewPoSHookRegister(IBFTForks{f}, 10, pos.DefaultUptimeConfig(), func(uint64) (signer.Signer, error) { return headerSigner, nil })
+	tx := newTestTransition(t)
+
+	h19 := &hook.Hooks{}
+	reg.RegisterHooks(h19, 19)
+	require.NoError(t, h19.PreCommitState(&types.Header{Number: 19}, tx))
+	require.False(t, pos.HasMacroEpochValidatorSet(tx, 3))
+
+	h10 := &hook.Hooks{}
+	reg.RegisterHooks(h10, 10)
+	require.NoError(t, h10.PreCommitState(&types.Header{Number: 10}, tx))
+	require.False(t, pos.HasMacroEpochValidatorSet(tx, 3))
 }
 
 func Test_getPreDeployParams(t *testing.T) {

@@ -117,7 +117,7 @@ func (o *operator) Propose(ctx context.Context, req *proto.Candidate) (*empty.Em
 		return nil, err
 	}
 
-	if err := votableSet.Propose(candidate, req.Auth, o.ibft.currentSigner.Address()); err != nil {
+	if err := votableSet.Propose(candidate, req.Auth, o.ibft.getCurrentSigner().Address()); err != nil {
 		return nil, err
 	}
 
@@ -191,8 +191,8 @@ func (o *operator) getVotableValidatorStore() (Votable, error) {
 
 // getLatestSigner gets the latest signer IBFT uses
 func (o *operator) getLatestSigner() (signer.Signer, error) {
-	if o.ibft.currentSigner != nil {
-		return o.ibft.currentSigner, nil
+	if currentSigner := o.ibft.getCurrentSigner(); currentSigner != nil {
+		return currentSigner, nil
 	}
 
 	return o.ibft.forkManager.GetSigner(o.ibft.blockchain.Header().Number)

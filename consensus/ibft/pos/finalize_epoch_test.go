@@ -201,3 +201,56 @@ func TestFinalizeEpoch_FailsDeterministicallyWhenEpochProducedNoUsableSnapshot(t
 	err := FinalizeEpoch(header, 10, UptimeConfig{}, testHeaderSigner(), txn)
 	require.EqualError(t, err, "missing epoch validator snapshot for epoch 2")
 }
+
+func TestFinalizeEpoch_MissingNoSlashModeErrors(t *testing.T) {
+	validator := types.StringToAddress("0xabd1")
+	txn := newPosTestTransitionWithStaking(t, validator)
+	set := validators.NewECDSAValidatorSet(validators.NewECDSAValidator(validator))
+	header := makeFinalizeHeader(20, 10, set)
+	epoch := epochOf(header.Number-1, 10)
+
+	created, err := ensureEpochValidatorsSnapshot(txn, epoch, set)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	err = FinalizeEpoch(header, 10, UptimeConfig{}, testHeaderSigner(), txn)
+	require.EqualError(t, err, "missing no-slash mode for epoch 2")
+}
+
+func TestFinalizeEpoch_NoSlashModeTrueSkipsSlashing(t *testing.T) {
+	validator := types.StringToAddress("0xabd2")
+	txn := newPosTestTransitionWithStaking(t, validator)
+	set := validators.NewECDSAValidatorSet(validators.NewECDSAValidator(validator))
+	header := makeFinalizeHeader(20, 10, set)
+	epoch := epochOf(header.Number-1, 10)
+	requireSnapshotCreated(t, txn, epoch, set)
+	require.NoError(t, StoreMacroEpochNoSlashMode(txn, epoch, true))
+	beforeStake := new(big.Int).Set(readStakedAmount(txn, validator))
+
+	txn.Txn().SetState(PosSysAddr, keyProposerSlots(epoch, validator), u64ToHash(1))
+	txn.Txn().SetState(PosSysAddr, keyProposerMissed(epoch, validator), u64ToHash(1))
+	txn.Txn().SetState(PosSysAddr, keyStakeSnapshot(epoch, validator), bigToHash(big.NewInt(100)))
+	txn.Txn().SetState(PosSysAddr, keyStakerStakeSnapshot(epoch, validator), bigToHash(big.NewInt(100)))
+
+	require.NoError(t, FinalizeEpoch(header, 10, UptimeConfig{}, testHeaderSigner(), txn))
+	require.Equal(t, 0, beforeStake.Cmp(readStakedAmount(txn, validator)))
+	for _, lg := range txn.Txn().Logs() {
+		require.NotEqual(t, posEventStakerSlashedTopic, lg.Topics[0])
+	}
+}
+
+func TestFinalizeEpoch_NoSlashModeFalseAllowsSlashing(t *testing.T) {
+	validator := types.StringToAddress("0xabd3")
+	txn := newPosTestTransitionWithStaking(t, validator)
+	set := validators.NewECDSAValidatorSet(validators.NewECDSAValidator(validator))
+	header := makeFinalizeHeader(20, 10, set)
+	epoch := epochOf(header.Number-1, 10)
+	requireSnapshotCreated(t, txn, epoch, set)
+	require.NoError(t, StoreMacroEpochNoSlashMode(txn, epoch, false))
+	txn.Txn().SetState(PosSysAddr, keyProposerSlots(epoch, validator), u64ToHash(1))
+	txn.Txn().SetState(PosSysAddr, keyProposerMissed(epoch, validator), u64ToHash(1))
+	txn.Txn().SetState(PosSysAddr, keyStakeSnapshot(epoch, validator), bigToHash(big.NewInt(100)))
+	txn.Txn().SetState(PosSysAddr, keyStakerStakeSnapshot(epoch, validator), bigToHash(big.NewInt(100)))
+
+	require.NoError(t, FinalizeEpoch(header, 10, UptimeConfig{}, testHeaderSigner(), txn))
+}

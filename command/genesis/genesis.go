@@ -109,6 +109,18 @@ func setFlags(cmd *cobra.Command) {
 		ibft.DefaultEpochSize,
 		"the epoch size for the chain",
 	)
+	cmd.Flags().Uint64Var(
+		&params.microEpochSize,
+		"micro-epoch-size",
+		0,
+		"PoS micro epoch size (required in PoS mode)",
+	)
+	cmd.Flags().Uint64Var(
+		&params.macroEpochMicroFactor,
+		"macro-epoch-micro-factor",
+		0,
+		"PoS macro epoch factor in micro epochs (required in PoS mode)",
+	)
 
 	// PoS
 	{

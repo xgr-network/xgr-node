@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -585,11 +586,72 @@ func WaitForServersToSeal(servers []*TestServer, desiredHeight uint64) []error {
 
 			_, waitErr := WaitUntilBlockMined(waitCtx, servers[indx], desiredHeight)
 			if waitErr != nil {
-				appendWaitErr(fmt.Errorf("unable to wait for block, %w", waitErr))
+				appendWaitErr(fmt.Errorf("unable to wait for block, %w\n%s", waitErr, collectServerDiagnostics(servers[indx])))
 			}
 		}(i)
 	}
 	wg.Wait()
 
 	return waitErrors
+}
+
+func collectServerDiagnostics(srv *TestServer) string {
+	call := func(method string, params []interface{}) map[string]interface{} {
+		return srv.CallJSONRPC(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  method,
+			"params":  params,
+		})
+	}
+
+	var out strings.Builder
+	fmt.Fprintf(&out, "diagnostics node=%s rpc=%s\n", srv.Config.Name, srv.HTTPJSONRPCURL())
+	fmt.Fprintf(&out, "eth_blockNumber=%v\n", call("eth_blockNumber", []interface{}{}))
+	fmt.Fprintf(&out, "eth_getBlockByNumber(latest,false)=%v\n", call("eth_getBlockByNumber", []interface{}{"latest", false}))
+	fmt.Fprintf(&out, "net_peerCount=%v\n", call("net_peerCount", []interface{}{}))
+	fmt.Fprintf(&out, "txpool_status=%v\n", call("txpool_status", []interface{}{}))
+
+	logPath := filepath.Join(srv.Config.LogsDir, srv.Config.Name+".log")
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		fmt.Fprintf(&out, "log_read_error=%v", err)
+		return out.String()
+	}
+
+	lines := strings.Split(string(b), "\n")
+	start := 0
+	if len(lines) > 100 {
+		start = len(lines) - 100
+	}
+	fmt.Fprintf(&out, "last_100_log_lines(%s):\n", logPath)
+	for _, l := range lines[start:] {
+		fmt.Fprintln(&out, l)
+	}
+
+	patterns := []string{
+		"ensure macro epoch snapshots",
+		"missing canonical epoch validator stake snapshot",
+		"missing canonical epoch validator snapshot",
+		"stake snapshot is unavailable at cutover block",
+		"missing non-positive stake",
+		"failed to update submodules",
+		"failed to build proposal",
+		"round timeout expired",
+		"unauthorized proposer",
+		"header validator set is empty",
+		"invalid bls public key",
+	}
+	fmt.Fprintln(&out, "matching_lines:")
+	for _, l := range lines {
+		low := strings.ToLower(l)
+		for _, p := range patterns {
+			if strings.Contains(low, p) {
+				fmt.Fprintln(&out, l)
+				break
+			}
+		}
+	}
+
+	return out.String()
 }

@@ -6,6 +6,7 @@ const (
 	keyMicroEpochSize               = "microEpochSize"
 	keyMicroEpochInactivityDecayBps = "microEpochInactivityDecayBps"
 	keyMicroEpochNominalWeightUnits = "microEpochNominalWeightUnits"
+	keyMacroEpochMicroFactor        = "macroEpochMicroFactor"
 )
 
 // UptimeConfig holds the micro-epoch uptime/liveness configuration used by PoS.
@@ -13,6 +14,7 @@ type UptimeConfig struct {
 	MicroEpochSize               uint64
 	MicroEpochInactivityDecayBps uint64
 	MicroEpochNominalWeight      uint64
+	MacroEpochMicroFactor        uint64
 	ChainID                      int64
 }
 
@@ -54,6 +56,10 @@ func ParseUptimeConfig(ibftConfig map[string]interface{}) UptimeConfig {
 
 	if v, ok := readOK(keyMicroEpochNominalWeightUnits); ok {
 		cfg.MicroEpochNominalWeight = v
+	}
+
+	if v, ok := readOK(keyMacroEpochMicroFactor); ok {
+		cfg.MacroEpochMicroFactor = v
 	}
 
 	return cfg

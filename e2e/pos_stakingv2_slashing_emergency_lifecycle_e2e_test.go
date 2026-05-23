@@ -20,7 +20,7 @@ func TestPoS_StakingV2_SlashingEmergencyLifecycle_ConsensusSurvives(t *testing.T
 	const (
 		validatorCount    = 7
 		macroEpochSize    = uint64(20)
-		microEpochSize    = uint64(7)
+		microEpochSize    = uint64(10)
 		minValidatorCount = uint64(7)
 		maxValidatorCount = uint64(7)
 	)
@@ -63,6 +63,7 @@ func TestPoS_StakingV2_SlashingEmergencyLifecycle_ConsensusSurvives(t *testing.T
 	waitForAllServersSameHead(t, manager.ActiveServers(validatorAIdx))
 
 	targetEpochA := epochFromFinalizedBoundary(finalizeBoundaryA, macroEpochSize)
+	require.Equal(t, uint64(4), targetEpochA, "finalizeBoundary=80 epochSize=20 must target epoch 4")
 	slashLogA, hasSlashLogA := findStakerSlashedLog(t, servers[queryIdx], targetEpochA, validatorA, validatorA)
 	if !hasSlashLogA {
 		slashLogA, hasSlashLogA = findStakerSlashedLogForValidator(t, servers[queryIdx], validatorA, validatorA)
@@ -185,9 +186,8 @@ func setupStakingV2SlashingEmergencyCluster(
 		numValidators,
 		IBFTDirPrefix,
 		func(_ int, config *framework.TestServerConfig) {
-			config.SetEpochSize(macroEpochSize)
 			config.SetBlockTime(1)
-			config.SetMicroEpochConfig(microEpochSize, 10_000, 9_000)
+			config.SetMicroEpochConfig(microEpochSize, macroEpochSize/microEpochSize, 10_000, 9_000)
 			config.PremineValidatorBalance(defaultBalance)
 			config.SetIBFTPoS(true)
 			config.SetMinValidatorCount(minValidators)

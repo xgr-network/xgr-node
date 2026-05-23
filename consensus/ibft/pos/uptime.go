@@ -169,6 +169,10 @@ func RecordBlockUptime(
 		}
 
 		currentME := microEpochOfBlock(header.Number, uptimeCfg.MicroEpochSize)
+		if u64FromHash(txn.Txn().GetState(PosSysAddr, keyUptimeLastProcessedSlot())) == 0 &&
+			u64FromHash(txn.Txn().GetState(PosSysAddr, keyMicroEpochApplied())) == 0 {
+			txn.Txn().SetState(PosSysAddr, keyMicroEpochApplied(), u64ToHash(currentME))
+		}
 		if actual != types.ZeroAddress {
 			txn.Txn().SetState(PosSysAddr, keyMicroEpochSeen(currentME, actual), u64ToHash(1))
 		}
@@ -181,7 +185,10 @@ func RecordBlockUptime(
 			txn.Txn().SetState(PosSysAddr, keyMicroEpochDuty(currentME, p), u64ToHash(1))
 		}
 
-		if err := applyMicroEpochUptime(txn, valSet, header.Number, actual, uptimeCfg); err != nil {
+		resolver := func(me uint64) (validators.Validators, error) {
+			return resolveMicroEpochValidatorSetFromSnapshots(txn, me, uptimeCfg.MicroEpochSize, epochSize)
+		}
+		if err := applyMicroEpochUptime(txn, header.Number, uptimeCfg, resolver); err != nil {
 			return err
 		}
 	}
@@ -206,6 +213,33 @@ func RecordBlockUptime(
 	txn.Txn().SetState(PosSysAddr, keyUptimeLastProcessedSlot(), u64ToHash(header.Number))
 
 	return nil
+}
+
+func resolveMicroEpochValidatorSetFromSnapshots(txn *state.Transition, me, microEpochSize, epochSize uint64) (validators.Validators, error) {
+	if txn == nil {
+		return nil, fmt.Errorf("nil transition")
+	}
+	if microEpochSize == 0 || epochSize < 2 {
+		return nil, fmt.Errorf("invalid epoch sizing")
+	}
+
+	meStartBlock := me*microEpochSize + 1
+	epoch := epochOf(meStartBlock, epochSize)
+	if epoch == 0 {
+		return nil, fmt.Errorf("invalid epoch for micro-epoch %d", me)
+	}
+
+	addrs := loadEpochValidatorsSnapshot(txn, epoch)
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("missing epoch validator snapshot for micro-epoch %d (epoch %d)", me, epoch)
+	}
+
+	vals := make([]*validators.ECDSAValidator, 0, len(addrs))
+	for _, addr := range addrs {
+		vals = append(vals, validators.NewECDSAValidator(addr))
+	}
+
+	return validators.NewECDSAValidatorSet(vals...), nil
 }
 
 func calcProposer(set validators.Validators, round uint64, lastProposer types.Address) types.Address {

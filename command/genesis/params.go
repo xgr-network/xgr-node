@@ -3,6 +3,7 @@ package genesis
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"time"
 
@@ -61,8 +62,10 @@ type genesisParams struct {
 	premine      []string
 	bootnodes    []string
 
-	chainID   uint64
-	epochSize uint64
+	chainID               uint64
+	epochSize             uint64
+	microEpochSize        uint64
+	macroEpochMicroFactor uint64
 
 	blockGasLimit uint64
 
@@ -122,11 +125,28 @@ func (p *genesisParams) validateFlags() error {
 	}
 
 	// Check that the epoch size is correct
-	if p.epochSize < 2 && p.isIBFTConsensus() {
+	if p.epochSize < 2 && p.isIBFTConsensus() && !p.isPos {
 		// Epoch size must be greater than 1, so new transactions have a chance to be added to a block.
 		// Otherwise, every block would be an endblock (meaning it will not have any transactions).
 		// Check is placed here to avoid additional parsing if epochSize < 2
 		return errInvalidEpochSize
+	}
+	if p.isPos && p.isIBFTConsensus() {
+		if p.epochSize != ibft.DefaultEpochSize {
+			return errors.New("epochSize must not be set; macro epoch size is derived from microEpochSize * macroEpochMicroFactor")
+		}
+		if p.microEpochSize == 0 {
+			return errors.New("microEpochSize is required for PoS")
+		}
+		if p.macroEpochMicroFactor == 0 {
+			return errors.New("macroEpochMicroFactor is required for PoS")
+		}
+		if p.microEpochSize > math.MaxUint64/p.macroEpochMicroFactor {
+			return errors.New("microEpochSize * macroEpochMicroFactor overflows uint64")
+		}
+		if p.microEpochSize*p.macroEpochMicroFactor < 2 {
+			return errInvalidEpochSize
+		}
 	}
 
 	// Validate validatorsPath only if validators information were not provided via CLI flag
@@ -297,13 +317,19 @@ func (p *genesisParams) initConsensusEngineConfig() {
 }
 
 func (p *genesisParams) initIBFTEngineMap(ibftType fork.IBFTType) {
+	ibftCfg := map[string]interface{}{
+		fork.KeyType:          ibftType,
+		fork.KeyValidatorType: p.ibftValidatorType,
+		fork.KeyBlockTime:     p.blockTime,
+	}
+	if p.isPos {
+		ibftCfg["microEpochSize"] = p.microEpochSize
+		ibftCfg["macroEpochMicroFactor"] = p.macroEpochMicroFactor
+	} else {
+		ibftCfg[ibft.KeyEpochSize] = p.epochSize
+	}
 	p.consensusEngineConfig = map[string]interface{}{
-		string(server.IBFTConsensus): map[string]interface{}{
-			fork.KeyType:          ibftType,
-			fork.KeyValidatorType: p.ibftValidatorType,
-			fork.KeyBlockTime:     p.blockTime,
-			ibft.KeyEpochSize:     p.epochSize,
-		},
+		string(server.IBFTConsensus): ibftCfg,
 	}
 }
 
@@ -386,12 +412,16 @@ func (p *genesisParams) shouldPredeployStakingSC() bool {
 }
 
 func (p *genesisParams) predeployStakingSC() (*chain.GenesisAccount, error) {
+	stakingEpochSize := p.epochSize
+	if p.isPos {
+		stakingEpochSize = p.microEpochSize * p.macroEpochMicroFactor
+	}
 	stakingAccount, predeployErr := stakingHelper.PredeployStakingSC(
 		p.ibftValidators,
 		stakingHelper.PredeployParams{
 			MinValidatorCount: p.minNumValidators,
 			MaxValidatorCount: p.maxNumValidators,
-			EpochSize:         p.epochSize,
+			EpochSize:         stakingEpochSize,
 		})
 	if predeployErr != nil {
 		return nil, predeployErr

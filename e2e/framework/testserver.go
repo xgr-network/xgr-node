@@ -299,8 +299,12 @@ func (t *TestServer) GenerateGenesis() error {
 
 		args = append(args, "--validators-prefix", t.Config.IBFTDirPrefix)
 
-		if t.Config.EpochSize != 0 {
+		if t.Config.EpochSize != 0 && t.Config.MicroEpochSize == 0 {
 			args = append(args, "--epoch-size", strconv.FormatUint(t.Config.EpochSize, 10))
+		}
+		if t.Config.MicroEpochSize != 0 {
+			args = append(args, "--micro-epoch-size", strconv.FormatUint(t.Config.MicroEpochSize, 10))
+			args = append(args, "--macro-epoch-micro-factor", strconv.FormatUint(t.Config.MacroEpochMicroFactor, 10))
 		}
 
 	case ConsensusDev:
@@ -459,6 +463,8 @@ func (t *TestServer) patchMicroEpochGenesisConfig() error {
 	}
 
 	ibftCfg["microEpochSize"] = t.Config.MicroEpochSize
+	ibftCfg["macroEpochMicroFactor"] = t.Config.MacroEpochMicroFactor
+	delete(ibftCfg, "epochSize")
 	if t.Config.MicroEpochNominalWeight > 0 {
 		ibftCfg["microEpochNominalWeightUnits"] = t.Config.MicroEpochNominalWeight
 	}
@@ -583,7 +589,7 @@ func (t *TestServer) SwitchIBFTTypeWithPoSConfig(typ fork.IBFTType, from uint64,
 	)
 
 	// Default ibft validator type for e2e tests is ECDSA
-	args = append(args, "--ibft-validator-type", string(validators.ECDSAValidatorType))
+	args = append(args, "--ibft-validator-type", string(t.Config.ValidatorType))
 
 	if to != nil {
 		args = append(args, "--to", strconv.FormatUint(*to, 10))

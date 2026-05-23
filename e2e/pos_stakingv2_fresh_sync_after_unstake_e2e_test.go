@@ -139,8 +139,7 @@ func setupDelayedPoAToPoSStakingV2Cluster(
 		func(_ int, cfg *framework.TestServerConfig) {
 			cfg.SetBlockTime(1)
 			cfg.SetIBFTBaseTimeout(2)
-			cfg.SetEpochSize(epochSize)
-			cfg.SetMicroEpochConfig(microEpochSize, 10_000, 9_000)
+			cfg.SetMicroEpochConfig(microEpochSize, epochSize/microEpochSize, 10_000, 9_000)
 			cfg.PremineValidatorBalance(framework.EthToWei(premineEth))
 		},
 	)

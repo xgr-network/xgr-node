@@ -2,6 +2,7 @@ package fork
 
 import (
 	"errors"
+	"math/big"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/xgr-network/xgr-node/consensus/ibft/hook"
@@ -190,6 +191,29 @@ func (m *ForkManager) GetValidators(height uint64) (validators.Validators, error
 	)
 }
 
+func (m *ForkManager) GetValidatorStakeSnapshot(height uint64, validatorSet validators.Validators) (map[types.Address]*big.Int, error) {
+	fork := m.forks.getFork(height)
+	if fork == nil {
+		return nil, ErrForkNotFound
+	}
+
+	if fork.Type != PoS {
+		return nil, errors.New("validator stake snapshot is available only in PoS")
+	}
+
+	set := m.getValidatorStoreByIBFTFork(fork)
+	if set == nil {
+		return nil, ErrValidatorStoreNotFound
+	}
+
+	contractSet, ok := set.(*ContractValidatorStoreWrapper)
+	if !ok {
+		return nil, errors.New("poS validator store is not contract-backed")
+	}
+
+	return contractSet.GetStakeSnapshot(height, m.epochSize, fork.From.Value, validatorSet)
+}
+
 // GetHooks returns a hooks at specified height
 func (m *ForkManager) GetHooks(height uint64) HooksInterface {
 	hooks := &hook.Hooks{}
@@ -277,12 +301,13 @@ func (m *ForkManager) initializeValidatorStores() error {
 		return err
 	}
 
-	// SnapshotValidatorStore is PoA-era header-vote state. If the node is already
-	// past the PoA -> PoS transition, initializing it would replay the current PoS
-	// epoch through SnapshotValidatorStore.ProcessHeader and reject valid PoS
-	// proposers. Keep the legacy eager initialization while the current head is in
-	// a snapshot/PoA fork, so fresh nodes that start before transition can still
-	// build and persist PoA snapshots.
+	// PoA and PoS validator sources are intentionally separated:
+	//   - PoA path uses SnapshotValidatorStore (header-vote snapshots)
+	//   - PoS path uses ContractValidatorStoreWrapper, which maintains canonical
+	//     macro-epoch membership snapshots (restart-safe load/reconstruction)
+	//
+	// When current head is already in PoS (contract source), do not initialize the
+	// PoA SnapshotValidatorStore because it is not a PoS fallback source.
 	if currentSourceType == store.Contract {
 		return nil
 	}
@@ -323,6 +348,7 @@ func (m *ForkManager) initializeValidatorStore(setType store.SourceType) error {
 			m.blockchain,
 			m.executor,
 			m.GetSigner,
+			m.filePath,
 		)
 	}
 
