@@ -10,6 +10,7 @@ import (
 func TestResolveEpochSizeAndUptimeConfig(t *testing.T) {
 	t.Run("micro enabled derives epoch size 50", func(t *testing.T) {
 		epochSize, _, err := resolveEpochSizeAndUptimeConfig(map[string]interface{}{
+			"type":                         "PoS",
 			"microEpochSize":               float64(10),
 			"macroEpochMicroFactor":        float64(5),
 			"microEpochNominalWeightUnits": float64(10000),
@@ -21,6 +22,7 @@ func TestResolveEpochSizeAndUptimeConfig(t *testing.T) {
 
 	t.Run("micro enabled derives epoch size 500", func(t *testing.T) {
 		epochSize, _, err := resolveEpochSizeAndUptimeConfig(map[string]interface{}{
+			"type":                         "PoS",
 			"microEpochSize":               float64(25),
 			"macroEpochMicroFactor":        float64(20),
 			"microEpochNominalWeightUnits": float64(10000),
@@ -69,6 +71,7 @@ func TestResolveEpochSizeAndUptimeConfig(t *testing.T) {
 
 	t.Run("micro enabled overflow", func(t *testing.T) {
 		_, _, err := resolveEpochSizeAndUptimeConfig(map[string]interface{}{
+			"type":                         "PoS",
 			"microEpochSize":               float64(math.MaxUint64),
 			"macroEpochMicroFactor":        float64(2),
 			"microEpochNominalWeightUnits": float64(10000),
