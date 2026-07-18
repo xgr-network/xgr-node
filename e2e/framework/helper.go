@@ -562,6 +562,14 @@ func NewTestServers(t *testing.T, num int, conf func(*TestServerConfig)) []*Test
 }
 
 func WaitForServersToSeal(servers []*TestServer, desiredHeight uint64) []error {
+	return WaitForServersToSealWithTimeout(
+		servers,
+		desiredHeight,
+		time.Minute,
+	)
+}
+
+func WaitForServersToSealWithTimeout(servers []*TestServer, desiredHeight uint64, timeout time.Duration) []error {
 	waitErrors := make([]error, 0)
 
 	var waitErrorsLock sync.Mutex
@@ -578,7 +586,7 @@ func WaitForServersToSeal(servers []*TestServer, desiredHeight uint64) []error {
 		wg.Add(1)
 
 		go func(indx int) {
-			waitCtx, waitCancelFn := context.WithTimeout(context.Background(), time.Minute)
+			waitCtx, waitCancelFn := context.WithTimeout(context.Background(), timeout)
 			defer func() {
 				waitCancelFn()
 				wg.Done()

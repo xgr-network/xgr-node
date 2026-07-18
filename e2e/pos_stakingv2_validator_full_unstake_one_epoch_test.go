@@ -46,7 +46,11 @@ func TestPoS_StakingV2_ValidatorFullUnstakeAfterOneEpoch_DoesNotBreakConsensus(t
 
 	heightAfterUnstake, err := servers[0].JSONRPC().Eth().BlockNumber()
 	require.NoError(t, err)
-	require.Empty(t, framework.WaitForServersToSeal(servers, heightAfterUnstake+(epochSize*3)+2))
+	require.Empty(t, framework.WaitForServersToSealWithTimeout(
+		servers,
+		heightAfterUnstake+(epochSize*3)+2,
+		2*time.Minute,
+	))
 	assertNoPermanentHeightDivergence(t, servers)
 	assertCommonHeadHashAtLowestHeight(t, servers)
 

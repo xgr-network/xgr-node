@@ -21,8 +21,6 @@ var (
 	// IstanbulExtraSeal represents the fixed number of extra-data bytes reserved for proposer seal
 	IstanbulExtraSeal = 65
 
-	zeroBytes = make([]byte, 32)
-
 	errRoundNumberOverflow = errors.New("round number is out of range for 64bit")
 )
 
@@ -124,8 +122,8 @@ func (i *IstanbulExtra) UnmarshalRLPFrom(p *fastrlp.Parser, v *fastrlp.Value) er
 		return err
 	}
 
-	if len(elems) < 3 {
-		return fmt.Errorf("incorrect number of elements to decode istambul extra, expected 3 but found %d", len(elems))
+	if err := validateIstanbulExtraElementCount(elems); err != nil {
+		return err
 	}
 
 	// Validators
@@ -176,6 +174,9 @@ func (i *IstanbulExtra) unmarshalRLPFromForParentCS(p *fastrlp.Parser, v *fastrl
 	if err != nil {
 		return err
 	}
+	if err := validateIstanbulExtraElementCount(elems); err != nil {
+		return err
+	}
 
 	// ParentCommitted
 	if len(elems) >= 4 {
@@ -197,143 +198,19 @@ func (i *IstanbulExtra) unmarshalRLPFromForParentCS(p *fastrlp.Parser, v *fastrl
 	return nil
 }
 
-// putIbftExtra sets the IBFT extra data field into the header
-func putIbftExtra(h *types.Header, istanbulExtra *IstanbulExtra) {
-	// Pad zeros to the right up to istanbul vanity
-	extra := h.ExtraData
-	if len(extra) < IstanbulExtraVanity {
-		extra = append(extra, zeroBytes[:IstanbulExtraVanity-len(extra)]...)
-	} else {
-		extra = extra[:IstanbulExtraVanity]
+func validateIstanbulExtraElementCount(elems []*fastrlp.Value) error {
+	if len(elems) < 3 || len(elems) > 5 {
+		return fmt.Errorf("incorrect number of elements to decode istambul extra, expected 3 to 5 but found %d", len(elems))
 	}
 
+	return nil
+}
+
+// putIbftExtra sets the IBFT extra data field into the header
+func putIbftExtra(h *types.Header, istanbulExtra *IstanbulExtra) {
+	// Build a new slice so encoding cannot overwrite a caller's existing ExtraData
+	// through shared backing storage before the assignment below.
+	extra := make([]byte, IstanbulExtraVanity)
+	copy(extra, h.ExtraData)
 	h.ExtraData = istanbulExtra.MarshalRLPTo(extra)
-}
-
-// packFieldsIntoExtra is a helper function
-// that injects a few fields into IBFT Extra
-// without modifying other fields
-// Validators, CommittedSeals, and ParentCommittedSeals have a few types
-// and extra must have these instances before unmarshalling usually
-// This function doesn't require the field instances that don't update
-func packFieldsIntoExtra(
-	extraBytes []byte,
-	packFn func(
-		ar *fastrlp.Arena,
-		oldValues []*fastrlp.Value,
-		newArrayValue *fastrlp.Value,
-	) error,
-) []byte {
-	extraHeader := extraBytes[:IstanbulExtraVanity]
-	extraBody := extraBytes[IstanbulExtraVanity:]
-
-	newExtraBody := types.MarshalRLPTo(func(ar *fastrlp.Arena) *fastrlp.Value {
-		vv := ar.NewArray()
-
-		_ = types.UnmarshalRlp(func(p *fastrlp.Parser, v *fastrlp.Value) error {
-			elems, err := v.GetElems()
-			if err != nil {
-				return err
-			}
-
-			if len(elems) < 3 {
-				return fmt.Errorf("incorrect number of elements to decode istambul extra, expected 3 but found %d", len(elems))
-			}
-
-			return packFn(ar, elems, vv)
-		}, extraBody)
-
-		return vv
-	}, nil)
-
-	return append(
-		extraHeader,
-		newExtraBody...,
-	)
-}
-
-// packProposerSealIntoExtra updates only Seal field in Extra
-func packProposerSealIntoExtra(
-	extraBytes []byte,
-	proposerSeal []byte,
-) []byte {
-	return packFieldsIntoExtra(
-		extraBytes,
-		func(
-			ar *fastrlp.Arena,
-			oldValues []*fastrlp.Value,
-			newArrayValue *fastrlp.Value,
-		) error {
-			// Validators
-			newArrayValue.Set(oldValues[0])
-
-			// Seal
-			newArrayValue.Set(ar.NewBytes(proposerSeal))
-
-			// CommittedSeal
-			newArrayValue.Set(oldValues[2])
-
-			// ParentCommittedSeal
-			if len(oldValues) >= 4 {
-				newArrayValue.Set(oldValues[3])
-			}
-
-			// Round
-			if len(oldValues) >= 5 {
-				newArrayValue.Set(oldValues[4])
-			}
-
-			for idx := 5; idx < len(oldValues); idx++ {
-				newArrayValue.Set(oldValues[idx])
-			}
-
-			return nil
-		},
-	)
-}
-
-// packCommittedSealsAndRoundNumberIntoExtra updates only CommittedSeal field in Extra
-func packCommittedSealsAndRoundNumberIntoExtra(
-	extraBytes []byte,
-	committedSeal Seals,
-	roundNumber *uint64,
-) []byte {
-	return packFieldsIntoExtra(
-		extraBytes,
-		func(
-			ar *fastrlp.Arena,
-			oldValues []*fastrlp.Value,
-			newArrayValue *fastrlp.Value,
-		) error {
-			// Validators
-			newArrayValue.Set(oldValues[0])
-
-			// Seal
-			newArrayValue.Set(oldValues[1])
-
-			// CommittedSeal
-			newArrayValue.Set(committedSeal.MarshalRLPWith(ar))
-
-			// ParentCommittedSeal
-			if len(oldValues) >= 4 {
-				newArrayValue.Set(oldValues[3])
-			} else {
-				newArrayValue.Set(ar.NewNullArray())
-			}
-
-			if roundNumber == nil {
-				newArrayValue.Set(ar.NewNull())
-			} else {
-				newArrayValue.Set(ar.NewBytes(
-					toRoundBytes(*roundNumber),
-				))
-			}
-
-			for idx := 5; idx < len(oldValues); idx++ {
-				newArrayValue.Set(oldValues[idx])
-			}
-
-			return nil
-		},
-	)
 }

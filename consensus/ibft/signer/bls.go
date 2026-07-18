@@ -164,6 +164,10 @@ type AggregatedSeal struct {
 }
 
 func (s *AggregatedSeal) Num() int {
+	if s == nil || s.Bitmap == nil {
+		return 0
+	}
+
 	return s.Bitmap.BitLen()
 }
 

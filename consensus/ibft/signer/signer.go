@@ -2,6 +2,7 @@ package signer
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/xgr-network/xgr-node/crypto"
 	"github.com/xgr-network/xgr-node/types"
@@ -151,10 +152,20 @@ func (s *SignerImpl) WriteProposerSeal(header *types.Header) (*types.Header, err
 		return nil, err
 	}
 
-	header.ExtraData = packProposerSealIntoExtra(
-		header.ExtraData,
-		seal,
-	)
+	extra, err := s.GetIBFTExtra(header)
+	if err != nil {
+		return nil, fmt.Errorf("decode IBFT extra before update: %w", err)
+	}
+
+	extra.ProposerSeal = seal
+	updatedHeader := header.Copy()
+	putIbftExtra(updatedHeader, extra)
+
+	if _, err := s.GetIBFTExtra(updatedHeader); err != nil {
+		return nil, fmt.Errorf("IBFT extra roundtrip validation failed: %w", err)
+	}
+
+	header.ExtraData = updatedHeader.ExtraData
 
 	return header, nil
 }
@@ -208,21 +219,26 @@ func (s *SignerImpl) WriteCommittedSeals(
 		return nil, ErrEmptyCommittedSeals
 	}
 
-	validators, err := s.GetValidators(header)
+	extra, err := s.GetIBFTExtra(header)
+	if err != nil {
+		return nil, fmt.Errorf("decode IBFT extra before update: %w", err)
+	}
+
+	committedSeal, err := s.keyManager.GenerateCommittedSeals(sealMap, extra.Validators)
 	if err != nil {
 		return nil, err
 	}
 
-	committedSeal, err := s.keyManager.GenerateCommittedSeals(sealMap, validators)
-	if err != nil {
-		return nil, err
+	extra.CommittedSeals = committedSeal
+	extra.RoundNumber = &roundNumber
+	updatedHeader := header.Copy()
+	putIbftExtra(updatedHeader, extra)
+
+	if _, err := s.GetIBFTExtra(updatedHeader); err != nil {
+		return nil, fmt.Errorf("IBFT extra roundtrip validation failed: %w", err)
 	}
 
-	header.ExtraData = packCommittedSealsAndRoundNumberIntoExtra(
-		header.ExtraData,
-		committedSeal,
-		&roundNumber,
-	)
+	header.ExtraData = updatedHeader.ExtraData
 
 	return header, nil
 }
@@ -282,7 +298,7 @@ func (s *SignerImpl) VerifyParentCommittedSeals(
 		wrapCommitHash(parentHash[:]),
 	)
 
-	numSeals, err := s.keyManager.VerifyCommittedSeals(
+	numSeals, err := s.getParentKeyManager().VerifyCommittedSeals(
 		parentCommittedSeals,
 		rawMsg,
 		parentValidators,
@@ -296,6 +312,17 @@ func (s *SignerImpl) VerifyParentCommittedSeals(
 	}
 
 	return nil
+}
+
+// getParentKeyManager returns the parent validator type's key manager. Early
+// heights may not have a distinct parent manager, in which case the current
+// manager is also the parent manager.
+func (s *SignerImpl) getParentKeyManager() KeyManager {
+	if s.parentKeyManager != nil {
+		return s.parentKeyManager
+	}
+
+	return s.keyManager
 }
 
 // SignIBFTMessage signs arbitrary message
@@ -349,7 +376,7 @@ func (s *SignerImpl) GetParentCommittedSeals(header *types.Header) (Seals, error
 
 	data := header.ExtraData[IstanbulExtraVanity:]
 	extra := &IstanbulExtra{
-		ParentCommittedSeals: s.keyManager.NewEmptyCommittedSeals(),
+		ParentCommittedSeals: s.getParentKeyManager().NewEmptyCommittedSeals(),
 	}
 
 	if err := extra.unmarshalRLPForParentCS(data); err != nil {
