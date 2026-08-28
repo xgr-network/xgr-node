@@ -46,9 +46,13 @@ type Config struct {
 
 	NumBlockConfirmations uint64
 	MetricsInterval       time.Duration
+
+	TrieSweeperEnabled      bool
+	TrieSweeperRetainBlocks uint64
+	TrieSweeperInterval     time.Duration
 }
 
-// Telemetry holds the config details for metric services
+// Telemetry holds the config details for metric services.
 type Telemetry struct {
 	PrometheusAddr *net.TCPAddr
 }

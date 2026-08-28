@@ -45,6 +45,10 @@ const (
 	webSocketReadLimitFlag      = "websocket-read-limit"
 
 	metricsIntervalFlag = "metrics-interval"
+
+	trieSweeperFlag             = "trie-sweeper"
+	trieSweeperRetainBlocksFlag = "trie-sweeper-retain-blocks"
+	trieSweeperIntervalFlag     = "trie-sweeper-interval"
 )
 
 // Flags that are deprecated, but need to be preserved for
@@ -190,5 +194,9 @@ func (p *serverParams) generateConfig() *server.Config {
 		Relayer:               p.relayer,
 		NumBlockConfirmations: p.rawConfig.NumBlockConfirmations,
 		MetricsInterval:       p.rawConfig.MetricsInterval,
+
+		TrieSweeperEnabled:      p.rawConfig.TrieSweeperEnabled,
+		TrieSweeperRetainBlocks: p.rawConfig.TrieSweeperRetainBlocks,
+		TrieSweeperInterval:     p.rawConfig.TrieSweeperInterval,
 	}
 }

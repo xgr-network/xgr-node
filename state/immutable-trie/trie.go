@@ -167,13 +167,9 @@ func (t *Txn) lookup(node interface{}, key []byte) (Node, []byte) {
 
 	case *ValueNode:
 		if n.hash {
-			nc, ok, err := GetNode(n.buf, t.storage)
+			nc, err := GetNodeStrict(n.buf, t.storage)
 			if err != nil {
 				panic(err) //nolint:gocritic
-			}
-
-			if !ok {
-				return nil, nil
 			}
 
 			_, res := t.lookup(nc, key)
@@ -259,13 +255,9 @@ func (t *Txn) insert(node Node, search, value []byte) Node {
 
 	case *ValueNode:
 		if n.hash {
-			nc, ok, err := GetNode(n.buf, t.storage)
+			nc, err := GetNodeStrict(n.buf, t.storage)
 			if err != nil {
 				panic(err) //nolint:gocritic
-			}
-
-			if !ok {
-				return nil
 			}
 
 			node = nc
@@ -374,13 +366,9 @@ func (t *Txn) delete(node Node, search []byte) (Node, bool) {
 
 	case *ValueNode:
 		if n.hash {
-			nc, ok, err := GetNode(n.buf, t.storage)
+			nc, err := GetNodeStrict(n.buf, t.storage)
 			if err != nil {
 				panic(err) //nolint:gocritic
-			}
-
-			if !ok {
-				return nil, false
 			}
 
 			return t.delete(nc, search)
@@ -446,14 +434,9 @@ func (t *Txn) delete(node Node, search []byte) (Node, bool) {
 
 		if vv, ok := nc.(*ValueNode); ok && vv.hash {
 			// If the value is a hash, we have to resolve it first.
-			// This needs better testing
-			aux, ok, err := GetNode(vv.buf, t.storage)
+			aux, err := GetNodeStrict(vv.buf, t.storage)
 			if err != nil {
 				panic(err) //nolint:gocritic
-			}
-
-			if !ok {
-				return nil, false
 			}
 
 			nc = aux

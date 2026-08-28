@@ -43,20 +43,37 @@ type Storage interface {
 // KVStorage is a k/v storage on memory using leveldb
 type KVStorage struct {
 	db *leveldb.DB
+
+	// gcBarrier serializes tiny sweep delete batches against normal trie writes.
+	// Normal reads never take this lock. When GC is disabled, writers only pay
+	// the cost of an uncontended RLock/RUnlock pair.
+	gcBarrier    sync.RWMutex
+	gcMarker     *leveldb.DB
+	gcGeneration uint64
 }
 
 // KVBatch is a batch write for leveldb
 type KVBatch struct {
-	db    *leveldb.DB
-	batch *leveldb.Batch
+	storage *KVStorage
+	batch   *leveldb.Batch
+	keys    [][]byte
 }
 
 func (b *KVBatch) Put(k, v []byte) {
 	b.batch.Put(k, v)
+	key := append([]byte(nil), k...)
+	b.keys = append(b.keys, key)
 }
 
 func (b *KVBatch) Write() error {
-	return b.db.Write(b.batch, nil)
+	b.storage.gcBarrier.RLock()
+	defer b.storage.gcBarrier.RUnlock()
+
+	if err := b.storage.protectGCKeysLocked(b.keys); err != nil {
+		return fmt.Errorf("protect trie GC batch writes: %w", err)
+	}
+
+	return b.storage.db.Write(b.batch, nil)
 }
 
 func (kv *KVStorage) SetCode(hash types.Hash, code []byte) error {
@@ -73,11 +90,32 @@ func (kv *KVStorage) GetCode(hash types.Hash) ([]byte, bool) {
 }
 
 func (kv *KVStorage) Batch() Batch {
-	return &KVBatch{db: kv.db, batch: &leveldb.Batch{}}
+	return &KVBatch{storage: kv, batch: &leveldb.Batch{}}
 }
 
 func (kv *KVStorage) Put(k, v []byte) error {
+	kv.gcBarrier.RLock()
+	defer kv.gcBarrier.RUnlock()
+
+	if err := kv.protectGCKeysLocked([][]byte{k}); err != nil {
+		return fmt.Errorf("protect trie GC write: %w", err)
+	}
+
 	return kv.db.Put(k, v, nil)
+}
+
+func (kv *KVStorage) protectGCKeysLocked(keys [][]byte) error {
+	if kv.gcMarker == nil || kv.gcGeneration == 0 || len(keys) == 0 {
+		return nil
+	}
+
+	generation := encodeGCGeneration(kv.gcGeneration)
+	batch := new(leveldb.Batch)
+	for _, key := range keys {
+		batch.Put(gcMarkerKey(gcLivePrefix, key), generation)
+	}
+
+	return kv.gcMarker.Write(batch, nil)
 }
 
 func (kv *KVStorage) Get(k []byte) ([]byte, bool, error) {
@@ -94,6 +132,17 @@ func (kv *KVStorage) Get(k []byte) ([]byte, bool, error) {
 }
 
 func (kv *KVStorage) Close() error {
+	kv.gcBarrier.Lock()
+	defer kv.gcBarrier.Unlock()
+
+	if kv.gcMarker != nil {
+		if err := kv.gcMarker.Close(); err != nil {
+			return err
+		}
+		kv.gcMarker = nil
+		kv.gcGeneration = 0
+	}
+
 	return kv.db.Close()
 }
 
@@ -103,7 +152,7 @@ func NewLevelDBStorage(path string, logger hclog.Logger) (Storage, error) {
 		return nil, err
 	}
 
-	return &KVStorage{db}, nil
+	return &KVStorage{db: db}, nil
 }
 
 type memStorage struct {

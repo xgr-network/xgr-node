@@ -138,7 +138,6 @@ func setFlags(cmd *cobra.Command) {
 		-1,
 		"the client's max number of peers allowed",
 	)
-	// override default usage value
 	cmd.Flag(maxPeersFlag).DefValue = fmt.Sprintf("%d", defaultConfig.Network.MaxPeers)
 
 	cmd.Flags().Int64Var(
@@ -147,7 +146,6 @@ func setFlags(cmd *cobra.Command) {
 		-1,
 		"the client's max number of inbound peers allowed",
 	)
-	// override default usage value
 	cmd.Flag(maxInboundPeersFlag).DefValue = fmt.Sprintf("%d", defaultConfig.Network.MaxInboundPeers)
 	cmd.MarkFlagsMutuallyExclusive(maxPeersFlag, maxInboundPeersFlag)
 
@@ -157,7 +155,6 @@ func setFlags(cmd *cobra.Command) {
 		-1,
 		"the client's max number of outbound peers allowed",
 	)
-	// override default usage value
 	cmd.Flag(maxOutboundPeersFlag).DefValue = fmt.Sprintf("%d", defaultConfig.Network.MaxOutboundPeers)
 	cmd.MarkFlagsMutuallyExclusive(maxPeersFlag, maxOutboundPeersFlag)
 
@@ -249,15 +246,32 @@ func setFlags(cmd *cobra.Command) {
 		"the interval (in seconds) at which special metrics are generated. a value of zero means the metrics are disabled",
 	)
 
-	setLegacyFlags(cmd)
+	cmd.Flags().BoolVar(
+		&params.rawConfig.TrieSweeperEnabled,
+		trieSweeperFlag,
+		defaultConfig.TrieSweeperEnabled,
+		"enable the online immutable-trie mark-and-sweep garbage collector",
+	)
 
+	cmd.Flags().Uint64Var(
+		&params.rawConfig.TrieSweeperRetainBlocks,
+		trieSweeperRetainBlocksFlag,
+		defaultConfig.TrieSweeperRetainBlocks,
+		"number of latest canonical state roots retained by the trie sweeper",
+	)
+
+	cmd.Flags().DurationVar(
+		&params.rawConfig.TrieSweeperInterval,
+		trieSweeperIntervalFlag,
+		defaultConfig.TrieSweeperInterval,
+		"interval between completed trie sweeper cycles",
+	)
+
+	setLegacyFlags(cmd)
 	setDevFlags(cmd)
 }
 
-// setLegacyFlags sets the legacy flags to preserve backwards compatibility
-// with running partners
 func setLegacyFlags(cmd *cobra.Command) {
-	// Legacy IBFT base timeout flag
 	cmd.Flags().Uint64Var(
 		&params.ibftBaseTimeoutLegacy,
 		ibftBaseTimeoutFlagLEGACY,
@@ -289,14 +303,10 @@ func setDevFlags(cmd *cobra.Command) {
 }
 
 func runPreRun(cmd *cobra.Command, _ []string) error {
-	// Set the grpc and json ip:port bindings
-	// The config file will have precedence over --flag
 	params.setRawGRPCAddress(helper.GetGRPCAddress(cmd))
 	params.setRawJSONRPCAddress(helper.GetJSONRPCAddress(cmd))
 	params.setJSONLogFormat(helper.GetJSONLogFormat(cmd))
 
-	// Check if the config file has been specified
-	// Config file settings will override JSON-RPC and GRPC address values
 	if isConfigFileSpecified(cmd) {
 		if err := params.initConfigFromFile(); err != nil {
 			return err
@@ -334,5 +344,15 @@ func runServerLoop(
 		return err
 	}
 
-	return helper.HandleSignals(serverInstance.Close, outputter)
+	if err := serverInstance.StartTrieSweeper(); err != nil {
+		serverInstance.Close()
+		return err
+	}
+
+	closeServer := func() {
+		serverInstance.StopTrieSweeper()
+		serverInstance.Close()
+	}
+
+	return helper.HandleSignals(closeServer, outputter)
 }

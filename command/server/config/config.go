@@ -40,6 +40,10 @@ type Config struct {
 	WebSocketReadLimit      uint64 `json:"web_socket_read_limit" yaml:"web_socket_read_limit"`
 
 	MetricsInterval time.Duration `json:"metrics_interval" yaml:"metrics_interval"`
+
+	TrieSweeperEnabled      bool          `json:"trie_sweeper" yaml:"trie_sweeper"`
+	TrieSweeperRetainBlocks uint64        `json:"trie_sweeper_retain_blocks" yaml:"trie_sweeper_retain_blocks"`
+	TrieSweeperInterval     time.Duration `json:"trie_sweeper_interval" yaml:"trie_sweeper_interval"`
 }
 
 // Telemetry holds the config details for metric services.
@@ -89,14 +93,16 @@ const (
 	// DefaultConcurrentRequestsDebug specifies max number of allowed concurrent requests for debug endpoints
 	DefaultConcurrentRequestsDebug uint64 = 32
 
-	// DefaultWebSocketReadLimit specifies max size in bytes for a message read from the peer by Gorrila websocket lib.
-	// If a message exceeds the limit,
-	// the connection sends a close message to the peer and returns ErrReadLimit to the application.
+	// DefaultWebSocketReadLimit specifies max size in bytes for a message read from the peer by Gorilla websocket lib.
+	// If a message exceeds the limit, the connection sends a close message to the peer.
 	DefaultWebSocketReadLimit uint64 = 8192
 
 	// DefaultMetricsInterval specifies the time interval after which Prometheus metrics will be generated.
 	// A value of 0 means the metrics are disabled.
 	DefaultMetricsInterval time.Duration = time.Second * 8
+
+	DefaultTrieSweeperRetainBlocks uint64        = 10_000
+	DefaultTrieSweeperInterval     time.Duration = 6 * time.Hour
 )
 
 // DefaultConfig returns the default server configuration
@@ -137,6 +143,9 @@ func DefaultConfig() *Config {
 		ConcurrentRequestsDebug:  DefaultConcurrentRequestsDebug,
 		WebSocketReadLimit:       DefaultWebSocketReadLimit,
 		MetricsInterval:          DefaultMetricsInterval,
+		TrieSweeperEnabled:       false,
+		TrieSweeperRetainBlocks:  DefaultTrieSweeperRetainBlocks,
+		TrieSweeperInterval:      DefaultTrieSweeperInterval,
 	}
 }
 
