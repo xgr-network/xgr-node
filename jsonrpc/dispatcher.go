@@ -43,7 +43,7 @@ type endpoints struct {
 	TxPool *TxPool
 	Bridge *Bridge
 	Debug  *Debug
-	XGR    *xgrsvc.XGR
+	XGR    *xgrEndpoint
 }
 
 // Dispatcher handles all json rpc requests by delegating
@@ -60,6 +60,7 @@ type Dispatcher struct {
 type dispatcherParams struct {
 	chainID   uint64
 	chainName string
+	dataDir   string
 
 	priceLimit              uint64
 	jsonRPCBatchLengthLimit uint64
@@ -154,13 +155,13 @@ func (d *Dispatcher) registerEndpoints(store JSONRPCStore) error {
 		if err != nil {
 			return err
 		}
-		d.endpoints.XGR = ep
+		d.endpoints.XGR = newXGREndpoint(ep, d.params.dataDir)
 	} else {
 		stub.LogEnabled(d.logger)
-		d.endpoints.XGR = xgrsvc.New(xgrsvc.Config{
+		d.endpoints.XGR = newXGREndpoint(xgrsvc.New(xgrsvc.Config{
 			Logger:    d.logger.Named("xgr"),
 			EthRPCURL: ethRPCURL,
-		})
+		}), d.params.dataDir)
 	}
 	d.endpoints.Debug = NewDebug(store, d.params.concurrentRequestsDebug)
 

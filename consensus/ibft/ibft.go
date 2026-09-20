@@ -110,7 +110,8 @@ type backendIBFT struct {
 	uptimeCfg          pos.UptimeConfig
 
 	// Channels
-	closeCh chan struct{} // Channel for closing
+	closeCh         chan struct{} // Channel for closing
+	interchainClose func()        // Optional non-consensus interchain worker shutdown
 }
 
 // Factory implements the base consensus Factory method
@@ -307,6 +308,10 @@ func (i *backendIBFT) Start() error {
 	if err := i.syncer.Start(); err != nil {
 		return err
 	}
+
+	// Start the optional interchain worker. Any failure is contained inside the
+	// interchain subsystem and must not affect XGR consensus availability.
+	i.startInterchainRuntime()
 
 	// Start syncing blocks from other peers
 	go i.startSyncing()
@@ -683,6 +688,10 @@ func (i *backendIBFT) IsLastOfEpoch(number uint64) bool {
 // Close closes the IBFT consensus mechanism, and does write back to disk
 func (i *backendIBFT) Close() error {
 	close(i.closeCh)
+
+	if i.interchainClose != nil {
+		i.interchainClose()
+	}
 
 	if i.syncer != nil {
 		if err := i.syncer.Close(); err != nil {

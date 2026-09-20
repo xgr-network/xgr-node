@@ -64,6 +64,7 @@ type Config struct {
 	Addr                     *net.TCPAddr
 	ChainID                  uint64
 	ChainName                string
+	DataDir                  string
 	AccessControlAllowOrigin []string
 	PriceLimit               uint64
 	BatchLengthLimit         uint64

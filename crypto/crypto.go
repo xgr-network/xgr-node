@@ -11,6 +11,7 @@ import (
 	"math/big"
 
 	"github.com/btcsuite/btcd/btcec"
+	"github.com/coinbase/kryptology/pkg/core/curves/native/bls12381"
 	"github.com/coinbase/kryptology/pkg/signatures/bls/bls_sig"
 	"github.com/umbracle/fastrlp"
 	"github.com/xgr-network/xgr-node/helper/hex"
@@ -387,6 +388,60 @@ func UnmarshalBLSSignature(input []byte) (*bls_sig.Signature, error) {
 	}
 
 	return sig, nil
+}
+
+// BLSPublicKeyToEIP2537 converts the canonical XGR 48-byte compressed G1 key
+// into the 128-byte uncompressed EIP-2537 wire format:
+// pad16(x) || x[48] || pad16(y) || y[48].
+func BLSPublicKeyToEIP2537(input []byte) ([]byte, error) {
+	if len(input) != bls_sig.PublicKeySize {
+		return nil, fmt.Errorf("BLS public key must be %d bytes, got %d", bls_sig.PublicKeySize, len(input))
+	}
+
+	var compressed [bls_sig.PublicKeySize]byte
+	copy(compressed[:], input)
+	point, err := new(bls12381.G1).FromCompressed(&compressed)
+	if err != nil {
+		return nil, fmt.Errorf("decompress BLS public key: %w", err)
+	}
+	if point.IsIdentity() == 1 || point.InCorrectSubgroup() == 0 {
+		return nil, fmt.Errorf("invalid BLS public key")
+	}
+
+	raw := point.ToUncompressed() // x[48] || y[48], big-endian
+	out := make([]byte, 128)
+	copy(out[16:64], raw[:48])
+	copy(out[80:128], raw[48:96])
+	return out, nil
+}
+
+// BLSSignatureToEIP2537 converts the canonical XGR 96-byte compressed G2 signature
+// into the 256-byte uncompressed EIP-2537 wire format:
+// pad16(x.c0) || pad16(x.c1) || pad16(y.c0) || pad16(y.c1).
+func BLSSignatureToEIP2537(input []byte) ([]byte, error) {
+	if len(input) != bls_sig.SignatureSize {
+		return nil, fmt.Errorf("BLS signature must be %d bytes, got %d", bls_sig.SignatureSize, len(input))
+	}
+
+	var compressed [bls_sig.SignatureSize]byte
+	copy(compressed[:], input)
+	point, err := new(bls12381.G2).FromCompressed(&compressed)
+	if err != nil {
+		return nil, fmt.Errorf("decompress BLS signature: %w", err)
+	}
+	if point.IsIdentity() == 1 || point.InCorrectSubgroup() == 0 {
+		return nil, fmt.Errorf("invalid BLS signature")
+	}
+
+	// Kryptology serializes uncompressed Fp2 coordinates as B || A
+	// (imaginary || real). EIP-2537 requires c0 || c1 (real || imaginary).
+	raw := point.ToUncompressed() // x.B || x.A || y.B || y.A
+	out := make([]byte, 256)
+	copy(out[16:64], raw[48:96])    // x.c0 / A
+	copy(out[80:128], raw[0:48])    // x.c1 / B
+	copy(out[144:192], raw[144:192]) // y.c0 / A
+	copy(out[208:256], raw[96:144]) // y.c1 / B
+	return out, nil
 }
 
 // GenerateOrReadPrivateKey generates a private key at the specified path,
