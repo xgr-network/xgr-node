@@ -16,8 +16,13 @@ import (
 )
 
 func TestHTTPServer(t *testing.T) {
-	_, err := newTestJSONRPC(t)
+	j, err := newTestJSONRPC(t)
 	require.NoError(t, err)
+
+	d, ok := j.dispatcher.(*Dispatcher)
+	require.True(t, ok)
+	require.Equal(t, j.config.DataDir, d.params.dataDir)
+	require.Equal(t, j.config.DataDir, d.endpoints.XGR.dataDir)
 }
 
 func Test_handleGetRequest(t *testing.T) {
@@ -107,8 +112,9 @@ func newTestJSONRPC(t *testing.T) (*JSONRPC, error) {
 	require.NoError(t, err, "Unable to fetch free port, %v", err)
 
 	config := &Config{
-		Store: store,
-		Addr:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: port},
+		Store:   store,
+		Addr:    &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: port},
+		DataDir: t.TempDir(),
 	}
 
 	return NewJSONRPC(hclog.NewNullLogger(), config)

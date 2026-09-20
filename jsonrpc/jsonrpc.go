@@ -82,6 +82,7 @@ func NewJSONRPC(logger hclog.Logger, config *Config) (*JSONRPC, error) {
 		&dispatcherParams{
 			chainID:                 config.ChainID,
 			chainName:               config.ChainName,
+			dataDir:                 config.DataDir,
 			priceLimit:              config.PriceLimit,
 			jsonRPCBatchLengthLimit: config.BatchLengthLimit,
 			blockRangeLimit:         config.BlockRangeLimit,
