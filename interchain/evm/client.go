@@ -205,9 +205,9 @@ func GetValidator(destination *Destination, validator types.Address) (*Validator
 		return nil, fmt.Errorf("decode getValidator: invalid reserve")
 	}
 	return &ValidatorDetails{
-		Active: active,
+		Active:       active,
 		BLSPublicKey: append([]byte(nil), key...),
-		ReserveWei: new(big.Int).Set(reserve),
+		ReserveWei:   new(big.Int).Set(reserve),
 	}, nil
 }
 
@@ -371,9 +371,9 @@ func SubmitMembership(
 		return nil, fmt.Errorf("unsupported membership action %d", payload.Action)
 	}
 
-	eip2537Signature, err := crypto.BLSSignatureToEIP2537(aggregateSignature)
+	formattedSignature, err := FormatAggregateSignature(destination, aggregateSignature)
 	if err != nil {
-		return nil, fmt.Errorf("convert aggregate signature to EIP-2537: %w", err)
+		return nil, err
 	}
 
 	method := registryABI.Methods["applyMembership"]
@@ -390,7 +390,7 @@ func SubmitMembership(
 			"blsPublicKeyEIP2537": payload.BLSPublicKeyEIP2537,
 		},
 		"signerBitmap":       signerBitmap.Bytes(),
-		"aggregateSignature": eip2537Signature,
+		"aggregateSignature": formattedSignature,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode applyMembership: %w", err)
@@ -465,7 +465,6 @@ func SubmitMembership(
 		Receipt: receipt,
 	}, nil
 }
-
 
 func prepareAndCheckGas(client *jsonrpc.Client, tx *ethgo.Transaction, sender ethgo.Address) (*big.Int, error) {
 	if client == nil || tx == nil {
@@ -638,7 +637,6 @@ func decodeRPCHex(value string) ([]byte, error) {
 	return hex.DecodeString(value)
 }
 
-
 func waitForConfirmations(destination *Destination, receipt *ethgo.Receipt) error {
 	if destination == nil || destination.Confirmations == 0 || receipt == nil {
 		return fmt.Errorf("destination confirmation policy or receipt is invalid")
@@ -678,5 +676,30 @@ func waitForConfirmations(destination *Destination, receipt *ethgo.Receipt) erro
 			return fmt.Errorf("timed out waiting for destination confirmations: have block %d need %d", height, target)
 		}
 		<-ticker.C
+	}
+}
+
+func FormatAggregateSignature(destination *Destination, aggregateSignature []byte) ([]byte, error) {
+	if destination == nil {
+		return nil, fmt.Errorf("destination is nil")
+	}
+	format := destination.VerifierFormat
+	if format == "" {
+		format = VerifierFormatEIP2537
+	}
+	switch format {
+	case VerifierFormatCompressed:
+		if _, err := crypto.UnmarshalBLSSignature(aggregateSignature); err != nil {
+			return nil, fmt.Errorf("invalid compressed BLS12-381 aggregate signature: %w", err)
+		}
+		return append([]byte(nil), aggregateSignature...), nil
+	case VerifierFormatEIP2537:
+		encoded, err := crypto.BLSSignatureToEIP2537(aggregateSignature)
+		if err != nil {
+			return nil, fmt.Errorf("convert aggregate signature to EIP-2537: %w", err)
+		}
+		return encoded, nil
+	default:
+		return nil, fmt.Errorf("unsupported destination verifier format %q", format)
 	}
 }

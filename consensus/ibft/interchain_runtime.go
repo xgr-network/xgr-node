@@ -168,16 +168,16 @@ func (i *backendIBFT) startInterchainRuntime() {
 	if len(destinations) == 0 {
 		return
 	}
+	routes, err := evmInterchain.LoadCheckpointRoutes(destinations)
+	if err != nil {
+		i.logger.Warn("interchain disabled: invalid checkpoint route configuration", "err", err)
+		return
+	}
 	originContracts, err := evmInterchain.LoadOriginContracts()
 	if err != nil {
 		i.logger.Warn("interchain disabled: invalid origin Hyperlane configuration", "err", err)
 		return
 	}
-	if originContracts == nil {
-		i.logger.Warn("interchain disabled: origin Hyperlane contracts are not configured")
-		return
-	}
-
 	stateReader := &ibftInterchainState{ibft: i}
 	if stateReader.OriginChainID() == 0 {
 		i.logger.Warn("interchain disabled: invalid XGR origin chain ID")
@@ -193,6 +193,7 @@ func (i *backendIBFT) startInterchainRuntime() {
 		dataDir,
 		originContracts,
 		destinations,
+		routes,
 	)
 	if err != nil {
 		i.logger.Warn("interchain disabled: worker initialization failed", "err", err)
@@ -205,5 +206,5 @@ func (i *backendIBFT) startInterchainRuntime() {
 	}
 
 	i.interchainClose = worker.Close
-	i.logger.Info("interchain worker started", "destinations", len(destinations))
+	i.logger.Info("interchain worker started", "destinations", len(destinations), "routes", len(routes))
 }

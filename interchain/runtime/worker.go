@@ -86,16 +86,26 @@ type checkpointVote struct {
 }
 
 type checkpointState struct {
-	chain   string
+	route   string
 	payload protocol.CheckpointPayload
 	raw     []byte
 	votes   map[types.Address][]byte
 }
 
+type checkpointContext struct {
+	originChainID     uint64
+	originDomain      uint32
+	destinationDomain uint32
+	mailbox           types.Address
+	merkleTreeHook    types.Address
+}
+
 type checkpointAttestation struct {
 	Version                      string `json:"version"`
 	Chain                        string `json:"chain"`
+	Destination                  string `json:"destination"`
 	OriginChainID                uint64 `json:"originChainId"`
+	OriginDomain                 uint32 `json:"originDomain"`
 	DestinationDomain            uint32 `json:"destinationDomain"`
 	SetID                        uint64 `json:"setId"`
 	Mailbox                      string `json:"mailbox"`
@@ -118,26 +128,27 @@ type requestState struct {
 }
 
 type Worker struct {
-	logger       hclog.Logger
-	state        StateReader
-	network      *network.Server
-	secrets      secrets.SecretsManager
+	logger          hclog.Logger
+	state           StateReader
+	network         *network.Server
+	secrets         secrets.SecretsManager
 	dataDir         string
 	originContracts *evmInterchain.OriginContracts
 	destinations    map[string]*evmInterchain.Destination
+	routes          map[string]*evmInterchain.CheckpointRoute
 
-	txKey       ethgo.Key
-	localAddr   types.Address
-	blsRaw      []byte
-	blsPubKey   []byte
+	txKey     ethgo.Key
+	localAddr types.Address
+	blsRaw    []byte
+	blsPubKey []byte
 
 	topic   *network.Topic
 	closeCh chan struct{}
 	wg      sync.WaitGroup
 
-	mu               sync.Mutex
-	requests         map[types.Hash]*requestState
-	reserveWarned    map[string]bool
+	mu                      sync.Mutex
+	requests                map[types.Hash]*requestState
+	reserveWarned           map[string]bool
 	checkpointSigned        map[string]types.Hash
 	checkpointLocalVotes    map[string]checkpointVote
 	checkpointLastBroadcast map[string]time.Time
@@ -152,15 +163,13 @@ func New(
 	dataDir string,
 	originContracts *evmInterchain.OriginContracts,
 	destinations []*evmInterchain.Destination,
+	routes []*evmInterchain.CheckpointRoute,
 ) (*Worker, error) {
 	if logger == nil {
 		logger = hclog.NewNullLogger()
 	}
 	if state == nil || networkServer == nil || secretsManager == nil {
 		return nil, fmt.Errorf("interchain worker requires state, network, and secrets manager")
-	}
-	if originContracts == nil || originContracts.Mailbox == types.ZeroAddress || originContracts.MerkleTreeHook == types.ZeroAddress {
-		return nil, fmt.Errorf("interchain worker requires origin Hyperlane contracts")
 	}
 	if stringsTrim(dataDir) == "" {
 		return nil, fmt.Errorf("interchain worker data dir is required")
@@ -203,21 +212,47 @@ func New(
 		byName[d.Name] = d
 	}
 
+	routesByName := make(map[string]*evmInterchain.CheckpointRoute, len(routes))
+	localRouteConfigured := false
+	for _, route := range routes {
+		if route == nil {
+			continue
+		}
+		if err := route.Validate(); err != nil {
+			return nil, fmt.Errorf("checkpoint route %q: %w", route.Name, err)
+		}
+		if byName[route.Destination] == nil {
+			return nil, fmt.Errorf("checkpoint route %q references unknown destination %q", route.Name, route.Destination)
+		}
+		if _, exists := routesByName[route.Name]; exists {
+			return nil, fmt.Errorf("checkpoint route %q is configured more than once", route.Name)
+		}
+		if route.IsLocal() {
+			localRouteConfigured = true
+		}
+		routesByName[route.Name] = route
+	}
+	if localRouteConfigured &&
+		(originContracts == nil || originContracts.Mailbox == types.ZeroAddress || originContracts.MerkleTreeHook == types.ZeroAddress) {
+		return nil, fmt.Errorf("local interchain routes require origin Hyperlane contracts")
+	}
+
 	return &Worker{
-		logger:       logger.Named("interchain"),
-		state:        state,
-		network:      networkServer,
-		secrets:      secretsManager,
-		dataDir:         dataDir,
-		originContracts: originContracts,
-		destinations:    byName,
-		txKey:        txKey,
-		localAddr:    types.Address(txKey.Address()),
-		blsRaw:       blsRaw,
-		blsPubKey:    blsPubKey,
-		closeCh:       make(chan struct{}),
-		requests:         make(map[types.Hash]*requestState),
-		reserveWarned:    make(map[string]bool),
+		logger:                  logger.Named("interchain"),
+		state:                   state,
+		network:                 networkServer,
+		secrets:                 secretsManager,
+		dataDir:                 dataDir,
+		originContracts:         originContracts,
+		destinations:            byName,
+		routes:                  routesByName,
+		txKey:                   txKey,
+		localAddr:               types.Address(txKey.Address()),
+		blsRaw:                  blsRaw,
+		blsPubKey:               blsPubKey,
+		closeCh:                 make(chan struct{}),
+		requests:                make(map[types.Hash]*requestState),
+		reserveWarned:           make(map[string]bool),
 		checkpointSigned:        make(map[string]types.Hash),
 		checkpointLocalVotes:    make(map[string]checkpointVote),
 		checkpointLastBroadcast: make(map[string]time.Time),
@@ -328,20 +363,31 @@ func (w *Worker) tick() {
 		if err := w.checkLocalReserve(destination); err != nil {
 			w.logger.Warn("interchain reserve check failed", "chain", destination.Name, "err", err)
 		}
-		if err := w.signLatestCheckpoint(destination); err != nil {
-			w.logger.Debug("interchain checkpoint not signed", "chain", destination.Name, "err", err)
+	}
+	for _, route := range w.routes {
+		if err := w.signLatestCheckpoint(route); err != nil {
+			w.logger.Debug(
+				"interchain checkpoint not signed",
+				"route", route.Name,
+				"destination", route.Destination,
+				"err", err,
+			)
 		}
 	}
 	w.rebroadcastPendingRequests()
 	w.trySubmissions()
 }
 
-func (w *Worker) requestDir() string { return filepath.Join(w.dataDir, "interchain", "requests") }
-func (w *Worker) resultDir() string  { return filepath.Join(w.dataDir, "interchain", "results") }
-func (w *Worker) pendingDir() string { return filepath.Join(w.dataDir, "interchain", "pending") }
+func (w *Worker) requestDir() string           { return filepath.Join(w.dataDir, "interchain", "requests") }
+func (w *Worker) resultDir() string            { return filepath.Join(w.dataDir, "interchain", "results") }
+func (w *Worker) pendingDir() string           { return filepath.Join(w.dataDir, "interchain", "pending") }
 func (w *Worker) pendingPath(id string) string { return filepath.Join(w.pendingDir(), id+".json") }
-func (w *Worker) attestationDir() string { return filepath.Join(w.dataDir, "interchain", "attestations") }
-func (w *Worker) heartbeatPath() string { return filepath.Join(w.dataDir, "interchain", "worker.heartbeat") }
+func (w *Worker) attestationDir() string {
+	return filepath.Join(w.dataDir, "interchain", "attestations")
+}
+func (w *Worker) heartbeatPath() string {
+	return filepath.Join(w.dataDir, "interchain", "worker.heartbeat")
+}
 
 func (w *Worker) persistLocalPending(id string, req localRequest) error {
 	raw, err := json.Marshal(req)
@@ -536,11 +582,11 @@ func (w *Worker) startLocalRequest(id string, req localRequest) error {
 		return err
 	}
 	payload := protocol.MembershipPayload{
-		OriginChainID:     w.state.OriginChainID(),
-		DestinationDomain: destination.Domain,
-		SetID:             set.SetID,
-		ValidUntil:        uint64(time.Now().Add(time.Duration(destination.MembershipValiditySeconds) * time.Second).Unix()),
-		Action:            action,
+		OriginChainID:       w.state.OriginChainID(),
+		DestinationDomain:   destination.Domain,
+		SetID:               set.SetID,
+		ValidUntil:          uint64(time.Now().Add(time.Duration(destination.MembershipValiditySeconds) * time.Second).Unix()),
+		Action:              action,
 		Validator:           w.localAddr,
 		BLSPublicKey:        w.blsPubKey,
 		BLSPublicKeyEIP2537: eip2537Key,
@@ -636,11 +682,11 @@ func (w *Worker) detectForcedRemovals(destination *evmInterchain.Destination) er
 			return err
 		}
 		payload := protocol.MembershipPayload{
-			OriginChainID:     w.state.OriginChainID(),
-			DestinationDomain: destination.Domain,
-			SetID:             set.SetID,
-			ValidUntil:        uint64(time.Now().Add(time.Duration(destination.MembershipValiditySeconds) * time.Second).Unix()),
-			Action:            protocol.ActionRemoveValidator,
+			OriginChainID:       w.state.OriginChainID(),
+			DestinationDomain:   destination.Domain,
+			SetID:               set.SetID,
+			ValidUntil:          uint64(time.Now().Add(time.Duration(destination.MembershipValiditySeconds) * time.Second).Unix()),
+			Action:              protocol.ActionRemoveValidator,
 			Validator:           validator,
 			BLSPublicKey:        set.BLSPublicKeys[idx],
 			BLSPublicKeyEIP2537: eip2537Key,
@@ -1112,7 +1158,80 @@ func (w *Worker) rebroadcastPendingRequests() {
 	}
 }
 
-func (w *Worker) signLatestCheckpoint(destination *evmInterchain.Destination) error {
+func (w *Worker) checkpointContext(route *evmInterchain.CheckpointRoute) (checkpointContext, error) {
+	if route == nil {
+		return checkpointContext{}, fmt.Errorf("checkpoint route is nil")
+	}
+	if err := route.Validate(); err != nil {
+		return checkpointContext{}, err
+	}
+	destination := w.destinations[route.Destination]
+	if destination == nil || destination.Domain == 0 {
+		return checkpointContext{}, fmt.Errorf("checkpoint route destination is unavailable")
+	}
+
+	if !route.IsLocal() {
+		return checkpointContext{
+			originChainID:     route.Source.ChainID,
+			originDomain:      route.Source.Domain,
+			destinationDomain: destination.Domain,
+			mailbox:           route.Source.Mailbox,
+			merkleTreeHook:    route.Source.MerkleTreeHook,
+		}, nil
+	}
+
+	if w.state == nil || w.originContracts == nil {
+		return checkpointContext{}, fmt.Errorf("local checkpoint source is unavailable")
+	}
+	originChainID := w.state.OriginChainID()
+	if originChainID == 0 ||
+		w.originContracts.Mailbox == types.ZeroAddress ||
+		w.originContracts.MerkleTreeHook == types.ZeroAddress {
+		return checkpointContext{}, fmt.Errorf("local checkpoint context is invalid")
+	}
+	if originChainID > uint64(^uint32(0)) {
+		return checkpointContext{}, fmt.Errorf("local origin chain id does not fit Hyperlane domain")
+	}
+	return checkpointContext{
+		originChainID:     originChainID,
+		originDomain:      uint32(originChainID),
+		destinationDomain: destination.Domain,
+		mailbox:           w.originContracts.Mailbox,
+		merkleTreeHook:    w.originContracts.MerkleTreeHook,
+	}, nil
+}
+
+func (w *Worker) latestCheckpoint(
+	route *evmInterchain.CheckpointRoute,
+) (checkpointContext, types.Hash, uint32, error) {
+	context, err := w.checkpointContext(route)
+	if err != nil {
+		return checkpointContext{}, types.ZeroHash, 0, err
+	}
+
+	if !route.IsLocal() {
+		checkpoint, err := evmInterchain.GetConfirmedCheckpoint(route.Source)
+		if err != nil {
+			return checkpointContext{}, types.ZeroHash, 0, err
+		}
+		return context, checkpoint.Root, checkpoint.Index, nil
+	}
+
+	root, index, err := w.originCheckpoint()
+	if err != nil {
+		return checkpointContext{}, types.ZeroHash, 0, err
+	}
+	return context, root, index, nil
+}
+
+func (w *Worker) signLatestCheckpoint(route *evmInterchain.CheckpointRoute) error {
+	if route == nil {
+		return fmt.Errorf("checkpoint route is nil")
+	}
+	destination := w.destinations[route.Destination]
+	if destination == nil {
+		return fmt.Errorf("checkpoint route destination %q is not configured", route.Destination)
+	}
 	set, err := evmInterchain.GetValidatorSet(destination)
 	if err != nil {
 		return err
@@ -1125,7 +1244,7 @@ func (w *Worker) signLatestCheckpoint(destination *evmInterchain.Destination) er
 		return nil
 	}
 
-	root, index, err := w.originCheckpoint()
+	context, root, index, err := w.latestCheckpoint(route)
 	if err != nil {
 		return err
 	}
@@ -1133,11 +1252,11 @@ func (w *Worker) signLatestCheckpoint(destination *evmInterchain.Destination) er
 		return nil
 	}
 	payload := protocol.CheckpointPayload{
-		OriginChainID:     w.state.OriginChainID(),
-		DestinationDomain: destination.Domain,
+		OriginChainID:     context.originChainID,
+		DestinationDomain: context.destinationDomain,
 		SetID:             set.SetID,
-		Mailbox:           w.originContracts.Mailbox,
-		MerkleTreeHook:    w.originContracts.MerkleTreeHook,
+		Mailbox:           context.mailbox,
+		MerkleTreeHook:    context.merkleTreeHook,
 		Root:              root,
 		Index:             index,
 	}
@@ -1148,12 +1267,12 @@ func (w *Worker) signLatestCheckpoint(destination *evmInterchain.Destination) er
 	hash := crypto.Keccak256Hash(raw)
 
 	w.mu.Lock()
-	alreadySigned := w.checkpointSigned[destination.Name] == hash
+	alreadySigned := w.checkpointSigned[route.Name] == hash
 	if alreadySigned {
-		last := w.checkpointLastBroadcast[destination.Name]
-		vote := w.checkpointLocalVotes[destination.Name]
+		last := w.checkpointLastBroadcast[route.Name]
+		vote := w.checkpointLocalVotes[route.Name]
 		if time.Since(last) >= requestRebroadcastInterval && len(vote.Signature) != 0 {
-			w.checkpointLastBroadcast[destination.Name] = time.Now()
+			w.checkpointLastBroadcast[route.Name] = time.Now()
 			w.mu.Unlock()
 			return w.publish(wireEnvelope{Type: "checkpoint_vote", CheckpointVote: &vote})
 		}
@@ -1170,17 +1289,19 @@ func (w *Worker) signLatestCheckpoint(destination *evmInterchain.Destination) er
 	if err != nil {
 		return err
 	}
-	vote := checkpointVote{Chain: destination.Name, Payload: raw, Signer: w.localAddr, Signature: sig}
+	// "Chain" remains the wire field for compatibility, but now carries the
+	// unique route name rather than a destination name.
+	vote := checkpointVote{Chain: route.Name, Payload: raw, Signer: w.localAddr, Signature: sig}
 	if err := w.acceptCheckpointVote(vote); err != nil {
 		return err
 	}
 
 	w.mu.Lock()
-	w.checkpointSigned[destination.Name] = hash
-	w.checkpointLocalVotes[destination.Name] = vote
-	w.checkpointLastBroadcast[destination.Name] = time.Now()
+	w.checkpointSigned[route.Name] = hash
+	w.checkpointLocalVotes[route.Name] = vote
+	w.checkpointLastBroadcast[route.Name] = time.Now()
 	for existingHash, state := range w.checkpoints {
-		if existingHash != hash && state.chain == destination.Name {
+		if existingHash != hash && state.route == route.Name {
 			delete(w.checkpoints, existingHash)
 		}
 	}
@@ -1190,18 +1311,26 @@ func (w *Worker) signLatestCheckpoint(destination *evmInterchain.Destination) er
 }
 
 func (w *Worker) acceptCheckpointVote(vote checkpointVote) error {
-	destination := w.destinations[vote.Chain]
+	route := w.routes[vote.Chain]
+	if route == nil {
+		return fmt.Errorf("unknown checkpoint route")
+	}
+	destination := w.destinations[route.Destination]
 	if destination == nil {
-		return fmt.Errorf("unknown checkpoint destination")
+		return fmt.Errorf("checkpoint route destination is not configured")
 	}
 	var payload protocol.CheckpointPayload
 	if err := payload.UnmarshalBinary(vote.Payload); err != nil {
 		return err
 	}
-	if payload.OriginChainID != w.state.OriginChainID() ||
-		payload.DestinationDomain != destination.Domain ||
-		payload.Mailbox != w.originContracts.Mailbox ||
-		payload.MerkleTreeHook != w.originContracts.MerkleTreeHook {
+	context, err := w.checkpointContext(route)
+	if err != nil {
+		return err
+	}
+	if payload.OriginChainID != context.originChainID ||
+		payload.DestinationDomain != context.destinationDomain ||
+		payload.Mailbox != context.mailbox ||
+		payload.MerkleTreeHook != context.merkleTreeHook {
 		return fmt.Errorf("checkpoint context mismatch")
 	}
 
@@ -1232,7 +1361,7 @@ func (w *Worker) acceptCheckpointVote(vote checkpointVote) error {
 	state := w.checkpoints[hash]
 	if state == nil {
 		state = &checkpointState{
-			chain: vote.Chain, payload: payload, raw: append([]byte(nil), vote.Payload...),
+			route: vote.Chain, payload: payload, raw: append([]byte(nil), vote.Payload...),
 			votes: make(map[types.Address][]byte),
 		}
 		w.checkpoints[hash] = state
@@ -1240,11 +1369,12 @@ func (w *Worker) acceptCheckpointVote(vote checkpointVote) error {
 	state.votes[vote.Signer] = append([]byte(nil), vote.Signature...)
 	w.mu.Unlock()
 
-	return w.finalizeCheckpointAttestation(hash, destination, set)
+	return w.finalizeCheckpointAttestation(hash, route, destination, set)
 }
 
 func (w *Worker) finalizeCheckpointAttestation(
 	hash types.Hash,
+	route *evmInterchain.CheckpointRoute,
 	destination *evmInterchain.Destination,
 	set *evmInterchain.ValidatorSet,
 ) error {
@@ -1293,19 +1423,25 @@ func (w *Worker) finalizeCheckpointAttestation(
 	if err != nil {
 		return err
 	}
+	context, err := w.checkpointContext(route)
+	if err != nil {
+		return err
+	}
 	attestation := checkpointAttestation{
-		Version: protocol.CheckpointDomainV1,
-		Chain: destination.Name,
-		OriginChainID: payload.OriginChainID,
-		DestinationDomain: payload.DestinationDomain,
-		SetID: payload.SetID,
-		Mailbox: payload.Mailbox.String(),
-		MerkleTreeHook: payload.MerkleTreeHook.String(),
-		Root: payload.Root.String(),
-		Index: payload.Index,
-		Payload: "0x" + hex.EncodeToString(raw),
-		SignerBitmap: "0x" + hex.EncodeToString(bitmap.Bytes()),
-		AggregateSignature: "0x" + hex.EncodeToString(eipSignature),
+		Version:                      protocol.CheckpointDomainV1,
+		Chain:                        route.Name,
+		Destination:                  destination.Name,
+		OriginChainID:                payload.OriginChainID,
+		OriginDomain:                 context.originDomain,
+		DestinationDomain:            payload.DestinationDomain,
+		SetID:                        payload.SetID,
+		Mailbox:                      payload.Mailbox.String(),
+		MerkleTreeHook:               payload.MerkleTreeHook.String(),
+		Root:                         payload.Root.String(),
+		Index:                        payload.Index,
+		Payload:                      "0x" + hex.EncodeToString(raw),
+		SignerBitmap:                 "0x" + hex.EncodeToString(bitmap.Bytes()),
+		AggregateSignature:           "0x" + hex.EncodeToString(eipSignature),
 		AggregateSignatureCompressed: "0x" + hex.EncodeToString(aggregate),
 	}
 	return w.writeCheckpointAttestation(attestation)

@@ -14,8 +14,8 @@ import (
 )
 
 type fakeInterchainState struct {
-	origin     uint64
-	validators map[types.Address]*stakingcontract.ValidatorInfo
+	origin            uint64
+	validators        map[types.Address]*stakingcontract.ValidatorInfo
 	checkpointRoot    types.Hash
 	checkpointIndex   uint32
 	checkpointMailbox types.Address
@@ -93,7 +93,7 @@ func TestOriginCheckpointReadsConfiguredMerkleTreeHook(t *testing.T) {
 		checkpointHook:    hook,
 	}
 	w := &Worker{
-		state: state,
+		state:           state,
 		originContracts: &evm.OriginContracts{Mailbox: mailbox, MerkleTreeHook: hook},
 	}
 
@@ -114,11 +114,70 @@ func TestOriginCheckpointRejectsHookForDifferentMailbox(t *testing.T) {
 		checkpointHook:    hook,
 	}
 	w := &Worker{
-		state: state,
+		state:           state,
 		originContracts: &evm.OriginContracts{Mailbox: mailbox, MerkleTreeHook: hook},
 	}
 
 	_, _, err := w.originCheckpoint()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unexpected mailbox")
+}
+
+func TestCheckpointContextUsesLocalXGROriginByDefault(t *testing.T) {
+	mailbox := types.StringToAddress("0x1111111111111111111111111111111111111111")
+	hook := types.StringToAddress("0x2222222222222222222222222222222222222222")
+	w := &Worker{
+		state: &fakeInterchainState{
+			origin:     1643,
+			validators: map[types.Address]*stakingcontract.ValidatorInfo{},
+		},
+		originContracts: &evm.OriginContracts{Mailbox: mailbox, MerkleTreeHook: hook},
+		destinations: map[string]*evm.Destination{
+			"base": {Name: "base", Domain: 8453},
+		},
+	}
+	route := &evm.CheckpointRoute{Name: "base", Destination: "base", SourceType: evm.CheckpointSourceLocal}
+
+	context, err := w.checkpointContext(route)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1643), context.originChainID)
+	require.Equal(t, uint32(1643), context.originDomain)
+	require.Equal(t, uint32(8453), context.destinationDomain)
+	require.Equal(t, mailbox, context.mailbox)
+	require.Equal(t, hook, context.merkleTreeHook)
+}
+
+func TestCheckpointContextUsesConfiguredExternalOrigin(t *testing.T) {
+	mailbox := types.StringToAddress("0x1111111111111111111111111111111111111111")
+	hook := types.StringToAddress("0x2222222222222222222222222222222222222222")
+	w := &Worker{
+		state: &fakeInterchainState{
+			origin:     1643,
+			validators: map[types.Address]*stakingcontract.ValidatorInfo{},
+		},
+		destinations: map[string]*evm.Destination{
+			"xgr": {Name: "xgr", Domain: 1643},
+		},
+	}
+	route := &evm.CheckpointRoute{
+		Name:        "base_to_xgr",
+		Destination: "xgr",
+		SourceType:  evm.CheckpointSourceEVM,
+		Source: &evm.CheckpointSource{
+			ChainID:        8453,
+			Domain:         8453,
+			RPCURL:         "https://base.example.invalid",
+			Mailbox:        mailbox,
+			MerkleTreeHook: hook,
+			Confirmations:  12,
+		},
+	}
+
+	context, err := w.checkpointContext(route)
+	require.NoError(t, err)
+	require.Equal(t, uint64(8453), context.originChainID)
+	require.Equal(t, uint32(8453), context.originDomain)
+	require.Equal(t, uint32(1643), context.destinationDomain)
+	require.Equal(t, mailbox, context.mailbox)
+	require.Equal(t, hook, context.merkleTreeHook)
 }

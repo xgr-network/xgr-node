@@ -22,7 +22,9 @@ type xgrEndpoint struct {
 type interchainAttestationRPC struct {
 	Version                      string `json:"version"`
 	Chain                        string `json:"chain"`
+	Destination                  string `json:"destination,omitempty"`
 	OriginChainID                uint64 `json:"originChainId"`
+	OriginDomain                 uint32 `json:"originDomain,omitempty"`
 	DestinationDomain            uint32 `json:"destinationDomain"`
 	SetID                        uint64 `json:"setId"`
 	Mailbox                      string `json:"mailbox"`
@@ -40,7 +42,7 @@ func newXGREndpoint(base *xgrsvc.XGR, dataDir string) *xgrEndpoint {
 }
 
 // GetInterchainAttestation returns the latest completed native XGR interchain
-// checkpoint attestation for one configured destination. It is read-only and
+// checkpoint attestation for one configured route. It is read-only and
 // never triggers signing.
 func (x *xgrEndpoint) GetInterchainAttestation(chain string) (*interchainAttestationRPC, error) {
 	normalized, err := normalizeInterchainRPCChain(chain)
@@ -114,13 +116,13 @@ func (x *xgrEndpoint) readInterchainAttestation(path string) (*interchainAttesta
 func normalizeInterchainRPCChain(chain string) (string, error) {
 	chain = strings.TrimSpace(chain)
 	if chain == "" {
-		return "", fmt.Errorf("interchain destination is required")
+		return "", fmt.Errorf("interchain route is required")
 	}
 	for _, r := range chain {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' {
 			continue
 		}
-		return "", fmt.Errorf("invalid interchain destination")
+		return "", fmt.Errorf("invalid interchain route")
 	}
 	return strings.ToLower(chain), nil
 }

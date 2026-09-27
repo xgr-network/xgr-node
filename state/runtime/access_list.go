@@ -20,6 +20,7 @@ var precompiledContracts = []types.Address{
 	// XGR custom precompiles (must be warm too under EIP-2929)
 	contracts.NativeTransferPrecompile,
 	contracts.BLSAggSigsVerificationPrecompile,
+	contracts.InterchainBLSVerificationPrecompile,
 	contracts.ConsolePrecompile,
 	contracts.EngineExecutePrecompile,
 }

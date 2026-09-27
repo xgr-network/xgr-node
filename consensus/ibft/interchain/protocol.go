@@ -9,6 +9,7 @@ import (
 
 	"github.com/coinbase/kryptology/pkg/signatures/bls/bls_sig"
 	"github.com/xgr-network/xgr-node/crypto"
+	interchainVerification "github.com/xgr-network/xgr-node/interchain/verification"
 	"github.com/xgr-network/xgr-node/types"
 )
 
@@ -28,10 +29,10 @@ const (
 )
 
 var (
-	ErrEmptyValidatorSet = errors.New("interchain validator set is empty")
-	ErrQuorumNotReached  = errors.New("interchain quorum not reached")
+	ErrEmptyValidatorSet = interchainVerification.ErrEmptyValidatorSet
+	ErrQuorumNotReached  = interchainVerification.ErrQuorumNotReached
 	ErrDuplicateSigner   = errors.New("duplicate interchain signer")
-	ErrSignerOutOfRange  = errors.New("interchain signer index out of range")
+	ErrSignerOutOfRange  = interchainVerification.ErrSignerOutOfRange
 )
 
 type MembershipPayload struct {
@@ -40,9 +41,9 @@ type MembershipPayload struct {
 	// SetID is the expected current destination validator-set version.
 	// A destination MUST reject a transition whose SetID differs from its
 	// current set ID and MUST increment the set ID after a successful transition.
-	SetID        uint64
-	ValidUntil   uint64
-	Action       Action
+	SetID               uint64
+	ValidUntil          uint64
+	Action              Action
 	Validator           types.Address
 	BLSPublicKey        []byte
 	BLSPublicKeyEIP2537 []byte
@@ -135,13 +136,19 @@ func (p *CheckpointPayload) UnmarshalBinary(raw []byte) error {
 		return fmt.Errorf("invalid checkpoint domain")
 	}
 	o := len(CheckpointDomainV1)
-	p.OriginChainID = binary.BigEndian.Uint64(raw[o:o+8]); o += 8
-	p.DestinationDomain = binary.BigEndian.Uint32(raw[o:o+4]); o += 4
-	p.SetID = binary.BigEndian.Uint64(raw[o:o+8]); o += 8
-	p.Mailbox = types.BytesToAddress(raw[o:o+types.AddressLength]); o += types.AddressLength
-	p.MerkleTreeHook = types.BytesToAddress(raw[o:o+types.AddressLength]); o += types.AddressLength
-	p.Root = types.BytesToHash(raw[o:o+types.HashLength]); o += types.HashLength
-	p.Index = binary.BigEndian.Uint32(raw[o:o+4])
+	p.OriginChainID = binary.BigEndian.Uint64(raw[o : o+8])
+	o += 8
+	p.DestinationDomain = binary.BigEndian.Uint32(raw[o : o+4])
+	o += 4
+	p.SetID = binary.BigEndian.Uint64(raw[o : o+8])
+	o += 8
+	p.Mailbox = types.BytesToAddress(raw[o : o+types.AddressLength])
+	o += types.AddressLength
+	p.MerkleTreeHook = types.BytesToAddress(raw[o : o+types.AddressLength])
+	o += types.AddressLength
+	p.Root = types.BytesToHash(raw[o : o+types.HashLength])
+	o += types.HashLength
+	p.Index = binary.BigEndian.Uint32(raw[o : o+4])
 	_, err := p.MarshalBinary()
 	return err
 }
@@ -160,11 +167,7 @@ type Vote struct {
 }
 
 func QuorumThreshold(validatorCount int) (int, error) {
-	if validatorCount <= 0 {
-		return 0, ErrEmptyValidatorSet
-	}
-
-	return (2*validatorCount + 2) / 3, nil
+	return interchainVerification.QuorumThreshold(validatorCount)
 }
 
 func (p MembershipPayload) MarshalBinary() ([]byte, error) {
@@ -337,47 +340,5 @@ func AggregateVotes(publicKeys [][]byte, votes []Vote, message []byte) (*big.Int
 // VerifyAggregatedQuorum performs the local preflight used before a destination
 // transaction is submitted. The destination contract remains authoritative.
 func VerifyAggregatedQuorum(publicKeys [][]byte, bitmap *big.Int, aggregateSignature, message []byte) error {
-	threshold, err := QuorumThreshold(len(publicKeys))
-	if err != nil {
-		return err
-	}
-	if bitmap == nil || bitmap.Sign() <= 0 {
-		return fmt.Errorf("%w: empty signer bitmap", ErrQuorumNotReached)
-	}
-	if bitmap.BitLen() > len(publicKeys) {
-		return fmt.Errorf("%w: bitmap bit %d exceeds validator set size %d", ErrSignerOutOfRange, bitmap.BitLen()-1, len(publicKeys))
-	}
-
-	selected := make([]*bls_sig.PublicKey, 0, len(publicKeys))
-	for idx, raw := range publicKeys {
-		if bitmap.Bit(idx) == 0 {
-			continue
-		}
-		pk, err := crypto.UnmarshalBLSPublicKey(raw)
-		if err != nil {
-			return fmt.Errorf("unmarshal interchain public key %d: %w", idx, err)
-		}
-		selected = append(selected, pk)
-	}
-	if len(selected) < threshold {
-		return fmt.Errorf("%w: have %d need %d", ErrQuorumNotReached, len(selected), threshold)
-	}
-
-	aggregateKey, err := bls_sig.NewSigPop().AggregatePublicKeys(selected...)
-	if err != nil {
-		return fmt.Errorf("aggregate interchain public keys: %w", err)
-	}
-	aggregate := &bls_sig.MultiSignature{}
-	if err := aggregate.UnmarshalBinary(aggregateSignature); err != nil {
-		return fmt.Errorf("unmarshal interchain aggregate signature: %w", err)
-	}
-	ok, err := bls_sig.NewSigPop().VerifyMultiSignature(aggregateKey, message, aggregate)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return crypto.ErrInvalidBLSSignature
-	}
-
-	return nil
+	return interchainVerification.VerifyAggregatedQuorum(publicKeys, bitmap, aggregateSignature, message)
 }

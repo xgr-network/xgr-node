@@ -76,8 +76,11 @@ func (p *Precompiled) setupContracts() {
 	// Console precompile
 	// p.register(contracts.ConsolePrecompile.String(), &console{})
 
-	// BLS aggregated signatures verification precompile
+	// Legacy BN256 aggregated signatures verification precompile.
 	p.register(contracts.BLSAggSigsVerificationPrecompile.String(), &blsAggSignsVerification{})
+
+	// Native XGR interchain BLS12-381 quorum verification precompile.
+	p.register(contracts.InterchainBLSVerificationPrecompile.String(), &interchainBLSVerification{})
 
 	// ENGINE_EXECUTE (XDaLa)
 	p.register(contracts.EngineExecutePrecompile.String(), &engineExecute{p})

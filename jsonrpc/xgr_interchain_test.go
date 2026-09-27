@@ -16,7 +16,9 @@ func writeTestAttestation(t *testing.T, dataDir, chain string, setID uint64, ind
 	value := interchainAttestationRPC{
 		Version:            "XGR_INTERCHAIN_CHECKPOINT_V1",
 		Chain:              chain,
+		Destination:        "xgr",
 		OriginChainID:      1643,
+		OriginDomain:       1643,
 		DestinationDomain:  8453,
 		SetID:              setID,
 		Mailbox:            "0x1111111111111111111111111111111111111111",
@@ -65,4 +67,27 @@ func TestXGRGetInterchainAttestationRejectsUnsafeLookup(t *testing.T) {
 	require.Error(t, err)
 	_, err = ep.GetInterchainAttestationByCheckpoint("base", 0, 1, "0x3333333333333333333333333333333333333333333333333333333333333333")
 	require.Error(t, err)
+}
+
+func TestXGRGetInterchainAttestationRoutesAreIsolated(t *testing.T) {
+	dataDir := t.TempDir()
+	baseRoot := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	arbitrumRoot := "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	writeTestAttestation(t, dataDir, "base_to_xgr", 7, 42, baseRoot)
+	writeTestAttestation(t, dataDir, "arbitrum_to_xgr", 7, 77, arbitrumRoot)
+
+	ep := newXGREndpoint(nil, dataDir)
+
+	base, err := ep.GetInterchainAttestation("base_to_xgr")
+	require.NoError(t, err)
+	require.Equal(t, baseRoot, base.Root)
+	require.Equal(t, uint32(42), base.Index)
+
+	arbitrum, err := ep.GetInterchainAttestation("arbitrum_to_xgr")
+	require.NoError(t, err)
+	require.Equal(t, arbitrumRoot, arbitrum.Root)
+	require.Equal(t, uint32(77), arbitrum.Index)
+
+	require.NotEqual(t, base.Root, arbitrum.Root)
 }

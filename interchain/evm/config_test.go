@@ -23,6 +23,7 @@ func TestLoadDestination(t *testing.T) {
 	require.Equal(t, uint64(1), cfg.Confirmations)
 	require.Equal(t, uint64(300), cfg.MembershipValiditySeconds)
 	require.Equal(t, uint64(10), cfg.ExecutorStepDelaySeconds)
+	require.Equal(t, VerifierFormatEIP2537, cfg.VerifierFormat)
 	require.NoError(t, cfg.ValidateMembershipRead())
 	require.NoError(t, cfg.ValidateSubmission())
 }
@@ -98,7 +99,6 @@ func TestLoadAllDiscoversDestinationConfigs(t *testing.T) {
 	require.Equal(t, uint64(8453), found.ChainID)
 }
 
-
 func TestLoadDestinationConfirmations(t *testing.T) {
 	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
 	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
@@ -108,7 +108,6 @@ func TestLoadDestinationConfirmations(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(12), cfg.Confirmations)
 }
-
 
 func TestLoadAllRejectsDuplicateDomains(t *testing.T) {
 	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
@@ -125,7 +124,6 @@ func TestLoadAllRejectsDuplicateDomains(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "configured more than once")
 }
-
 
 func TestLoadDestinationTimingPolicy(t *testing.T) {
 	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
@@ -160,7 +158,6 @@ func TestLoadRejectsExecutorDelayOutsideValidityWindow(t *testing.T) {
 	require.Contains(t, err.Error(), "smaller than membership validity")
 }
 
-
 func TestLoadOriginContracts(t *testing.T) {
 	t.Setenv("XGR_INTERCHAIN_ORIGIN_MAILBOX_ADDR", "0x1111111111111111111111111111111111111111")
 	t.Setenv("XGR_INTERCHAIN_ORIGIN_MERKLE_TREE_HOOK_ADDR", "0x2222222222222222222222222222222222222222")
@@ -187,4 +184,37 @@ func TestLoadOriginContractsRejectsZeroAddress(t *testing.T) {
 	_, err := LoadOriginContracts()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "non-zero")
+}
+
+func TestLoadAllIgnoresRouteSourceChainIDs(t *testing.T) {
+	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
+	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
+	t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_DESTINATION", "xgr")
+	t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_SOURCE_TYPE", "evm")
+	t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_SOURCE_CHAIN_ID", "8453")
+
+	cfgs, err := LoadAll()
+	require.NoError(t, err)
+	require.Len(t, cfgs, 1)
+	require.Equal(t, "base", cfgs[0].Name)
+}
+
+func TestLoadDestinationCompressedVerifierFormat(t *testing.T) {
+	t.Setenv("XGR_INTERCHAIN_XGR_CHAIN_ID", "1643")
+	t.Setenv("XGR_INTERCHAIN_XGR_DOMAIN", "1643")
+	t.Setenv("XGR_INTERCHAIN_XGR_VERIFIER_FORMAT", "compressed")
+
+	cfg, err := Load("xgr")
+	require.NoError(t, err)
+	require.Equal(t, VerifierFormatCompressed, cfg.VerifierFormat)
+}
+
+func TestLoadDestinationRejectsUnknownVerifierFormat(t *testing.T) {
+	t.Setenv("XGR_INTERCHAIN_XGR_CHAIN_ID", "1643")
+	t.Setenv("XGR_INTERCHAIN_XGR_DOMAIN", "1643")
+	t.Setenv("XGR_INTERCHAIN_XGR_VERIFIER_FORMAT", "something-else")
+
+	_, err := Load("xgr")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "VERIFIER_FORMAT")
 }

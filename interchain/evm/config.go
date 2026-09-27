@@ -41,16 +41,22 @@ func LoadOriginContracts() (*OriginContracts, error) {
 	return &OriginContracts{Mailbox: mailbox, MerkleTreeHook: hook}, nil
 }
 
+const (
+	VerifierFormatEIP2537    = "eip2537"
+	VerifierFormatCompressed = "compressed"
+)
+
 type Destination struct {
-	Name                     string
-	ChainID                  uint64
-	Domain                   uint32
-	RegistryAddress          string
-	RPCURL                   string
-	DeactivationReserveWei   *big.Int
-	Confirmations            uint64
+	Name                      string
+	ChainID                   uint64
+	Domain                    uint32
+	RegistryAddress           string
+	RPCURL                    string
+	DeactivationReserveWei    *big.Int
+	Confirmations             uint64
 	MembershipValiditySeconds uint64
 	ExecutorStepDelaySeconds  uint64
+	VerifierFormat            string
 }
 
 func Load(name string) (*Destination, error) {
@@ -79,12 +85,21 @@ func Load(name string) (*Destination, error) {
 		return nil, fmt.Errorf("%sDOMAIN must be a non-zero uint32", prefix)
 	}
 
+	verifierFormat := strings.ToLower(strings.TrimSpace(os.Getenv(prefix + "VERIFIER_FORMAT")))
+	if verifierFormat == "" {
+		verifierFormat = VerifierFormatEIP2537
+	}
+	if verifierFormat != VerifierFormatEIP2537 && verifierFormat != VerifierFormatCompressed {
+		return nil, fmt.Errorf("%sVERIFIER_FORMAT must be %q or %q", prefix, VerifierFormatEIP2537, VerifierFormatCompressed)
+	}
+
 	cfg := &Destination{
 		Name:            strings.ToLower(strings.TrimSpace(name)),
 		ChainID:         chainID,
 		Domain:          uint32(domain),
 		RegistryAddress: strings.TrimSpace(os.Getenv(prefix + "REGISTRY_ADDR")),
 		RPCURL:          strings.TrimSpace(os.Getenv(prefix + "RPC")),
+		VerifierFormat:  verifierFormat,
 	}
 
 	if cfg.RegistryAddress != "" {
@@ -161,6 +176,9 @@ func LoadAll() ([]*Destination, error) {
 		if idx := strings.IndexByte(entry, '='); idx >= 0 {
 			key = entry[:idx]
 		}
+		if strings.HasPrefix(key, "XGR_INTERCHAIN_ROUTE_") {
+			continue
+		}
 		if !strings.HasPrefix(key, "XGR_INTERCHAIN_") || !strings.HasSuffix(key, "_CHAIN_ID") {
 			continue
 		}
@@ -212,6 +230,12 @@ func (d *Destination) ValidateMembershipRead() error {
 	}
 	if d.RPCURL == "" {
 		return fmt.Errorf("destination EVM RPC is required for interchain membership reads")
+	}
+	if d.VerifierFormat == "" {
+		d.VerifierFormat = VerifierFormatEIP2537
+	}
+	if d.VerifierFormat != VerifierFormatEIP2537 && d.VerifierFormat != VerifierFormatCompressed {
+		return fmt.Errorf("destination verifier format must be %q or %q", VerifierFormatEIP2537, VerifierFormatCompressed)
 	}
 
 	return nil
