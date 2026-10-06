@@ -9,85 +9,122 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func writeTestAttestation(t *testing.T, dataDir, chain string, setID uint64, index uint32, root string) {
+func writeTestILNAttestation(t *testing.T, dataDir, chain, messageID, root string) {
 	t.Helper()
 	dir := filepath.Join(dataDir, "interchain", "attestations", chain)
 	require.NoError(t, os.MkdirAll(dir, 0o770))
 	value := interchainAttestationRPC{
-		Version:            "XGR_INTERCHAIN_CHECKPOINT_V1",
-		Chain:              chain,
-		Destination:        "xgr",
-		OriginChainID:      1643,
-		OriginDomain:       1643,
-		DestinationDomain:  8453,
-		SetID:              setID,
-		Mailbox:            "0x1111111111111111111111111111111111111111",
-		MerkleTreeHook:     "0x2222222222222222222222222222222222222222",
-		Root:               root,
-		Index:              index,
-		Payload:            "0x01",
-		SignerBitmap:       "0x03",
-		AggregateSignature: "0x02",
+		Version:             "XGR_ILN_CHECKPOINT_V1",
+		Chain:               chain,
+		Destination:         "xgr",
+		OriginChainID:       8453,
+		OriginDomain:        8453,
+		DestinationDomain:   1643,
+		SetID:               7,
+		SourceBlockNumber:   100,
+		Registry:            "0x5555555555555555555555555555555555555555",
+		Gateway:             "0x1111111111111111111111111111111111111111",
+		SourceRouter:        "0x6666666666666666666666666666666666666666",
+		Mailbox:             "0x2222222222222222222222222222222222222222",
+		MerkleTreeHook:      "0x3333333333333333333333333333333333333333",
+		DestinationRouter:   "0x4444444444444444444444444444444444444444",
+		ValidatorFeeWei:     "10",
+		AuthorizedMessageID: messageID,
+		Root:                root,
+		Index:               42,
+		Payload:             "0x01",
+		SignerBitmap:        "0x03",
+		AggregateSignature:  "0x02",
 	}
 	raw, err := json.Marshal(value)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "latest.json"), raw, 0o660))
-	name := "7-42-" + root + ".json"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, name), raw, 0o660))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, messageID+".json"), raw, 0o660))
 }
 
-func TestXGRGetInterchainAttestationReadsWorkerStore(t *testing.T) {
+func TestXGRGetInterchainAttestationReadsLatestILNStore(t *testing.T) {
 	dataDir := t.TempDir()
-	root := "0x3333333333333333333333333333333333333333333333333333333333333333"
-	writeTestAttestation(t, dataDir, "base", 7, 42, root)
+	messageID := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	root := "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	writeTestILNAttestation(t, dataDir, "base_to_xgr", messageID, root)
 
 	ep := newXGREndpoint(nil, dataDir)
-	got, err := ep.GetInterchainAttestation("BASE")
+	got, err := ep.GetInterchainAttestation("BASE_TO_XGR")
 	require.NoError(t, err)
-	require.Equal(t, uint64(7), got.SetID)
-	require.Equal(t, uint32(42), got.Index)
+	require.Equal(t, messageID, got.AuthorizedMessageID)
+	require.Equal(t, root, got.Root)
+	require.Equal(t, "0x6666666666666666666666666666666666666666", got.SourceRouter)
+}
+
+func TestXGRGetILNInterchainAttestationByMessageID(t *testing.T) {
+	dataDir := t.TempDir()
+	messageID := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	root := "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	writeTestILNAttestation(t, dataDir, "base_to_xgr", messageID, root)
+
+	ep := newXGREndpoint(nil, dataDir)
+	got, err := ep.GetILNInterchainAttestation("base_to_xgr", messageID)
+	require.NoError(t, err)
+	require.Equal(t, messageID, got.AuthorizedMessageID)
 	require.Equal(t, root, got.Root)
 }
 
-func TestXGRGetInterchainAttestationByCheckpoint(t *testing.T) {
-	dataDir := t.TempDir()
-	root := "0x3333333333333333333333333333333333333333333333333333333333333333"
-	writeTestAttestation(t, dataDir, "base", 7, 42, root)
-
-	ep := newXGREndpoint(nil, dataDir)
-	got, err := ep.GetInterchainAttestationByCheckpoint("base", 7, 42, root)
-	require.NoError(t, err)
-	require.Equal(t, uint64(7), got.SetID)
-	require.Equal(t, root, got.Root)
-}
-
-func TestXGRGetInterchainAttestationRejectsUnsafeLookup(t *testing.T) {
+func TestXGRGetILNInterchainAttestationRejectsUnsafeLookup(t *testing.T) {
 	ep := newXGREndpoint(nil, t.TempDir())
-	_, err := ep.GetInterchainAttestation("../base")
+	_, err := ep.GetILNInterchainAttestation("../base", "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	require.Error(t, err)
-	_, err = ep.GetInterchainAttestationByCheckpoint("base", 0, 1, "0x3333333333333333333333333333333333333333333333333333333333333333")
+	_, err = ep.GetILNInterchainAttestation("base_to_xgr", "0x1234")
 	require.Error(t, err)
 }
 
-func TestXGRGetInterchainAttestationRoutesAreIsolated(t *testing.T) {
+func TestXGRGetILNGovernanceQuorum(t *testing.T) {
 	dataDir := t.TempDir()
-	baseRoot := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	arbitrumRoot := "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	proposalID := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	dir := filepath.Join(dataDir, "interchain", "governance", "quorums")
+	require.NoError(t, os.MkdirAll(dir, 0o770))
 
-	writeTestAttestation(t, dataDir, "base_to_xgr", 7, 42, baseRoot)
-	writeTestAttestation(t, dataDir, "arbitrum_to_xgr", 7, 77, arbitrumRoot)
+	value := interchainGovernanceQuorumRPC{
+		Version:                      "XGR_ILN_GOVERNANCE_V1",
+		ProposalID:                   proposalID,
+		ProposalType:                 1,
+		SourceChainID:                8453,
+		SourceDomain:                 8453,
+		Registry:                     "0x5555555555555555555555555555555555555555",
+		DestinationDomain:            1643,
+		SetID:                        7,
+		Nonce:                        12,
+		ValidUntil:                   1900000000,
+		Payload:                      "0x01",
+		SignerBitmap:                 "0x03",
+		AggregateSignature:           "0x02",
+		AggregateSignatureCompressed: "0x03",
+	}
+	raw, err := json.Marshal(value)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, proposalID+".json"), raw, 0o660))
 
 	ep := newXGREndpoint(nil, dataDir)
-
-	base, err := ep.GetInterchainAttestation("base_to_xgr")
+	got, err := ep.GetILNGovernanceQuorum(proposalID)
 	require.NoError(t, err)
-	require.Equal(t, baseRoot, base.Root)
-	require.Equal(t, uint32(42), base.Index)
+	require.Equal(t, proposalID, got.ProposalID)
+	require.Equal(t, uint64(7), got.SetID)
+	require.Equal(t, "0x03", got.SignerBitmap)
+	require.Equal(t, "0x02", got.AggregateSignature)
+}
 
-	arbitrum, err := ep.GetInterchainAttestation("arbitrum_to_xgr")
-	require.NoError(t, err)
-	require.Equal(t, arbitrumRoot, arbitrum.Root)
-	require.Equal(t, uint32(77), arbitrum.Index)
+func TestXGRGetILNGovernanceQuorumRejectsUnsafeID(t *testing.T) {
+	ep := newXGREndpoint(nil, t.TempDir())
+	_, err := ep.GetILNGovernanceQuorum("../proposal")
+	require.Error(t, err)
+	_, err = ep.GetILNGovernanceQuorum("0x1234")
+	require.Error(t, err)
+}
 
-	require.NotEqual(t, base.Root, arbitrum.Root)
+func TestXGRGetILNGovernanceQuorumNotFound(t *testing.T) {
+	ep := newXGREndpoint(nil, t.TempDir())
+	_, err := ep.GetILNGovernanceQuorum(
+		"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not found")
 }

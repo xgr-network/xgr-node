@@ -13,36 +13,8 @@ import (
 	"github.com/xgr-network/xgr-node/types"
 )
 
-type OriginContracts struct {
-	Mailbox        types.Address
-	MerkleTreeHook types.Address
-}
-
-func LoadOriginContracts() (*OriginContracts, error) {
-	mailboxRaw := strings.TrimSpace(os.Getenv("XGR_INTERCHAIN_ORIGIN_MAILBOX_ADDR"))
-	hookRaw := strings.TrimSpace(os.Getenv("XGR_INTERCHAIN_ORIGIN_MERKLE_TREE_HOOK_ADDR"))
-	if mailboxRaw == "" && hookRaw == "" {
-		return nil, nil
-	}
-	if mailboxRaw == "" || hookRaw == "" {
-		return nil, fmt.Errorf("both XGR_INTERCHAIN_ORIGIN_MAILBOX_ADDR and XGR_INTERCHAIN_ORIGIN_MERKLE_TREE_HOOK_ADDR are required")
-	}
-	if err := types.IsValidAddress(mailboxRaw); err != nil {
-		return nil, fmt.Errorf("XGR_INTERCHAIN_ORIGIN_MAILBOX_ADDR is invalid: %w", err)
-	}
-	if err := types.IsValidAddress(hookRaw); err != nil {
-		return nil, fmt.Errorf("XGR_INTERCHAIN_ORIGIN_MERKLE_TREE_HOOK_ADDR is invalid: %w", err)
-	}
-	mailbox := types.StringToAddress(mailboxRaw)
-	hook := types.StringToAddress(hookRaw)
-	if mailbox == types.ZeroAddress || hook == types.ZeroAddress {
-		return nil, fmt.Errorf("origin mailbox and merkle tree hook must be non-zero")
-	}
-	return &OriginContracts{Mailbox: mailbox, MerkleTreeHook: hook}, nil
-}
-
 const (
-	VerifierFormatEIP2537    = "eip2537"
+	VerifierFormatEIP2537   = "eip2537"
 	VerifierFormatCompressed = "compressed"
 )
 
@@ -51,6 +23,7 @@ type Destination struct {
 	ChainID                   uint64
 	Domain                    uint32
 	RegistryAddress           string
+	ILNRegistryAddress        string
 	RPCURL                    string
 	DeactivationReserveWei    *big.Int
 	Confirmations             uint64
@@ -97,8 +70,9 @@ func Load(name string) (*Destination, error) {
 		Name:            strings.ToLower(strings.TrimSpace(name)),
 		ChainID:         chainID,
 		Domain:          uint32(domain),
-		RegistryAddress: strings.TrimSpace(os.Getenv(prefix + "REGISTRY_ADDR")),
-		RPCURL:          strings.TrimSpace(os.Getenv(prefix + "RPC")),
+		RegistryAddress:    strings.TrimSpace(os.Getenv(prefix + "REGISTRY_ADDR")),
+		ILNRegistryAddress: strings.TrimSpace(os.Getenv(prefix + "ILN_REGISTRY_ADDR")),
+		RPCURL:             strings.TrimSpace(os.Getenv(prefix + "RPC")),
 		VerifierFormat:  verifierFormat,
 	}
 
@@ -108,6 +82,15 @@ func Load(name string) (*Destination, error) {
 		}
 		if types.StringToAddress(cfg.RegistryAddress) == types.ZeroAddress {
 			return nil, fmt.Errorf("%sREGISTRY_ADDR must not be the zero address", prefix)
+		}
+	}
+
+	if cfg.ILNRegistryAddress != "" {
+		if err := types.IsValidAddress(cfg.ILNRegistryAddress); err != nil {
+			return nil, fmt.Errorf("%sILN_REGISTRY_ADDR is not a valid EVM address: %w", prefix, err)
+		}
+		if types.StringToAddress(cfg.ILNRegistryAddress) == types.ZeroAddress {
+			return nil, fmt.Errorf("%sILN_REGISTRY_ADDR must not be the zero address", prefix)
 		}
 	}
 

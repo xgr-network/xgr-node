@@ -246,39 +246,3 @@ func TestBootstrapPayloadCanonicalVector(t *testing.T) {
 		hex.EncodeToString(raw),
 	)
 }
-
-
-func TestCheckpointPayloadRoundTripAndCanonicalVector(t *testing.T) {
-	payload := CheckpointPayload{
-		OriginChainID:     1643,
-		DestinationDomain: 8453,
-		SetID:             7,
-		Mailbox:           types.StringToAddress("0x1111111111111111111111111111111111111111"),
-		MerkleTreeHook:    types.StringToAddress("0x2222222222222222222222222222222222222222"),
-		Root:              types.StringToHash("0x3333333333333333333333333333333333333333333333333333333333333333"),
-		Index:             42,
-	}
-	raw, err := payload.MarshalBinary()
-	require.NoError(t, err)
-	require.Equal(t,
-		"5847525f494e544552434841494e5f434845434b504f494e545f5631000000000000066b0000210500000000000000071111111111111111111111111111111111111111222222222222222222222222222222222222222233333333333333333333333333333333333333333333333333333333333333330000002a",
-		hex.EncodeToString(raw),
-	)
-
-	var decoded CheckpointPayload
-	require.NoError(t, decoded.UnmarshalBinary(raw))
-	require.Equal(t, payload, decoded)
-}
-
-func TestCheckpointPayloadRejectsIncompleteContext(t *testing.T) {
-	_, err := (CheckpointPayload{
-		OriginChainID:     1643,
-		DestinationDomain: 8453,
-		SetID:             1,
-		Mailbox:           types.StringToAddress("0x1111111111111111111111111111111111111111"),
-		MerkleTreeHook:    types.StringToAddress("0x2222222222222222222222222222222222222222"),
-		Index:             1,
-	}).MarshalBinary()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "root")
-}

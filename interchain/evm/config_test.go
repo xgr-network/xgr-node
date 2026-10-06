@@ -99,6 +99,7 @@ func TestLoadAllDiscoversDestinationConfigs(t *testing.T) {
 	require.Equal(t, uint64(8453), found.ChainID)
 }
 
+
 func TestLoadDestinationConfirmations(t *testing.T) {
 	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
 	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
@@ -108,6 +109,7 @@ func TestLoadDestinationConfirmations(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(12), cfg.Confirmations)
 }
+
 
 func TestLoadAllRejectsDuplicateDomains(t *testing.T) {
 	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
@@ -124,6 +126,7 @@ func TestLoadAllRejectsDuplicateDomains(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "configured more than once")
 }
+
 
 func TestLoadDestinationTimingPolicy(t *testing.T) {
 	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
@@ -158,46 +161,19 @@ func TestLoadRejectsExecutorDelayOutsideValidityWindow(t *testing.T) {
 	require.Contains(t, err.Error(), "smaller than membership validity")
 }
 
-func TestLoadOriginContracts(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_ORIGIN_MAILBOX_ADDR", "0x1111111111111111111111111111111111111111")
-	t.Setenv("XGR_INTERCHAIN_ORIGIN_MERKLE_TREE_HOOK_ADDR", "0x2222222222222222222222222222222222222222")
 
-	cfg, err := LoadOriginContracts()
-	require.NoError(t, err)
-	require.NotNil(t, cfg)
-	require.Equal(t, "0x1111111111111111111111111111111111111111", cfg.Mailbox.String())
-	require.Equal(t, "0x2222222222222222222222222222222222222222", cfg.MerkleTreeHook.String())
-}
-
-func TestLoadOriginContractsRejectsPartialConfig(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_ORIGIN_MAILBOX_ADDR", "0x1111111111111111111111111111111111111111")
-
-	_, err := LoadOriginContracts()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "both XGR_INTERCHAIN_ORIGIN")
-}
-
-func TestLoadOriginContractsRejectsZeroAddress(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_ORIGIN_MAILBOX_ADDR", "0x0000000000000000000000000000000000000000")
-	t.Setenv("XGR_INTERCHAIN_ORIGIN_MERKLE_TREE_HOOK_ADDR", "0x2222222222222222222222222222222222222222")
-
-	_, err := LoadOriginContracts()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "non-zero")
-}
-
-func TestLoadAllIgnoresRouteSourceChainIDs(t *testing.T) {
+func TestLoadAllIgnoresRouteNetworkFields(t *testing.T) {
 	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
 	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
 	t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_DESTINATION", "xgr")
-	t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_SOURCE_TYPE", "evm")
-	t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_SOURCE_CHAIN_ID", "8453")
+	t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_SOURCE_NETWORK", "base")
 
 	cfgs, err := LoadAll()
 	require.NoError(t, err)
 	require.Len(t, cfgs, 1)
 	require.Equal(t, "base", cfgs[0].Name)
 }
+
 
 func TestLoadDestinationCompressedVerifierFormat(t *testing.T) {
 	t.Setenv("XGR_INTERCHAIN_XGR_CHAIN_ID", "1643")
@@ -217,4 +193,43 @@ func TestLoadDestinationRejectsUnknownVerifierFormat(t *testing.T) {
 	_, err := Load("xgr")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "VERIFIER_FORMAT")
+}
+
+func TestLoadNetworkSpecificILNRegistry(t *testing.T) {
+	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
+	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
+	t.Setenv("XGR_INTERCHAIN_BASE_ILN_REGISTRY_ADDR", "0x3333333333333333333333333333333333333333")
+
+	cfg, err := Load("base")
+	require.NoError(t, err)
+	require.Equal(t, "0x3333333333333333333333333333333333333333", cfg.ILNRegistryAddress)
+}
+
+func TestLoadNetworkSpecificILNRegistryIsOptional(t *testing.T) {
+	t.Setenv("XGR_INTERCHAIN_XGR_CHAIN_ID", "1643")
+	t.Setenv("XGR_INTERCHAIN_XGR_DOMAIN", "1643")
+
+	cfg, err := Load("xgr")
+	require.NoError(t, err)
+	require.Empty(t, cfg.ILNRegistryAddress)
+}
+
+func TestLoadRejectsInvalidNetworkSpecificILNRegistry(t *testing.T) {
+	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
+	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
+	t.Setenv("XGR_INTERCHAIN_BASE_ILN_REGISTRY_ADDR", "not-an-address")
+
+	_, err := Load("base")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "XGR_INTERCHAIN_BASE_ILN_REGISTRY_ADDR")
+}
+
+func TestLoadRejectsZeroNetworkSpecificILNRegistry(t *testing.T) {
+	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
+	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
+	t.Setenv("XGR_INTERCHAIN_BASE_ILN_REGISTRY_ADDR", "0x0000000000000000000000000000000000000000")
+
+	_, err := Load("base")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ILN_REGISTRY_ADDR")
 }

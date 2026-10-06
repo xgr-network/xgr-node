@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"unicode"
 
@@ -19,6 +18,23 @@ type xgrEndpoint struct {
 	dataDir string
 }
 
+type interchainGovernanceQuorumRPC struct {
+	Version                      string `json:"version"`
+	ProposalID                   string `json:"proposalId"`
+	ProposalType                 uint8  `json:"proposalType"`
+	SourceChainID                uint64 `json:"sourceChainId"`
+	SourceDomain                 uint32 `json:"sourceDomain"`
+	Registry                     string `json:"registry"`
+	DestinationDomain            uint32 `json:"destinationDomain"`
+	SetID                        uint64 `json:"setId"`
+	Nonce                        uint64 `json:"nonce"`
+	ValidUntil                   uint64 `json:"validUntil"`
+	Payload                      string `json:"payload"`
+	SignerBitmap                 string `json:"signerBitmap"`
+	AggregateSignature           string `json:"aggregateSignature"`
+	AggregateSignatureCompressed string `json:"aggregateSignatureCompressed"`
+}
+
 type interchainAttestationRPC struct {
 	Version                      string `json:"version"`
 	Chain                        string `json:"chain"`
@@ -27,8 +43,15 @@ type interchainAttestationRPC struct {
 	OriginDomain                 uint32 `json:"originDomain,omitempty"`
 	DestinationDomain            uint32 `json:"destinationDomain"`
 	SetID                        uint64 `json:"setId"`
+	SourceBlockNumber            uint64 `json:"sourceBlockNumber"`
+	Registry                     string `json:"registry"`
+	Gateway                      string `json:"gateway"`
+	SourceRouter                 string `json:"sourceRouter"`
 	Mailbox                      string `json:"mailbox"`
 	MerkleTreeHook               string `json:"merkleTreeHook"`
+	DestinationRouter            string `json:"destinationRouter"`
+	ValidatorFeeWei              string `json:"validatorFeeWei"`
+	AuthorizedMessageID          string `json:"authorizedMessageId"`
 	Root                         string `json:"root"`
 	Index                        uint32 `json:"index"`
 	Payload                      string `json:"payload"`
@@ -54,34 +77,27 @@ func (x *xgrEndpoint) GetInterchainAttestation(chain string) (*interchainAttesta
 	))
 }
 
-// GetInterchainAttestationByCheckpoint returns one archived completed
-// attestation. The relayer may request an exact checkpoint, but the node never
-// signs based on RPC input.
-func (x *xgrEndpoint) GetInterchainAttestationByCheckpoint(
+// GetILNInterchainAttestation returns the completed v3.1.2 attestation for
+// one fee-qualified Hyperlane message ID. It is read-only.
+func (x *xgrEndpoint) GetILNInterchainAttestation(
 	chain string,
-	setID uint64,
-	index uint32,
-	root string,
+	messageID string,
 ) (*interchainAttestationRPC, error) {
 	normalized, err := normalizeInterchainRPCChain(chain)
 	if err != nil {
 		return nil, err
 	}
-	if setID == 0 {
-		return nil, fmt.Errorf("interchain set id must be non-zero")
+	messageID = strings.ToLower(strings.TrimSpace(messageID))
+	if len(messageID) != 66 || !strings.HasPrefix(messageID, "0x") {
+		return nil, fmt.Errorf("ILN message id must be a 32-byte 0x-prefixed hash")
 	}
-	root = strings.ToLower(strings.TrimSpace(root))
-	if len(root) != 66 || !strings.HasPrefix(root, "0x") {
-		return nil, fmt.Errorf("interchain root must be a 32-byte 0x-prefixed hash")
-	}
-	for _, r := range root[2:] {
+	for _, r := range messageID[2:] {
 		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
-			return nil, fmt.Errorf("interchain root must be hexadecimal")
+			return nil, fmt.Errorf("ILN message id must be hexadecimal")
 		}
 	}
-	name := strconv.FormatUint(setID, 10) + "-" + strconv.FormatUint(uint64(index), 10) + "-" + root + ".json"
 	return x.readInterchainAttestation(filepath.Join(
-		x.dataDir, "interchain", "attestations", normalized, name,
+		x.dataDir, "interchain", "attestations", normalized, messageID+".json",
 	))
 }
 
@@ -107,8 +123,62 @@ func (x *xgrEndpoint) readInterchainAttestation(path string) (*interchainAttesta
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("decode interchain attestation: %w", err)
 	}
-	if out.Chain == "" || out.Root == "" || out.Payload == "" || out.AggregateSignature == "" {
+	if out.Version != "XGR_ILN_CHECKPOINT_V1" ||
+		out.Chain == "" ||
+		out.AuthorizedMessageID == "" ||
+		out.SourceRouter == "" ||
+		out.Root == "" ||
+		out.Payload == "" ||
+		out.AggregateSignature == "" {
 		return nil, fmt.Errorf("interchain attestation is incomplete")
+	}
+	return &out, nil
+}
+
+// GetILNGovernanceQuorum returns one completed ILN governance quorum.
+// It is read-only and never creates, approves, signs, or executes a proposal.
+func (x *xgrEndpoint) GetILNGovernanceQuorum(proposalID string) (*interchainGovernanceQuorumRPC, error) {
+	if x == nil || strings.TrimSpace(x.dataDir) == "" {
+		return nil, fmt.Errorf("ILN governance quorum storage is unavailable")
+	}
+	proposalID = strings.ToLower(strings.TrimSpace(proposalID))
+	if len(proposalID) != 66 || !strings.HasPrefix(proposalID, "0x") {
+		return nil, fmt.Errorf("ILN governance proposal id must be a 32-byte 0x-prefixed hash")
+	}
+	for _, r := range proposalID[2:] {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return nil, fmt.Errorf("ILN governance proposal id must be hexadecimal")
+		}
+	}
+
+	path := filepath.Join(
+		x.dataDir, "interchain", "governance", "quorums", proposalID+".json",
+	)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("ILN governance quorum not found")
+		}
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxInterchainAttestationBytes {
+		return nil, fmt.Errorf("ILN governance quorum file is invalid")
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out interchainGovernanceQuorumRPC
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode ILN governance quorum: %w", err)
+	}
+	if strings.ToLower(out.ProposalID) != proposalID ||
+		out.Version == "" ||
+		out.Payload == "" ||
+		out.SignerBitmap == "" ||
+		out.AggregateSignature == "" {
+		return nil, fmt.Errorf("ILN governance quorum is incomplete")
 	}
 	return &out, nil
 }

@@ -16,7 +16,6 @@ import (
 const (
 	DomainV2                     = "XGR_INTERCHAIN_V2"
 	BootstrapDomainV1            = "XGR_INTERCHAIN_BOOTSTRAP_V1"
-	CheckpointDomainV1           = "XGR_INTERCHAIN_CHECKPOINT_V1"
 	BLSPublicKeyCompressedLength = 48
 	BLSPublicKeyEIP2537Length    = 128
 )
@@ -41,9 +40,9 @@ type MembershipPayload struct {
 	// SetID is the expected current destination validator-set version.
 	// A destination MUST reject a transition whose SetID differs from its
 	// current set ID and MUST increment the set ID after a successful transition.
-	SetID               uint64
-	ValidUntil          uint64
-	Action              Action
+	SetID        uint64
+	ValidUntil   uint64
+	Action       Action
 	Validator           types.Address
 	BLSPublicKey        []byte
 	BLSPublicKeyEIP2537 []byte
@@ -90,75 +89,6 @@ func MarshalBootstrapPayload(
 	buf.Write(blsPublicKeyEIP2537)
 
 	return buf.Bytes(), nil
-}
-
-type CheckpointPayload struct {
-	OriginChainID     uint64
-	DestinationDomain uint32
-	SetID             uint64
-	Mailbox           types.Address
-	MerkleTreeHook    types.Address
-	Root              types.Hash
-	Index             uint32
-}
-
-func (p CheckpointPayload) MarshalBinary() ([]byte, error) {
-	if p.OriginChainID == 0 || p.DestinationDomain == 0 || p.SetID == 0 {
-		return nil, fmt.Errorf("checkpoint origin, destination, and set id must be non-zero")
-	}
-	if p.Mailbox == types.ZeroAddress || p.MerkleTreeHook == types.ZeroAddress {
-		return nil, fmt.Errorf("checkpoint mailbox and merkle tree hook must be non-zero")
-	}
-	if p.Root == types.ZeroHash {
-		return nil, fmt.Errorf("checkpoint root must be non-zero")
-	}
-	var buf bytes.Buffer
-	buf.WriteString(CheckpointDomainV1)
-	_ = binary.Write(&buf, binary.BigEndian, p.OriginChainID)
-	_ = binary.Write(&buf, binary.BigEndian, p.DestinationDomain)
-	_ = binary.Write(&buf, binary.BigEndian, p.SetID)
-	buf.Write(p.Mailbox.Bytes())
-	buf.Write(p.MerkleTreeHook.Bytes())
-	buf.Write(p.Root.Bytes())
-	_ = binary.Write(&buf, binary.BigEndian, p.Index)
-	return buf.Bytes(), nil
-}
-
-func (p *CheckpointPayload) UnmarshalBinary(raw []byte) error {
-	if p == nil {
-		return fmt.Errorf("checkpoint payload is nil")
-	}
-	const tail = 8 + 4 + 8 + types.AddressLength + types.AddressLength + types.HashLength + 4
-	if len(raw) != len(CheckpointDomainV1)+tail {
-		return fmt.Errorf("invalid checkpoint payload length %d", len(raw))
-	}
-	if string(raw[:len(CheckpointDomainV1)]) != CheckpointDomainV1 {
-		return fmt.Errorf("invalid checkpoint domain")
-	}
-	o := len(CheckpointDomainV1)
-	p.OriginChainID = binary.BigEndian.Uint64(raw[o : o+8])
-	o += 8
-	p.DestinationDomain = binary.BigEndian.Uint32(raw[o : o+4])
-	o += 4
-	p.SetID = binary.BigEndian.Uint64(raw[o : o+8])
-	o += 8
-	p.Mailbox = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.MerkleTreeHook = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.Root = types.BytesToHash(raw[o : o+types.HashLength])
-	o += types.HashLength
-	p.Index = binary.BigEndian.Uint32(raw[o : o+4])
-	_, err := p.MarshalBinary()
-	return err
-}
-
-func (p CheckpointPayload) Hash() (types.Hash, error) {
-	raw, err := p.MarshalBinary()
-	if err != nil {
-		return types.ZeroHash, err
-	}
-	return crypto.Keccak256Hash(raw), nil
 }
 
 type Vote struct {
