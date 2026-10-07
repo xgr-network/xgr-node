@@ -70,3 +70,8 @@ func TestInterchainSignerEligibilityIsOptInActiveAndMatchingBLS(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 }
+
+
+func TestInterchainProtocolTopicV313(t *testing.T) {
+	require.Equal(t, "/xgr/interchain/3.0.0", TopicID)
+}

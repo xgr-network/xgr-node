@@ -15,11 +15,13 @@ import (
 	"github.com/xgr-network/xgr-node/types"
 )
 
-func TestHandleWireRejectsLegacyCheckpointVoteV312(t *testing.T) {
+var testCheckpointRouteID = types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+func TestHandleWireRejectsLegacyCheckpointVoteV313(t *testing.T) {
 	w := &Worker{}
 	err := w.handleWire([]byte(`{"type":"checkpoint_vote","checkpointVote":{}}`))
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "disabled in v3.1.2")
+	require.Contains(t, err.Error(), "disabled in v3.1.3")
 }
 
 func TestAcceptILNCheckpointVoteRejectsUnauthorizedMessage(t *testing.T) {
@@ -41,9 +43,9 @@ func TestAcceptILNCheckpointVoteRejectsUnauthorizedMessage(t *testing.T) {
 
 	source := &evm.Destination{Name: "base", ChainID: 8453, Domain: 8453, ILNRegistryAddress: registry.String()}
 	destination := &evm.Destination{Name: "xgr", ChainID: 1643, Domain: 1643}
-	route := &evm.CheckpointRoute{Name: "base_to_xgr", SourceNetwork: "base", Destination: "xgr"}
+	route := &evm.CheckpointRoute{Name: "base_to_xgr", SourceNetwork: "base", Destination: "xgr", RouteID: testCheckpointRouteID}
 	canonical := protocol.ILNRoute{
-		Key: protocol.ILNRouteKey{SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643},
+		Key: protocol.ILNRouteKey{SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643, RouteID: testCheckpointRouteID},
 		Gateway: gateway, SourceRouter: sourceRouter, Mailbox: mailbox, MerkleTreeHook: hook,
 		DestinationRouter: destinationRouter, ValidatorFeeWei: big.NewInt(10), Enabled: true,
 	}
@@ -59,11 +61,11 @@ func TestAcceptILNCheckpointVoteRejectsUnauthorizedMessage(t *testing.T) {
 		getILNValidatorSet = oldSet
 	}()
 
-	getILNRouteAtBlock = func(*evm.Destination, uint32, uint64) (*evm.ILNRouteSnapshot, error) {
+	getILNRouteAtBlock = func(*evm.Destination, uint32, types.Hash, uint64) (*evm.ILNRouteSnapshot, error) {
 		return &evm.ILNRouteSnapshot{Registry: registry, Route: canonical, BlockNumber: 100}, nil
 	}
 	getILNOperationAtBlock = func(
-		*evm.Destination, types.Address, uint32, types.Hash, uint64,
+		*evm.Destination, types.Address, types.Hash, uint32, types.Hash, uint64,
 	) (*evm.ILNOperation, error) {
 		return nil, os.ErrNotExist
 	}
@@ -89,7 +91,7 @@ func TestAcceptILNCheckpointVoteRejectsUnauthorizedMessage(t *testing.T) {
 	}
 
 	payload := protocol.ILNCheckpointPayload{
-		SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643,
+		SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643, RouteID: testCheckpointRouteID,
 		SetID: 7, SourceBlockNumber: 100, Registry: registry,
 		Gateway: gateway, SourceRouter: sourceRouter, Mailbox: mailbox,
 		MerkleTreeHook: hook, DestinationRouter: destinationRouter,
@@ -124,7 +126,7 @@ func TestAcceptILNCheckpointVoteCreatesMessageSpecificQuorum(t *testing.T) {
 	root := types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	messageID := types.StringToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 	canonical := protocol.ILNRoute{
-		Key: protocol.ILNRouteKey{SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643},
+		Key: protocol.ILNRouteKey{SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643, RouteID: testCheckpointRouteID},
 		Gateway: gateway, SourceRouter: sourceRouter, Mailbox: mailbox, MerkleTreeHook: hook,
 		DestinationRouter: destinationRouter, ValidatorFeeWei: big.NewInt(10), Enabled: true,
 	}
@@ -139,13 +141,14 @@ func TestAcceptILNCheckpointVoteCreatesMessageSpecificQuorum(t *testing.T) {
 		getILNOperationAtBlock = oldOperation
 		getILNValidatorSet = oldSet
 	}()
-	getILNRouteAtBlock = func(*evm.Destination, uint32, uint64) (*evm.ILNRouteSnapshot, error) {
+	getILNRouteAtBlock = func(*evm.Destination, uint32, types.Hash, uint64) (*evm.ILNRouteSnapshot, error) {
 		return &evm.ILNRouteSnapshot{Registry: registry, Route: canonical, BlockNumber: 100}, nil
 	}
 	getILNOperationAtBlock = func(
-		*evm.Destination, types.Address, uint32, types.Hash, uint64,
+		*evm.Destination, types.Address, types.Hash, uint32, types.Hash, uint64,
 	) (*evm.ILNOperation, error) {
 		return &evm.ILNOperation{
+			RouteID: testCheckpointRouteID,
 			MessageID: messageID, DestinationDomain: 1643,
 			ValidatorFeeWei: big.NewInt(10), BlockNumber: 100,
 		}, nil
@@ -158,7 +161,7 @@ func TestAcceptILNCheckpointVoteCreatesMessageSpecificQuorum(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	route := &evm.CheckpointRoute{Name: "base_to_xgr", SourceNetwork: "base", Destination: "xgr"}
+	route := &evm.CheckpointRoute{Name: "base_to_xgr", SourceNetwork: "base", Destination: "xgr", RouteID: testCheckpointRouteID}
 	w := &Worker{
 		state: &fakeInterchainState{
 			origin: 1643,
@@ -177,7 +180,7 @@ func TestAcceptILNCheckpointVoteCreatesMessageSpecificQuorum(t *testing.T) {
 	}
 
 	payload := protocol.ILNCheckpointPayload{
-		SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643,
+		SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643, RouteID: testCheckpointRouteID,
 		SetID: 7, SourceBlockNumber: 100, Registry: registry,
 		Gateway: gateway, SourceRouter: sourceRouter, Mailbox: mailbox,
 		MerkleTreeHook: hook, DestinationRouter: destinationRouter,
@@ -200,6 +203,96 @@ func TestAcceptILNCheckpointVoteCreatesMessageSpecificQuorum(t *testing.T) {
 	require.Contains(t, string(attestationRaw), sourceRouter.String())
 }
 
+
+
+func TestAcceptILNCheckpointVoteRejectsNonCanonicalRouteFee(t *testing.T) {
+	key, err := crypto.GenerateBLSKey()
+	require.NoError(t, err)
+	pub, err := crypto.BLSSecretKeyToPubkeyBytes(key)
+	require.NoError(t, err)
+
+	validator := types.StringToAddress("0x1111111111111111111111111111111111111111")
+	registry := types.StringToAddress("0x5555555555555555555555555555555555555555")
+	gateway := types.StringToAddress("0x2222222222222222222222222222222222222222")
+	sourceRouter := types.StringToAddress("0x7777777777777777777777777777777777777777")
+	mailbox := types.StringToAddress("0x3333333333333333333333333333333333333333")
+	hook := types.StringToAddress("0x4444444444444444444444444444444444444444")
+	destinationRouter := types.StringToAddress("0x6666666666666666666666666666666666666666")
+	root := types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	messageID := types.StringToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+	source := &evm.Destination{Name: "base", ChainID: 8453, Domain: 8453, ILNRegistryAddress: registry.String()}
+	destination := &evm.Destination{Name: "xgr", ChainID: 1643, Domain: 1643}
+	route := &evm.CheckpointRoute{Name: "base_to_xgr", SourceNetwork: "base", Destination: "xgr", RouteID: testCheckpointRouteID}
+	canonical := protocol.ILNRoute{
+		Key: protocol.ILNRouteKey{SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643, RouteID: testCheckpointRouteID},
+		Gateway: gateway, SourceRouter: sourceRouter, Mailbox: mailbox, MerkleTreeHook: hook,
+		DestinationRouter: destinationRouter, ValidatorFeeWei: big.NewInt(10), Enabled: true,
+	}
+
+	oldRoute := getILNRouteAtBlock
+	oldCheckpoint := getConfirmedILNCheckpoint
+	oldOperation := getILNOperationAtBlock
+	oldSet := getILNValidatorSet
+	defer func() {
+		getILNRouteAtBlock = oldRoute
+		getConfirmedILNCheckpoint = oldCheckpoint
+		getILNOperationAtBlock = oldOperation
+		getILNValidatorSet = oldSet
+	}()
+
+	getILNRouteAtBlock = func(*evm.Destination, uint32, types.Hash, uint64) (*evm.ILNRouteSnapshot, error) {
+		return &evm.ILNRouteSnapshot{Registry: registry, Route: canonical, BlockNumber: 100}, nil
+	}
+	getILNOperationAtBlock = func(
+		*evm.Destination, types.Address, types.Hash, uint32, types.Hash, uint64,
+	) (*evm.ILNOperation, error) {
+		return &evm.ILNOperation{
+			RouteID: testCheckpointRouteID,
+			MessageID: messageID, DestinationDomain: 1643,
+			ValidatorFeeWei: big.NewInt(9), BlockNumber: 100,
+		}, nil
+	}
+	getConfirmedILNCheckpoint = func(*evm.Destination, *evm.ILNRouteSnapshot) (*evm.ConfirmedCheckpoint, error) {
+		return &evm.ConfirmedCheckpoint{Root: root, Index: 3, BlockNumber: 100}, nil
+	}
+	getILNValidatorSet = func(*evm.Destination) (*evm.ValidatorSet, error) {
+		return &evm.ValidatorSet{SetID: 7, Validators: []types.Address{validator}, BLSPublicKeys: [][]byte{pub}}, nil
+	}
+
+	w := &Worker{
+		state: &fakeInterchainState{
+			origin: 1643,
+			validators: map[types.Address]*stakingcontract.ValidatorInfo{
+				validator: {Exists: true, Active: true, BLSPubKey: append([]byte(nil), pub...)},
+			},
+		},
+		dataDir: t.TempDir(),
+		destinations: map[string]*evm.Destination{"base": source, "xgr": destination},
+		routes: map[string]*evm.CheckpointRoute{route.Name: route},
+		ilnCheckpoints: make(map[types.Hash]*ilnCheckpointState),
+		ilnLocalVotes: make(map[types.Hash]*ilnLocalVoteState),
+	}
+
+	payload := protocol.ILNCheckpointPayload{
+		SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643, RouteID: testCheckpointRouteID,
+		SetID: 7, SourceBlockNumber: 100, Registry: registry,
+		Gateway: gateway, SourceRouter: sourceRouter, Mailbox: mailbox,
+		MerkleTreeHook: hook, DestinationRouter: destinationRouter,
+		ValidatorFeeWei: big.NewInt(9), AuthorizedMessageID: messageID,
+		Root: root, Index: 3,
+	}
+	raw, err := payload.MarshalBinary()
+	require.NoError(t, err)
+	sig, err := crypto.SignByBLS(key, raw)
+	require.NoError(t, err)
+
+	err = w.acceptILNCheckpointVote(ilnCheckpointVote{
+		Route: route.Name, Payload: raw, Signer: validator, Signature: sig,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "operation fee mismatch")
+}
 
 func TestILNCursorRoundTrip(t *testing.T) {
 	w := &Worker{dataDir: t.TempDir()}

@@ -28,6 +28,55 @@ func TestValidateILNReadRequiresRegistry(t *testing.T) {
 	require.NoError(t, cfg.ValidateILNRead())
 }
 
+
+
+func TestGetConfirmedILNGovernanceNonce(t *testing.T) {
+	routeID := types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	registry := types.StringToAddress("0x5555555555555555555555555555555555555555")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage   `json:"id"`
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		w.Header().Set("Content-Type", "application/json")
+
+		switch req.Method {
+		case "eth_chainId":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x2105"}`, req.ID)
+		case "eth_blockNumber":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x64"}`, req.ID)
+		case "eth_call":
+			var call struct {
+				To   string `json:"to"`
+				Data string `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(req.Params[0], &call))
+			require.Equal(t, strings.ToLower(registry.String()), strings.ToLower(call.To))
+			require.True(t, strings.HasPrefix(strings.ToLower(call.Data), selectorHex("governanceNonce(uint32,bytes32)")))
+			result := "0x" + strings.Repeat("0", 63) + "7"
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"%s"}`, req.ID, result)
+		default:
+			t.Fatalf("unexpected rpc method %s", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	source := &Destination{
+		Name:               "base",
+		ChainID:            8453,
+		Domain:             8453,
+		RPCURL:             server.URL,
+		Confirmations:      1,
+		ILNRegistryAddress: registry.String(),
+	}
+	got, err := GetConfirmedILNGovernanceNonce(source, 1643, routeID)
+	require.NoError(t, err)
+	require.Equal(t, uint64(7), got)
+}
+
 func TestVerifyILNGatewayBindingRequiresCanonicalWarpRouter(t *testing.T) {
 	registry := types.StringToAddress("0x5555555555555555555555555555555555555555")
 	gateway := types.StringToAddress("0x1111111111111111111111111111111111111111")
@@ -85,8 +134,10 @@ func TestVerifyILNGatewayBindingRequiresCanonicalWarpRouter(t *testing.T) {
 }
 
 func TestParseILNOperationLog(t *testing.T) {
+	routeID := types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	messageID := types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	event := ethgo.Hash(crypto.Keccak256Hash([]byte(ilnOperationEventSignature)))
+	routeTopic := ethgo.Hash(routeID)
 	messageTopic := ethgo.Hash(messageID)
 
 	var destinationTopic ethgo.Hash
@@ -96,11 +147,12 @@ func TestParseILNOperationLog(t *testing.T) {
 
 	log := &ethgo.Log{
 		BlockNumber: 77,
-		Topics: []ethgo.Hash{event, messageTopic, destinationTopic},
+		Topics: []ethgo.Hash{event, routeTopic, messageTopic, destinationTopic},
 		Data: feeData,
 	}
 	got, err := parseILNOperationLog(log)
 	require.NoError(t, err)
+	require.Equal(t, routeID, got.RouteID)
 	require.Equal(t, messageID, got.MessageID)
 	require.Equal(t, uint32(1643), got.DestinationDomain)
 	require.Zero(t, big.NewInt(12345).Cmp(got.ValidatorFeeWei))
@@ -108,15 +160,17 @@ func TestParseILNOperationLog(t *testing.T) {
 }
 
 func TestParseILNOperationLogRejectsZeroFee(t *testing.T) {
+	routeID := types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	messageID := types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	event := ethgo.Hash(crypto.Keccak256Hash([]byte(ilnOperationEventSignature)))
+	routeTopic := ethgo.Hash(routeID)
 	messageTopic := ethgo.Hash(messageID)
 	var destinationTopic ethgo.Hash
 	new(big.Int).SetUint64(1643).FillBytes(destinationTopic[:])
 
 	_, err := parseILNOperationLog(&ethgo.Log{
 		BlockNumber: 77,
-		Topics: []ethgo.Hash{event, messageTopic, destinationTopic},
+		Topics: []ethgo.Hash{event, routeTopic, messageTopic, destinationTopic},
 		Data: make([]byte, 32),
 	})
 	require.Error(t, err)
@@ -132,6 +186,7 @@ func protocolTestRoute(
 	return protocol.ILNRoute{
 		Key: protocol.ILNRouteKey{
 			SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643,
+			RouteID: types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		},
 		Gateway: gateway,
 		SourceRouter: sourceRouter,

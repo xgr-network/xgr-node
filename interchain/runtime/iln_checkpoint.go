@@ -45,6 +45,7 @@ type ilnCheckpointAttestation struct {
 	OriginChainID                uint64 `json:"originChainId"`
 	OriginDomain                 uint32 `json:"originDomain"`
 	DestinationDomain            uint32 `json:"destinationDomain"`
+	RouteID                      string `json:"routeId"`
 	SetID                        uint64 `json:"setId"`
 	SourceBlockNumber            uint64 `json:"sourceBlockNumber"`
 	Registry                     string `json:"registry"`
@@ -200,7 +201,7 @@ func (w *Worker) signLatestILNCheckpoint(route *evmInterchain.CheckpointRoute) e
 		return err
 	}
 	if !exists {
-		currentRoute, err := getConfirmedILNRoute(source, destination.Domain)
+		currentRoute, err := getConfirmedILNRoute(source, destination.Domain, route.RouteID)
 		if err != nil {
 			return err
 		}
@@ -223,12 +224,12 @@ func (w *Worker) signLatestILNCheckpoint(route *evmInterchain.CheckpointRoute) e
 		to = from + ilnOperationScanChunk - 1
 	}
 
-	currentRoute, err := getConfirmedILNRoute(source, destination.Domain)
+	currentRoute, err := getConfirmedILNRoute(source, destination.Domain, route.RouteID)
 	if err != nil {
 		return err
 	}
 	operations, err := getConfirmedILNOperations(
-		source, currentRoute.Route.Gateway, destination.Domain, from, to,
+		source, currentRoute.Route.Gateway, route.RouteID, destination.Domain, from, to,
 	)
 	if err != nil {
 		return err
@@ -251,14 +252,19 @@ func (w *Worker) signILNOperation(
 	set *evmInterchain.ValidatorSet,
 	operation evmInterchain.ILNOperation,
 ) error {
-	snapshot, err := getILNRouteAtBlock(source, destination.Domain, operation.BlockNumber)
+	snapshot, err := getILNRouteAtBlock(source, destination.Domain, route.RouteID, operation.BlockNumber)
 	if err != nil {
 		return err
 	}
-	if operation.DestinationDomain != destination.Domain ||
+	if operation.RouteID != route.RouteID ||
+		operation.DestinationDomain != destination.Domain ||
 		operation.ValidatorFeeWei == nil ||
 		operation.ValidatorFeeWei.Sign() <= 0 {
 		return fmt.Errorf("ILN operation destination or validator fee is invalid")
+	}
+	if snapshot.Route.ValidatorFeeWei == nil ||
+		operation.ValidatorFeeWei.Cmp(snapshot.Route.ValidatorFeeWei) != 0 {
+		return fmt.Errorf("ILN operation validator fee does not match canonical route fee")
 	}
 	checkpoint, err := getConfirmedILNCheckpoint(source, snapshot)
 	if err != nil {
@@ -272,6 +278,7 @@ func (w *Worker) signILNOperation(
 		SourceChainID:       snapshot.Route.Key.SourceChainID,
 		SourceDomain:        snapshot.Route.Key.SourceDomain,
 		DestinationDomain:   snapshot.Route.Key.DestinationDomain,
+		RouteID:             snapshot.Route.Key.RouteID,
 		SetID:               set.SetID,
 		SourceBlockNumber:   snapshot.BlockNumber,
 		Registry:            snapshot.Registry,
@@ -344,7 +351,10 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 		return err
 	}
 
-	snapshot, err := getILNRouteAtBlock(source, destination.Domain, payload.SourceBlockNumber)
+	if payload.RouteID != route.RouteID {
+		return fmt.Errorf("ILN checkpoint route id mismatch")
+	}
+	snapshot, err := getILNRouteAtBlock(source, destination.Domain, payload.RouteID, payload.SourceBlockNumber)
 	if err != nil {
 		return err
 	}
@@ -352,6 +362,7 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 		payload.SourceChainID != snapshot.Route.Key.SourceChainID ||
 		payload.SourceDomain != snapshot.Route.Key.SourceDomain ||
 		payload.DestinationDomain != snapshot.Route.Key.DestinationDomain ||
+		payload.RouteID != snapshot.Route.Key.RouteID ||
 		payload.Gateway != snapshot.Route.Gateway ||
 		payload.SourceRouter != snapshot.Route.SourceRouter ||
 		payload.Mailbox != snapshot.Route.Mailbox ||
@@ -365,6 +376,7 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 	operation, err := getILNOperationAtBlock(
 		source,
 		snapshot.Route.Gateway,
+		payload.RouteID,
 		destination.Domain,
 		payload.AuthorizedMessageID,
 		payload.SourceBlockNumber,
@@ -373,7 +385,9 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 		return err
 	}
 	if operation.ValidatorFeeWei == nil ||
-		operation.ValidatorFeeWei.Cmp(payload.ValidatorFeeWei) != 0 {
+		operation.ValidatorFeeWei.Cmp(payload.ValidatorFeeWei) != 0 ||
+		snapshot.Route.ValidatorFeeWei == nil ||
+		operation.ValidatorFeeWei.Cmp(snapshot.Route.ValidatorFeeWei) != 0 {
 		return fmt.Errorf("ILN checkpoint operation fee mismatch")
 	}
 
@@ -486,6 +500,7 @@ func (w *Worker) finalizeILNCheckpointAttestation(
 		OriginChainID: payload.SourceChainID,
 		OriginDomain: payload.SourceDomain,
 		DestinationDomain: payload.DestinationDomain,
+		RouteID: payload.RouteID.String(),
 		SetID: payload.SetID,
 		SourceBlockNumber: payload.SourceBlockNumber,
 		Registry: payload.Registry.String(),
@@ -584,6 +599,7 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
 			operation, err := getILNOperationAtBlock(
 				source,
 				payload.Gateway,
+				payload.RouteID,
 				destination.Domain,
 				payload.AuthorizedMessageID,
 				payload.SourceBlockNumber,

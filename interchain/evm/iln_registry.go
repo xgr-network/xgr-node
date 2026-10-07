@@ -16,11 +16,11 @@ import (
 
 const (
 	maxILNLogRange = uint64(1000)
-	ilnOperationEventSignature = "ILNOperation(bytes32,uint32,uint256)"
+	ilnOperationEventSignature = "ILNOperation(bytes32,bytes32,uint32,uint256)"
 )
 
 const ilnRegistryJSONABI = `[
-	{"inputs":[{"internalType":"uint32","name":"destinationDomain","type":"uint32"}],"name":"getRoute","outputs":[
+	{"inputs":[{"internalType":"uint32","name":"destinationDomain","type":"uint32"},{"internalType":"bytes32","name":"routeId","type":"bytes32"}],"name":"getRoute","outputs":[
 		{"internalType":"uint64","name":"sourceChainId","type":"uint64"},
 		{"internalType":"uint32","name":"sourceDomain","type":"uint32"},
 		{"internalType":"address","name":"gateway","type":"address"},
@@ -30,6 +30,9 @@ const ilnRegistryJSONABI = `[
 		{"internalType":"address","name":"destinationRouter","type":"address"},
 		{"internalType":"uint256","name":"validatorFeeWei","type":"uint256"},
 		{"internalType":"bool","name":"enabled","type":"bool"}
+	],"stateMutability":"view","type":"function"},
+	{"inputs":[{"internalType":"uint32","name":"destinationDomain","type":"uint32"},{"internalType":"bytes32","name":"routeId","type":"bytes32"}],"name":"governanceNonce","outputs":[
+		{"internalType":"uint64","name":"nonce","type":"uint64"}
 	],"stateMutability":"view","type":"function"}
 ]`
 
@@ -42,6 +45,7 @@ type ILNRouteSnapshot struct {
 }
 
 type ILNOperation struct {
+	RouteID           types.Hash
 	MessageID         types.Hash
 	DestinationDomain uint32
 	ValidatorFeeWei   *big.Int
@@ -112,10 +116,73 @@ func confirmedILNHead(client *jsonrpc.Client, source *Destination) (uint64, erro
 	return head - source.Confirmations, nil
 }
 
+// GetConfirmedILNGovernanceNonce reads the route-scoped governance nonce
+// from the source ILN registry at the latest confirmed block.
+func GetConfirmedILNGovernanceNonce(
+	source *Destination,
+	destinationDomain uint32,
+	routeID types.Hash,
+) (uint64, error) {
+	if destinationDomain == 0 {
+		return 0, fmt.Errorf("ILN destination domain must be non-zero")
+	}
+	if routeID == types.ZeroHash {
+		return 0, fmt.Errorf("ILN route id must be non-zero")
+	}
+
+	client, err := ilnSourceClient(source)
+	if err != nil {
+		return 0, err
+	}
+	confirmed, err := confirmedILNHead(client, source)
+	if err != nil {
+		return 0, err
+	}
+
+	method := ilnRegistryABI.Methods["governanceNonce"]
+	if method == nil {
+		return 0, fmt.Errorf("ILN registry ABI missing governanceNonce")
+	}
+	input, err := method.Inputs.Encode(map[string]interface{}{
+		"destinationDomain": destinationDomain,
+		"routeId":           ethgo.Hash(routeID),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("encode ILN governanceNonce: %w", err)
+	}
+	registry := types.StringToAddress(source.ILNRegistryAddress)
+	raw, err := callILNView(
+		client,
+		registry,
+		append(method.ID(), input...),
+		ethgo.BlockNumber(confirmed),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("call ILN governanceNonce: %w", err)
+	}
+	decoded, err := method.Outputs.Decode(raw)
+	if err != nil {
+		return 0, fmt.Errorf("decode ILN governanceNonce: %w", err)
+	}
+	values, ok := decoded.(map[string]interface{})
+	if !ok {
+		return 0, fmt.Errorf("decode ILN governanceNonce: unexpected type")
+	}
+	value, ok := firstDecoded(values, "nonce", "0")
+	if !ok {
+		return 0, fmt.Errorf("decode ILN governanceNonce: missing nonce")
+	}
+	nonce, ok := uint64Value(value)
+	if !ok {
+		return 0, fmt.Errorf("decode ILN governanceNonce: invalid nonce")
+	}
+	return nonce, nil
+}
+
 // GetConfirmedILNRoute reads the canonical source route at the latest confirmed
 // block. Contract addresses and fee state are protocol truth in the source
 // network ILN registry.
-func GetConfirmedILNRoute(source *Destination, destinationDomain uint32) (*ILNRouteSnapshot, error) {
+func GetConfirmedILNRoute(source *Destination, destinationDomain uint32, routeID types.Hash) (*ILNRouteSnapshot, error) {
 	client, err := ilnSourceClient(source)
 	if err != nil {
 		return nil, err
@@ -124,13 +191,13 @@ func GetConfirmedILNRoute(source *Destination, destinationDomain uint32) (*ILNRo
 	if err != nil {
 		return nil, err
 	}
-	return getILNRouteAtBlock(client, source, destinationDomain, confirmed)
+	return getILNRouteAtBlock(client, source, destinationDomain, routeID, confirmed)
 }
 
 // GetILNRouteAtBlock re-reads the exact historical route used by an incoming
 // validator vote. The block must already satisfy the configured confirmation
 // policy.
-func GetILNRouteAtBlock(source *Destination, destinationDomain uint32, blockNumber uint64) (*ILNRouteSnapshot, error) {
+func GetILNRouteAtBlock(source *Destination, destinationDomain uint32, routeID types.Hash, blockNumber uint64) (*ILNRouteSnapshot, error) {
 	client, err := ilnSourceClient(source)
 	if err != nil {
 		return nil, err
@@ -142,17 +209,21 @@ func GetILNRouteAtBlock(source *Destination, destinationDomain uint32, blockNumb
 	if blockNumber == 0 || blockNumber > confirmed {
 		return nil, fmt.Errorf("ILN source block %d is not sufficiently confirmed", blockNumber)
 	}
-	return getILNRouteAtBlock(client, source, destinationDomain, blockNumber)
+	return getILNRouteAtBlock(client, source, destinationDomain, routeID, blockNumber)
 }
 
 func getILNRouteAtBlock(
 	client *jsonrpc.Client,
 	source *Destination,
 	destinationDomain uint32,
+	routeID types.Hash,
 	blockNumber uint64,
 ) (*ILNRouteSnapshot, error) {
 	if destinationDomain == 0 {
 		return nil, fmt.Errorf("ILN destination domain must be non-zero")
+	}
+	if routeID == types.ZeroHash {
+		return nil, fmt.Errorf("ILN route id must be non-zero")
 	}
 	block := ethgo.BlockNumber(blockNumber)
 	if block < 0 || uint64(block) != blockNumber {
@@ -164,7 +235,10 @@ func getILNRouteAtBlock(
 	if method == nil {
 		return nil, fmt.Errorf("ILN registry ABI missing getRoute")
 	}
-	input, err := method.Inputs.Encode(map[string]interface{}{"destinationDomain": destinationDomain})
+	input, err := method.Inputs.Encode(map[string]interface{}{
+		"destinationDomain": destinationDomain,
+		"routeId": ethgo.Hash(routeID),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("encode ILN getRoute: %w", err)
 	}
@@ -230,6 +304,7 @@ func getILNRouteAtBlock(
 			SourceChainID: sourceChainID,
 			SourceDomain: uint32(sourceDomain64),
 			DestinationDomain: destinationDomain,
+			RouteID:           routeID,
 		},
 		Gateway: gateway,
 		SourceRouter: sourceRouter,
@@ -239,9 +314,10 @@ func getILNRouteAtBlock(
 		ValidatorFeeWei: fee,
 		Enabled: enabled,
 	}
-	validationRoute := route
-	validationRoute.Enabled = true
-	if err := protocol.ValidateILNRoute(validationRoute); err != nil {
+	if !route.Enabled {
+		return nil, fmt.Errorf("canonical ILN route is disabled")
+	}
+	if err := protocol.ValidateILNRoute(route); err != nil {
 		return nil, fmt.Errorf("invalid canonical ILN route record: %w", err)
 	}
 	if err := verifyILNGatewayBinding(client, registry, route, block); err != nil {
@@ -329,6 +405,7 @@ func GetILNGatewayActivationBlock(source *Destination, gateway types.Address) (u
 func GetConfirmedILNOperations(
 	source *Destination,
 	gateway types.Address,
+	routeID types.Hash,
 	destinationDomain uint32,
 	fromBlock uint64,
 	toBlock uint64,
@@ -346,6 +423,9 @@ func GetConfirmedILNOperations(
 	}
 	if toBlock-fromBlock+1 > maxILNLogRange {
 		return nil, fmt.Errorf("ILN operation block range exceeds %d blocks", maxILNLogRange)
+	}
+	if routeID == types.ZeroHash {
+		return nil, fmt.Errorf("ILN operation route id must be non-zero")
 	}
 	if destinationDomain == 0 {
 		return nil, fmt.Errorf("ILN operation destination domain must be non-zero")
@@ -369,7 +449,7 @@ func GetConfirmedILNOperations(
 		if err != nil {
 			return nil, err
 		}
-		if operation.DestinationDomain != destinationDomain {
+		if operation.RouteID != routeID || operation.DestinationDomain != destinationDomain {
 			continue
 		}
 		out = append(out, operation)
@@ -382,12 +462,13 @@ func GetConfirmedILNOperations(
 func GetILNOperationAtBlock(
 	source *Destination,
 	gateway types.Address,
+	routeID types.Hash,
 	destinationDomain uint32,
 	messageID types.Hash,
 	blockNumber uint64,
 ) (*ILNOperation, error) {
 	operations, err := GetConfirmedILNOperations(
-		source, gateway, destinationDomain, blockNumber, blockNumber,
+		source, gateway, routeID, destinationDomain, blockNumber, blockNumber,
 	)
 	if err != nil {
 		return nil, err
@@ -414,15 +495,16 @@ func parseILNOperationLog(log *ethgo.Log) (ILNOperation, error) {
 	if log == nil || log.Removed {
 		return out, fmt.Errorf("invalid removed ILN operation log")
 	}
-	if len(log.Topics) != 3 {
+	if len(log.Topics) != 4 {
 		return out, fmt.Errorf("invalid ILN operation topic count %d", len(log.Topics))
 	}
 	expected := ethgo.Hash(crypto.Keccak256Hash([]byte(ilnOperationEventSignature)))
 	if log.Topics[0] != expected {
 		return out, fmt.Errorf("invalid ILN operation event signature")
 	}
-	messageID := types.Hash(log.Topics[1])
-	destinationBig := new(big.Int).SetBytes(log.Topics[2][:])
+	routeID := types.Hash(log.Topics[1])
+	messageID := types.Hash(log.Topics[2])
+	destinationBig := new(big.Int).SetBytes(log.Topics[3][:])
 	if !destinationBig.IsUint64() || destinationBig.Uint64() == 0 || destinationBig.Uint64() > uint64(^uint32(0)) {
 		return out, fmt.Errorf("invalid ILN operation destination domain")
 	}
@@ -433,10 +515,11 @@ func parseILNOperationLog(log *ethgo.Log) (ILNOperation, error) {
 	if fee.Sign() <= 0 {
 		return out, fmt.Errorf("invalid ILN operation fee")
 	}
-	if messageID == types.ZeroHash || log.BlockNumber == 0 {
-		return out, fmt.Errorf("invalid ILN operation message id or block")
+	if routeID == types.ZeroHash || messageID == types.ZeroHash || log.BlockNumber == 0 {
+		return out, fmt.Errorf("invalid ILN operation route id, message id or block")
 	}
 	return ILNOperation{
+		RouteID: routeID,
 		MessageID: messageID,
 		DestinationDomain: uint32(destinationBig.Uint64()),
 		ValidatorFeeWei: fee,

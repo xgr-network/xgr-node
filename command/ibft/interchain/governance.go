@@ -1,6 +1,7 @@
 package interchain
 
 import (
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"strings"
@@ -24,6 +25,7 @@ type proposalCreateParams struct {
 	nonce              uint64
 	ttl                time.Duration
 	feeWei             string
+	routeID            string
 	gateway            string
 	sourceRouter       string
 	mailbox            string
@@ -67,6 +69,7 @@ type ProposalShowResult struct {
 	SourceChainID     uint64 `json:"sourceChainId"`
 	SourceDomain      uint32 `json:"sourceDomain"`
 	DestinationDomain uint32 `json:"destinationDomain"`
+	RouteID           string `json:"routeId"`
 	Gateway           string `json:"gateway,omitempty"`
 	SourceRouter      string `json:"sourceRouter,omitempty"`
 	Mailbox           string `json:"mailbox,omitempty"`
@@ -87,6 +90,7 @@ func (r *ProposalShowResult) GetOutput() string {
 		fmt.Sprintf("Source chain ID|%d", r.SourceChainID),
 		fmt.Sprintf("Source domain|%d", r.SourceDomain),
 		fmt.Sprintf("Destination domain|%d", r.DestinationDomain),
+		fmt.Sprintf("Route ID|%s", r.RouteID),
 		fmt.Sprintf("Gateway|%s", r.Gateway),
 		fmt.Sprintf("Source Warp router|%s", r.SourceRouter),
 		fmt.Sprintf("Mailbox|%s", r.Mailbox),
@@ -100,7 +104,8 @@ var (
 	enqueueGovernanceCreate  = interchainRuntime.EnqueueGovernanceCreateAndWait
 	enqueueGovernanceApprove = interchainRuntime.EnqueueGovernanceApproveAndWait
 	readGovernanceProposal   = interchainRuntime.ReadGovernanceProposal
-	getProposalValidatorSet  = evmInterchain.GetValidatorSet
+	getProposalValidatorSet       = evmInterchain.GetValidatorSet
+	getProposalGovernanceNonce     = evmInterchain.GetConfirmedILNGovernanceNonce
 )
 
 func getProposalCommand() *cobra.Command {
@@ -129,8 +134,8 @@ func getProposalCreateCommand() *cobra.Command {
 			if strings.TrimSpace(p.source) == "" || strings.TrimSpace(p.destination) == "" {
 				return fmt.Errorf("--source and --destination are required")
 			}
-			if p.nonce == 0 {
-				return fmt.Errorf("--nonce must be non-zero")
+			if _, err := parseNonZeroHash("--route-id", p.routeID); err != nil {
+				return err
 			}
 			if p.ttl <= 0 || p.ttl > 10*time.Minute {
 				return fmt.Errorf("--ttl must be between 1s and 10m")
@@ -177,9 +182,10 @@ func getProposalCreateCommand() *cobra.Command {
 	cmd.Flags().StringVar(&p.source, "source", "", "configured source network name, for example base")
 	cmd.Flags().StringVar(&p.destination, "destination", "", "configured destination network name, for example xgr")
 	cmd.Flags().StringVar(&p.proposalType, "type", "", "fee-update, route-add, route-enable, or route-disable")
-	cmd.Flags().Uint64Var(&p.nonce, "nonce", 0, "replay-protection nonce expected by the source ILN registry")
+	cmd.Flags().Uint64Var(&p.nonce, "nonce", 0, "optional expected next route governance nonce; 0 reads it automatically from the confirmed source registry")
 	cmd.Flags().DurationVar(&p.ttl, "ttl", 5*time.Minute, "proposal validity window, maximum 10m")
 	cmd.Flags().StringVar(&p.feeWei, "fee-wei", "", "native source-chain validator fee in wei/base units")
+	cmd.Flags().StringVar(&p.routeID, "route-id", "", "32-byte canonical ILN route id")
 	cmd.Flags().StringVar(&p.gateway, "gateway", "", "canonical ILN gateway address")
 	cmd.Flags().StringVar(&p.sourceRouter, "source-router", "", "canonical source Warp router address")
 	cmd.Flags().StringVar(&p.mailbox, "mailbox", "", "canonical source Mailbox address")
@@ -199,21 +205,44 @@ func executeProposalCreate(p *proposalCreateParams) (*ProposalActionResult, erro
 	if err := source.ValidateILNRead(); err != nil {
 		return nil, fmt.Errorf("source ILN configuration: %w", err)
 	}
+	if err := source.ValidateMembershipRead(); err != nil {
+		return nil, fmt.Errorf("source governance validator registry configuration: %w", err)
+	}
 	destination, err := evmInterchain.Load(destinationName)
 	if err != nil {
 		return nil, fmt.Errorf("load destination network: %w", err)
 	}
-	set, err := getProposalValidatorSet(destination)
+	set, err := getProposalValidatorSet(source)
 	if err != nil {
-		return nil, fmt.Errorf("read destination validator set: %w", err)
+		return nil, fmt.Errorf("read source-chain governance validator set: %w", err)
 	}
 
 	proposalType := normalizeProposalType(p.proposalType)
+	routeID, err := parseNonZeroHash("--route-id", p.routeID)
+	if err != nil {
+		return nil, err
+	}
+	currentNonce, err := getProposalGovernanceNonce(source, destination.Domain, routeID)
+	if err != nil {
+		return nil, fmt.Errorf("read route governance nonce: %w", err)
+	}
+	if currentNonce == ^uint64(0) {
+		return nil, fmt.Errorf("route governance nonce exhausted")
+	}
+	nextNonce := currentNonce + 1
+	if p.nonce != 0 && p.nonce != nextNonce {
+		return nil, fmt.Errorf(
+			"--nonce %d does not match confirmed next route governance nonce %d",
+			p.nonce, nextNonce,
+		)
+	}
+
 	route := protocol.ILNRoute{
 		Key: protocol.ILNRouteKey{
 			SourceChainID:     source.ChainID,
 			SourceDomain:      source.Domain,
 			DestinationDomain: destination.Domain,
+			RouteID:           routeID,
 		},
 	}
 	switch proposalType {
@@ -250,7 +279,7 @@ func executeProposalCreate(p *proposalCreateParams) (*ProposalActionResult, erro
 		Type:       proposalType,
 		Registry:   types.StringToAddress(source.ILNRegistryAddress),
 		SetID:      set.SetID,
-		Nonce:      p.nonce,
+		Nonce:      nextNonce,
 		ValidUntil: uint64(time.Now().Add(p.ttl).Unix()),
 		Route:      route,
 	}
@@ -334,6 +363,7 @@ func getProposalShowCommand() *cobra.Command {
 				SourceChainID: view.SourceChainID,
 				SourceDomain: view.SourceDomain,
 				DestinationDomain: view.DestinationDomain,
+				RouteID: view.RouteID.String(),
 				Gateway: view.Gateway.String(),
 				SourceRouter: view.SourceRouter.String(),
 				Mailbox: view.Mailbox.String(),
@@ -396,6 +426,23 @@ func parseNonZeroAddress(flag, value string) (types.Address, error) {
 	out := types.StringToAddress(value)
 	if out == types.ZeroAddress {
 		return types.ZeroAddress, fmt.Errorf("%s must be non-zero", flag)
+	}
+	return out, nil
+}
+
+
+func parseNonZeroHash(flag, value string) (types.Hash, error) {
+	value = strings.TrimSpace(value)
+	if len(value) != 66 || !strings.HasPrefix(value, "0x") {
+		return types.ZeroHash, fmt.Errorf("%s must be a 32-byte 0x-prefixed hash", flag)
+	}
+	raw, err := hex.DecodeString(value[2:])
+	if err != nil || len(raw) != types.HashLength {
+		return types.ZeroHash, fmt.Errorf("%s must be hexadecimal", flag)
+	}
+	out := types.BytesToHash(raw)
+	if out == types.ZeroHash {
+		return types.ZeroHash, fmt.Errorf("%s must be non-zero", flag)
 	}
 	return out, nil
 }

@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
@@ -9,13 +10,15 @@ import (
 	"github.com/xgr-network/xgr-node/types"
 )
 
-// CheckpointRoute is an explicit v3.1.2 ILN hop between two configured
-// networks. Canonical contract addresses and fee state are never stored here;
-// they are read from the source network's quorum-governed ILN registry.
+// CheckpointRoute is an explicit v3.1.3 ILN hop between two configured
+// networks. RouteID distinguishes parallel routes between the same domains.
+// Canonical contract addresses and fee state are read from the source network's
+// quorum-governed ILN registry.
 type CheckpointRoute struct {
 	Name          string
 	SourceNetwork string
 	Destination   string
+	RouteID       types.Hash
 }
 
 func (r *CheckpointRoute) Validate() error {
@@ -37,6 +40,9 @@ func (r *CheckpointRoute) Validate() error {
 	if _, err := normalizeName(r.Destination); err != nil {
 		return fmt.Errorf("checkpoint route destination is invalid: %w", err)
 	}
+	if r.RouteID == types.ZeroHash {
+		return fmt.Errorf("checkpoint route id is required")
+	}
 	return nil
 }
 
@@ -46,8 +52,8 @@ type ConfirmedCheckpoint struct {
 	BlockNumber uint64
 }
 
-// LoadCheckpointRoutes discovers explicit v3.1.2 ILN routes from
-// XGR_INTERCHAIN_ROUTE_<NAME>_{SOURCE_NETWORK,DESTINATION}.
+// LoadCheckpointRoutes discovers explicit v3.1.3 ILN routes from
+// XGR_INTERCHAIN_ROUTE_<NAME>_{SOURCE_NETWORK,DESTINATION,ROUTE_ID}.
 //
 // There is intentionally no implicit fallback. Concrete Gateway, Mailbox,
 // MerkleTreeHook, destination router and validator fee are canonical on-chain
@@ -87,6 +93,7 @@ func LoadCheckpointRoutes(networks []*Destination) ([]*CheckpointRoute, error) {
 	sort.Strings(keys)
 
 	out := make([]*CheckpointRoute, 0, len(keys))
+	routeIdentities := make(map[string]string, len(keys))
 	for _, envName := range keys {
 		normalized, err := normalizeName(strings.ToLower(envName))
 		if err != nil {
@@ -97,10 +104,14 @@ func LoadCheckpointRoutes(networks []*Destination) ([]*CheckpointRoute, error) {
 		destination := strings.ToLower(strings.TrimSpace(os.Getenv(prefix + "DESTINATION")))
 
 		if sourceNetwork == "" {
-			return nil, fmt.Errorf("%sSOURCE_NETWORK is required in v3.1.2", prefix)
+			return nil, fmt.Errorf("%sSOURCE_NETWORK is required in v3.1.3", prefix)
 		}
 		if destination == "" {
 			return nil, fmt.Errorf("%sDESTINATION is required", prefix)
+		}
+		routeID, err := parseCheckpointRouteID(strings.TrimSpace(os.Getenv(prefix + "ROUTE_ID")))
+		if err != nil {
+			return nil, fmt.Errorf("%sROUTE_ID: %w", prefix, err)
 		}
 		source := byName[sourceNetwork]
 		if source == nil {
@@ -111,7 +122,7 @@ func LoadCheckpointRoutes(networks []*Destination) ([]*CheckpointRoute, error) {
 		}
 		if strings.TrimSpace(source.ILNRegistryAddress) == "" {
 			return nil, fmt.Errorf(
-				"%sSOURCE_NETWORK %q has no ILN_REGISTRY_ADDR; v3.1.2 does not fall back to legacy checkpoint signing",
+				"%sSOURCE_NETWORK %q has no ILN_REGISTRY_ADDR; v3.1.3 does not fall back to legacy checkpoint signing",
 				prefix, sourceNetwork,
 			)
 		}
@@ -122,7 +133,7 @@ func LoadCheckpointRoutes(networks []*Destination) ([]*CheckpointRoute, error) {
 		} {
 			if strings.TrimSpace(os.Getenv(prefix+suffix)) != "" {
 				return nil, fmt.Errorf(
-					"%s%s is legacy v3.1.1 configuration and is not accepted in v3.1.2",
+					"%s%s is legacy v3.1.1 configuration and is not accepted in v3.1.3",
 					prefix, suffix,
 				)
 			}
@@ -132,12 +143,38 @@ func LoadCheckpointRoutes(networks []*Destination) ([]*CheckpointRoute, error) {
 			Name:          strings.ToLower(strings.TrimSpace(envName)),
 			SourceNetwork: sourceNetwork,
 			Destination:   destination,
+			RouteID:       routeID,
 		}
 		if err := route.Validate(); err != nil {
 			return nil, fmt.Errorf("checkpoint route %q is invalid: %w", route.Name, err)
 		}
+		identity := route.SourceNetwork + "|" + route.Destination + "|" + route.RouteID.String()
+		if previous, exists := routeIdentities[identity]; exists {
+			return nil, fmt.Errorf(
+				"checkpoint routes %q and %q resolve to the same source, destination, and route id",
+				previous, route.Name,
+			)
+		}
+		routeIdentities[identity] = route.Name
 		out = append(out, route)
 	}
 
+	return out, nil
+}
+
+
+func parseCheckpointRouteID(value string) (types.Hash, error) {
+	value = strings.TrimSpace(value)
+	if len(value) != 66 || !strings.HasPrefix(value, "0x") {
+		return types.ZeroHash, fmt.Errorf("must be a 32-byte 0x-prefixed hash")
+	}
+	raw, err := hex.DecodeString(value[2:])
+	if err != nil || len(raw) != types.HashLength {
+		return types.ZeroHash, fmt.Errorf("must be hexadecimal")
+	}
+	out := types.BytesToHash(raw)
+	if out == types.ZeroHash {
+		return types.ZeroHash, fmt.Errorf("must be non-zero")
+	}
 	return out, nil
 }

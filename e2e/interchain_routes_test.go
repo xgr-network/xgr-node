@@ -26,6 +26,7 @@ type ilnRPCFixture struct {
 	head              uint64
 	sourceDomain      uint32
 	destinationDomain uint32
+	routeID           string
 	registry          string
 	gateway           string
 	sourceRouter      string
@@ -44,6 +45,7 @@ func newILNRPCFixture(
 	confirmations uint64,
 	sourceDomain uint32,
 	destinationDomain uint32,
+	routeID string,
 	registry string,
 	gateway string,
 	sourceRouter string,
@@ -61,6 +63,7 @@ func newILNRPCFixture(
 		head:              head,
 		sourceDomain:      sourceDomain,
 		destinationDomain: destinationDomain,
+		routeID:           routeID,
 		registry:          registry,
 		gateway:           gateway,
 		sourceRouter:      sourceRouter,
@@ -106,7 +109,8 @@ func newILNRPCFixture(
 
 			switch to {
 			case strings.ToLower(fixture.registry):
-				require.True(t, strings.HasPrefix(data, selectorHex("getRoute(uint32)")))
+				require.True(t, strings.HasPrefix(data, selectorHex("getRoute(uint32,bytes32)")))
+				require.Contains(t, data, strings.TrimPrefix(strings.ToLower(fixture.routeID), "0x"))
 				result = encodeILNRouteResult(
 					fixture.chainID,
 					fixture.sourceDomain,
@@ -229,14 +233,14 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
 	)
 
 	baseRPC, base := newILNRPCFixture(
-		t, 8453, 100, 3, 8453, xgrDomain,
+		t, 8453, 100, 3, 8453, xgrDomain, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		baseRegistry, baseGateway, baseSourceRouter, baseMailbox, baseHook, baseDestinationRouter,
 		1000, baseRoot, 4,
 	)
 	base.Name = "base"
 
 	arbitrumRPC, arbitrum := newILNRPCFixture(
-		t, 42161, 200, 20, 42161, xgrDomain,
+		t, 42161, 200, 20, 42161, xgrDomain, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		arbitrumRegistry, arbitrumGateway, arbitrumSourceRouter, arbitrumMailbox, arbitrumHook, arbitrumDestinationRouter,
 		2000, arbitrumRoot, 9,
 	)
@@ -250,8 +254,10 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
 
 	t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_SOURCE_NETWORK", "base")
 	t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_DESTINATION", "xgr")
+	t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_ROUTE_ID", "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	t.Setenv("XGR_INTERCHAIN_ROUTE_ARBITRUM_TO_XGR_SOURCE_NETWORK", "arbitrum")
 	t.Setenv("XGR_INTERCHAIN_ROUTE_ARBITRUM_TO_XGR_DESTINATION", "xgr")
+	t.Setenv("XGR_INTERCHAIN_ROUTE_ARBITRUM_TO_XGR_ROUTE_ID", "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
 	routes, err := evmInterchain.LoadCheckpointRoutes([]*evmInterchain.Destination{base, arbitrum, xgr})
 	require.NoError(t, err)
@@ -267,12 +273,13 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
 	require.NotNil(t, baseRoute)
 	require.Equal(t, "base", baseRoute.SourceNetwork)
 
-	baseSnapshot, err := evmInterchain.GetConfirmedILNRoute(base, xgrDomain)
+	baseSnapshot, err := evmInterchain.GetConfirmedILNRoute(base, xgrDomain, baseRoute.RouteID)
 	require.NoError(t, err)
 	require.Equal(t, uint64(97), baseSnapshot.BlockNumber)
 	require.Equal(t, uint64(8453), baseSnapshot.Route.Key.SourceChainID)
 	require.Equal(t, uint32(8453), baseSnapshot.Route.Key.SourceDomain)
 	require.Equal(t, xgrDomain, baseSnapshot.Route.Key.DestinationDomain)
+	require.Equal(t, types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), baseSnapshot.Route.Key.RouteID)
 	require.Equal(t, types.StringToAddress(baseGateway), baseSnapshot.Route.Gateway)
 	require.Equal(t, types.StringToAddress(baseSourceRouter), baseSnapshot.Route.SourceRouter)
 	require.Equal(t, types.StringToAddress(baseDestinationRouter), baseSnapshot.Route.DestinationRouter)
@@ -291,12 +298,13 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
 	require.NotNil(t, arbitrumRoute)
 	require.Equal(t, "arbitrum", arbitrumRoute.SourceNetwork)
 
-	arbitrumSnapshot, err := evmInterchain.GetConfirmedILNRoute(arbitrum, xgrDomain)
+	arbitrumSnapshot, err := evmInterchain.GetConfirmedILNRoute(arbitrum, xgrDomain, arbitrumRoute.RouteID)
 	require.NoError(t, err)
 	require.Equal(t, uint64(180), arbitrumSnapshot.BlockNumber)
 	require.Equal(t, uint64(42161), arbitrumSnapshot.Route.Key.SourceChainID)
 	require.Equal(t, uint32(42161), arbitrumSnapshot.Route.Key.SourceDomain)
 	require.Equal(t, xgrDomain, arbitrumSnapshot.Route.Key.DestinationDomain)
+	require.Equal(t, types.StringToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), arbitrumSnapshot.Route.Key.RouteID)
 	require.Equal(t, types.StringToAddress(arbitrumGateway), arbitrumSnapshot.Route.Gateway)
 	require.Equal(t, types.StringToAddress(arbitrumSourceRouter), arbitrumSnapshot.Route.SourceRouter)
 	require.Equal(t, types.StringToAddress(arbitrumDestinationRouter), arbitrumSnapshot.Route.DestinationRouter)

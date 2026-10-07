@@ -26,6 +26,8 @@ type interchainGovernanceQuorumRPC struct {
 	SourceDomain                 uint32 `json:"sourceDomain"`
 	Registry                     string `json:"registry"`
 	DestinationDomain            uint32 `json:"destinationDomain"`
+	RouteID                      string `json:"routeId"`
+	ValidatorFeeWei              string `json:"validatorFeeWei"`
 	SetID                        uint64 `json:"setId"`
 	Nonce                        uint64 `json:"nonce"`
 	ValidUntil                   uint64 `json:"validUntil"`
@@ -42,6 +44,7 @@ type interchainAttestationRPC struct {
 	OriginChainID                uint64 `json:"originChainId"`
 	OriginDomain                 uint32 `json:"originDomain,omitempty"`
 	DestinationDomain            uint32 `json:"destinationDomain"`
+	RouteID                      string `json:"routeId"`
 	SetID                        uint64 `json:"setId"`
 	SourceBlockNumber            uint64 `json:"sourceBlockNumber"`
 	Registry                     string `json:"registry"`
@@ -77,7 +80,7 @@ func (x *xgrEndpoint) GetInterchainAttestation(chain string) (*interchainAttesta
 	))
 }
 
-// GetILNInterchainAttestation returns the completed v3.1.2 attestation for
+// GetILNInterchainAttestation returns the completed v3.1.3 attestation for
 // one fee-qualified Hyperlane message ID. It is read-only.
 func (x *xgrEndpoint) GetILNInterchainAttestation(
 	chain string,
@@ -123,8 +126,9 @@ func (x *xgrEndpoint) readInterchainAttestation(path string) (*interchainAttesta
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("decode interchain attestation: %w", err)
 	}
-	if out.Version != "XGR_ILN_CHECKPOINT_V1" ||
+	if out.Version != "XGR_ILN_CHECKPOINT_V2" ||
 		out.Chain == "" ||
+		out.RouteID == "" ||
 		out.AuthorizedMessageID == "" ||
 		out.SourceRouter == "" ||
 		out.Root == "" ||
@@ -174,7 +178,8 @@ func (x *xgrEndpoint) GetILNGovernanceQuorum(proposalID string) (*interchainGove
 		return nil, fmt.Errorf("decode ILN governance quorum: %w", err)
 	}
 	if strings.ToLower(out.ProposalID) != proposalID ||
-		out.Version == "" ||
+		out.Version != "XGR_ILN_GOVERNANCE_V2" ||
+		out.RouteID == "" ||
 		out.Payload == "" ||
 		out.SignerBitmap == "" ||
 		out.AggregateSignature == "" {

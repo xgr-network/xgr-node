@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	ILNRouteDomainV1      = "XGR_ILN_ROUTE_V1"
-	ILNGovernanceDomainV1 = "XGR_ILN_GOVERNANCE_V1"
-	ILNCheckpointDomainV1 = "XGR_ILN_CHECKPOINT_V1"
+	ILNRouteDomainV1      = "XGR_ILN_ROUTE_V2"
+	ILNGovernanceDomainV1 = "XGR_ILN_GOVERNANCE_V2"
+	ILNCheckpointDomainV1 = "XGR_ILN_CHECKPOINT_V2"
 )
 
 type ILNProposalType uint8
@@ -25,12 +25,14 @@ const (
 	ILNProposalRouteDisable ILNProposalType = 4
 )
 
-// ILNRouteKey identifies one canonical ILN hop. ILN v1 intentionally permits
-// one canonical route per source-chain/source-domain/destination-domain tuple.
+// ILNRouteKey identifies one canonical ILN hop. RouteID permits multiple
+// independent routes between the same source and destination domains without
+// assigning asset semantics to the node protocol.
 type ILNRouteKey struct {
 	SourceChainID     uint64
 	SourceDomain      uint32
 	DestinationDomain uint32
+	RouteID           types.Hash
 }
 
 func (k ILNRouteKey) validate() error {
@@ -42,6 +44,9 @@ func (k ILNRouteKey) validate() error {
 	}
 	if k.DestinationDomain == 0 {
 		return fmt.Errorf("ILN destination domain must be non-zero")
+	}
+	if k.RouteID == types.ZeroHash {
+		return fmt.Errorf("ILN route id must be non-zero")
 	}
 	return nil
 }
@@ -56,6 +61,7 @@ func (k ILNRouteKey) MarshalBinary() ([]byte, error) {
 	_ = binary.Write(&buf, binary.BigEndian, k.SourceChainID)
 	_ = binary.Write(&buf, binary.BigEndian, k.SourceDomain)
 	_ = binary.Write(&buf, binary.BigEndian, k.DestinationDomain)
+	buf.Write(k.RouteID.Bytes())
 
 	return buf.Bytes(), nil
 }
@@ -181,6 +187,7 @@ func (p ILNGovernanceProposal) MarshalBinary() ([]byte, error) {
 	_ = binary.Write(&buf, binary.BigEndian, p.Route.Key.SourceChainID)
 	_ = binary.Write(&buf, binary.BigEndian, p.Route.Key.SourceDomain)
 	_ = binary.Write(&buf, binary.BigEndian, p.Route.Key.DestinationDomain)
+	buf.Write(p.Route.Key.RouteID.Bytes())
 	buf.Write(p.Registry.Bytes())
 	_ = binary.Write(&buf, binary.BigEndian, p.SetID)
 	_ = binary.Write(&buf, binary.BigEndian, p.Nonce)
@@ -201,7 +208,7 @@ func (p *ILNGovernanceProposal) UnmarshalBinary(raw []byte) error {
 		return fmt.Errorf("ILN governance proposal is nil")
 	}
 
-	const fixedTail = 8 + 4 + 4 + types.AddressLength + 8 + 8 + 8 + 1 +
+	const fixedTail = 8 + 4 + 4 + types.HashLength + types.AddressLength + 8 + 8 + 8 + 1 +
 		types.AddressLength*5 + 32
 	if len(raw) != len(ILNGovernanceDomainV1)+fixedTail {
 		return fmt.Errorf("invalid ILN governance payload length %d", len(raw))
@@ -217,6 +224,8 @@ func (p *ILNGovernanceProposal) UnmarshalBinary(raw []byte) error {
 	o += 4
 	p.Route.Key.DestinationDomain = binary.BigEndian.Uint32(raw[o : o+4])
 	o += 4
+	p.Route.Key.RouteID = types.BytesToHash(raw[o : o+types.HashLength])
+	o += types.HashLength
 	p.Registry = types.BytesToAddress(raw[o : o+types.AddressLength])
 	o += types.AddressLength
 	p.SetID = binary.BigEndian.Uint64(raw[o : o+8])
@@ -265,6 +274,7 @@ type ILNCheckpointPayload struct {
 	SourceChainID     uint64
 	SourceDomain      uint32
 	DestinationDomain uint32
+	RouteID           types.Hash
 	SetID             uint64
 	SourceBlockNumber uint64
 	Registry          types.Address
@@ -285,6 +295,7 @@ func (p ILNCheckpointPayload) validate() error {
 			SourceChainID:     p.SourceChainID,
 			SourceDomain:      p.SourceDomain,
 			DestinationDomain: p.DestinationDomain,
+			RouteID:           p.RouteID,
 		},
 		Gateway:           p.Gateway,
 		SourceRouter:      p.SourceRouter,
@@ -329,6 +340,7 @@ func (p ILNCheckpointPayload) MarshalBinary() ([]byte, error) {
 	_ = binary.Write(&buf, binary.BigEndian, p.SourceChainID)
 	_ = binary.Write(&buf, binary.BigEndian, p.SourceDomain)
 	_ = binary.Write(&buf, binary.BigEndian, p.DestinationDomain)
+	buf.Write(p.RouteID.Bytes())
 	_ = binary.Write(&buf, binary.BigEndian, p.SetID)
 	_ = binary.Write(&buf, binary.BigEndian, p.SourceBlockNumber)
 	buf.Write(p.Registry.Bytes())
@@ -349,7 +361,7 @@ func (p *ILNCheckpointPayload) UnmarshalBinary(raw []byte) error {
 	if p == nil {
 		return fmt.Errorf("ILN checkpoint payload is nil")
 	}
-	const fixedTail = 8 + 4 + 4 + 8 + 8 + types.AddressLength*6 + 32 + types.HashLength*2 + 4
+	const fixedTail = 8 + 4 + 4 + types.HashLength + 8 + 8 + types.AddressLength*6 + 32 + types.HashLength*2 + 4
 	if len(raw) != len(ILNCheckpointDomainV1)+fixedTail {
 		return fmt.Errorf("invalid ILN checkpoint payload length %d", len(raw))
 	}
@@ -364,6 +376,8 @@ func (p *ILNCheckpointPayload) UnmarshalBinary(raw []byte) error {
 	o += 4
 	p.DestinationDomain = binary.BigEndian.Uint32(raw[o : o+4])
 	o += 4
+	p.RouteID = types.BytesToHash(raw[o : o+types.HashLength])
+	o += types.HashLength
 	p.SetID = binary.BigEndian.Uint64(raw[o : o+8])
 	o += 8
 	p.SourceBlockNumber = binary.BigEndian.Uint64(raw[o : o+8])

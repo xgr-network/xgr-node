@@ -170,6 +170,7 @@ func testGovernanceProposal() protocol.ILNGovernanceProposal {
 				SourceChainID:     8453,
 				SourceDomain:      8453,
 				DestinationDomain: 1643,
+				RouteID:           types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 			},
 			ValidatorFeeWei: big.NewInt(1),
 		},

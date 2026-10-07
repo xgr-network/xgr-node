@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	TopicID                    = "/xgr/interchain/2.0.0"
+	TopicID                    = "/xgr/interchain/3.0.0"
 	defaultPollInterval        = 2 * time.Second
 	maximumMembershipLifetime  = 10 * time.Minute
 	requestRebroadcastInterval = 10 * time.Second
@@ -171,6 +171,7 @@ func New(
 	}
 
 	routesByName := make(map[string]*evmInterchain.CheckpointRoute, len(routes))
+	routeIdentities := make(map[string]string, len(routes))
 	for _, route := range routes {
 		if route == nil {
 			continue
@@ -187,6 +188,14 @@ func New(
 		if _, exists := routesByName[route.Name]; exists {
 			return nil, fmt.Errorf("checkpoint route %q is configured more than once", route.Name)
 		}
+		identity := route.SourceNetwork + "|" + route.Destination + "|" + route.RouteID.String()
+		if previous, exists := routeIdentities[identity]; exists {
+			return nil, fmt.Errorf(
+				"checkpoint routes %q and %q resolve to the same source, destination, and route id",
+				previous, route.Name,
+			)
+		}
+		routeIdentities[identity] = route.Name
 		routesByName[route.Name] = route
 	}
 	return &Worker{
@@ -707,7 +716,7 @@ func (w *Worker) handleWire(raw []byte) error {
 		}
 		return w.acceptVote(*envelope.Vote)
 	case "checkpoint_vote":
-		return fmt.Errorf("legacy v3.1.1 checkpoint votes are disabled in v3.1.2")
+		return fmt.Errorf("legacy v3.1.1 checkpoint votes are disabled in v3.1.3")
 	case "iln_checkpoint_vote":
 		if envelope.ILNCheckpointVote == nil {
 			return fmt.Errorf("missing ILN checkpoint vote")

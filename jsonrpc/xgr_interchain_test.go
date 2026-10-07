@@ -14,12 +14,13 @@ func writeTestILNAttestation(t *testing.T, dataDir, chain, messageID, root strin
 	dir := filepath.Join(dataDir, "interchain", "attestations", chain)
 	require.NoError(t, os.MkdirAll(dir, 0o770))
 	value := interchainAttestationRPC{
-		Version:             "XGR_ILN_CHECKPOINT_V1",
+		Version:             "XGR_ILN_CHECKPOINT_V2",
 		Chain:               chain,
 		Destination:         "xgr",
 		OriginChainID:       8453,
 		OriginDomain:        8453,
 		DestinationDomain:   1643,
+		RouteID:             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		SetID:               7,
 		SourceBlockNumber:   100,
 		Registry:            "0x5555555555555555555555555555555555555555",
@@ -84,13 +85,15 @@ func TestXGRGetILNGovernanceQuorum(t *testing.T) {
 	require.NoError(t, os.MkdirAll(dir, 0o770))
 
 	value := interchainGovernanceQuorumRPC{
-		Version:                      "XGR_ILN_GOVERNANCE_V1",
+		Version:                      "XGR_ILN_GOVERNANCE_V2",
 		ProposalID:                   proposalID,
 		ProposalType:                 1,
 		SourceChainID:                8453,
 		SourceDomain:                 8453,
 		Registry:                     "0x5555555555555555555555555555555555555555",
 		DestinationDomain:            1643,
+		RouteID:                      "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ValidatorFeeWei:              "25",
 		SetID:                        7,
 		Nonce:                        12,
 		ValidUntil:                   1900000000,
@@ -108,8 +111,43 @@ func TestXGRGetILNGovernanceQuorum(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, proposalID, got.ProposalID)
 	require.Equal(t, uint64(7), got.SetID)
+	require.Equal(t, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", got.RouteID)
+	require.Equal(t, "25", got.ValidatorFeeWei)
 	require.Equal(t, "0x03", got.SignerBitmap)
 	require.Equal(t, "0x02", got.AggregateSignature)
+}
+
+
+func TestXGRGetILNGovernanceQuorumRejectsLegacyVersion(t *testing.T) {
+	dataDir := t.TempDir()
+	proposalID := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	dir := filepath.Join(dataDir, "interchain", "governance", "quorums")
+	require.NoError(t, os.MkdirAll(dir, 0o770))
+
+	value := interchainGovernanceQuorumRPC{
+		Version:            "XGR_ILN_GOVERNANCE_V1",
+		ProposalID:         proposalID,
+		ProposalType:       1,
+		SourceChainID:      8453,
+		SourceDomain:       8453,
+		Registry:           "0x5555555555555555555555555555555555555555",
+		DestinationDomain:  1643,
+		RouteID:            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SetID:              7,
+		Nonce:              12,
+		ValidUntil:         1900000000,
+		Payload:            "0x01",
+		SignerBitmap:       "0x03",
+		AggregateSignature: "0x02",
+	}
+	raw, err := json.Marshal(value)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, proposalID+".json"), raw, 0o660))
+
+	ep := newXGREndpoint(nil, dataDir)
+	_, err = ep.GetILNGovernanceQuorum(proposalID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "incomplete")
 }
 
 func TestXGRGetILNGovernanceQuorumRejectsUnsafeID(t *testing.T) {

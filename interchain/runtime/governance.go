@@ -64,6 +64,7 @@ type GovernanceProposalView struct {
 	SourceDomain      uint32
 	Registry          types.Address
 	DestinationDomain uint32
+	RouteID           types.Hash
 	Gateway           types.Address
 	SourceRouter      types.Address
 	Mailbox           types.Address
@@ -82,6 +83,8 @@ type governanceQuorum struct {
 	SourceDomain                 uint32 `json:"sourceDomain"`
 	Registry                     string `json:"registry"`
 	DestinationDomain            uint32 `json:"destinationDomain"`
+	RouteID                      string `json:"routeId"`
+	ValidatorFeeWei              string `json:"validatorFeeWei"`
 	SetID                        uint64 `json:"setId"`
 	Nonce                        uint64 `json:"nonce"`
 	ValidUntil                   uint64 `json:"validUntil"`
@@ -163,15 +166,14 @@ func (w *Worker) createGovernanceVote(id types.Hash) (*governanceVote, error) {
 	if proposal.ValidUntil < uint64(time.Now().Unix()) {
 		return nil, fmt.Errorf("ILN governance proposal expired")
 	}
-	if _, err := w.governanceSource(proposal); err != nil {
-		return nil, err
-	}
-
-	destination, err := w.governanceDestination(proposal)
+	source, err := w.governanceSource(proposal)
 	if err != nil {
 		return nil, err
 	}
-	set, err := getGovernanceValidatorSet(destination)
+	if _, err := w.governanceDestination(proposal); err != nil {
+		return nil, err
+	}
+	set, err := getGovernanceValidatorSet(source)
 	if err != nil {
 		return nil, err
 	}
@@ -218,15 +220,14 @@ func (w *Worker) acceptGovernanceProposal(wire governanceProposalWire) error {
 	if proposal.ValidUntil < uint64(time.Now().Unix()) {
 		return fmt.Errorf("ILN governance proposal expired")
 	}
-	if _, err := w.governanceSource(proposal); err != nil {
-		return err
-	}
-
-	destination, err := w.governanceDestination(proposal)
+	source, err := w.governanceSource(proposal)
 	if err != nil {
 		return err
 	}
-	set, err := getGovernanceValidatorSet(destination)
+	if _, err := w.governanceDestination(proposal); err != nil {
+		return err
+	}
+	set, err := getGovernanceValidatorSet(source)
 	if err != nil {
 		return err
 	}
@@ -278,15 +279,14 @@ func (w *Worker) acceptGovernanceVote(vote governanceVote) error {
 	if proposal.ValidUntil < uint64(time.Now().Unix()) {
 		return fmt.Errorf("ILN governance proposal expired")
 	}
-	if _, err := w.governanceSource(proposal); err != nil {
-		return err
-	}
-
-	destination, err := w.governanceDestination(proposal)
+	source, err := w.governanceSource(proposal)
 	if err != nil {
 		return err
 	}
-	set, err := getGovernanceValidatorSet(destination)
+	if _, err := w.governanceDestination(proposal); err != nil {
+		return err
+	}
+	set, err := getGovernanceValidatorSet(source)
 	if err != nil {
 		return err
 	}
@@ -380,6 +380,8 @@ func (w *Worker) finalizeGovernanceQuorum(
 		SourceDomain:                 proposal.Route.Key.SourceDomain,
 		Registry:                     proposal.Registry.String(),
 		DestinationDomain:            proposal.Route.Key.DestinationDomain,
+		RouteID:                      proposal.Route.Key.RouteID.String(),
+		ValidatorFeeWei:              governanceFeeString(proposal),
 		SetID:                        proposal.SetID,
 		Nonce:                        proposal.Nonce,
 		ValidUntil:                   proposal.ValidUntil,
@@ -389,6 +391,13 @@ func (w *Worker) finalizeGovernanceQuorum(
 		AggregateSignatureCompressed: "0x" + hex.EncodeToString(aggregate),
 	}
 	return w.writeGovernanceQuorum(quorum)
+}
+
+func governanceFeeString(proposal protocol.ILNGovernanceProposal) string {
+	if proposal.Route.ValidatorFeeWei == nil {
+		return "0"
+	}
+	return proposal.Route.ValidatorFeeWei.String()
 }
 
 func (w *Worker) governanceSource(
@@ -560,6 +569,7 @@ func ReadGovernanceProposal(dataDir, proposalID string) (*GovernanceProposalView
 		SourceDomain:      proposal.Route.Key.SourceDomain,
 		Registry:          proposal.Registry,
 		DestinationDomain: proposal.Route.Key.DestinationDomain,
+		RouteID:           proposal.Route.Key.RouteID,
 		Gateway:           proposal.Route.Gateway,
 		SourceRouter:      proposal.Route.SourceRouter,
 		Mailbox:           proposal.Route.Mailbox,
