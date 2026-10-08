@@ -266,6 +266,13 @@ func (w *Worker) signILNOperation(
 		operation.ValidatorFeeWei.Cmp(snapshot.Route.ValidatorFeeWei) != 0 {
 		return fmt.Errorf("ILN operation validator fee does not match canonical route fee")
 	}
+	delivered, err := evmInterchain.GetILNMessageDelivered(destination, snapshot.Route.DestinationRouter, operation.MessageID)
+	if err != nil {
+		return fmt.Errorf("ILN destination delivery state unavailable (fail closed): %w", err)
+	}
+	if delivered {
+		return nil // Already settled. Never regenerate historical signatures.
+	}
 	checkpoint, err := getConfirmedILNCheckpoint(source, snapshot)
 	if err != nil {
 		return err
@@ -399,6 +406,13 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 		return fmt.Errorf("ILN checkpoint root or index mismatch at source block")
 	}
 
+	delivered, err := evmInterchain.GetILNMessageDelivered(destination, snapshot.Route.DestinationRouter, payload.AuthorizedMessageID)
+	if err != nil {
+		return fmt.Errorf("ILN vote delivery state unavailable (fail closed): %w", err)
+	}
+	if delivered {
+		return fmt.Errorf("ILN message is already delivered; reject historical vote")
+	}
 	set, err := getILNValidatorSet(destination)
 	if err != nil {
 		return err
