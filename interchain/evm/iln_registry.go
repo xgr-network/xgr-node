@@ -50,6 +50,8 @@ type ILNOperation struct {
 	DestinationDomain uint32
 	ValidatorFeeWei   *big.Int
 	BlockNumber       uint64
+	TransactionHash types.Hash
+	LogIndex uint64
 }
 
 func (d *Destination) ValidateILNRead() error {
@@ -191,7 +193,7 @@ func GetConfirmedILNRoute(source *Destination, destinationDomain uint32, routeID
 	if err != nil {
 		return nil, err
 	}
-	return getILNRouteAtBlock(client, source, destinationDomain, routeID, confirmed)
+	return getILNRouteAtBlock(client, source, destinationDomain, routeID, confirmed, false)
 }
 
 // GetILNRouteAtBlock re-reads the exact historical route used by an incoming
@@ -209,7 +211,7 @@ func GetILNRouteAtBlock(source *Destination, destinationDomain uint32, routeID t
 	if blockNumber == 0 || blockNumber > confirmed {
 		return nil, fmt.Errorf("ILN source block %d is not sufficiently confirmed", blockNumber)
 	}
-	return getILNRouteAtBlock(client, source, destinationDomain, routeID, blockNumber)
+	return getILNRouteAtBlock(client, source, destinationDomain, routeID, blockNumber, true)
 }
 
 func getILNRouteAtBlock(
@@ -218,6 +220,7 @@ func getILNRouteAtBlock(
 	destinationDomain uint32,
 	routeID types.Hash,
 	blockNumber uint64,
+	allowHistoricalDisabled bool,
 ) (*ILNRouteSnapshot, error) {
 	if destinationDomain == 0 {
 		return nil, fmt.Errorf("ILN destination domain must be non-zero")
@@ -314,10 +317,15 @@ func getILNRouteAtBlock(
 		ValidatorFeeWei: fee,
 		Enabled: enabled,
 	}
-	if !route.Enabled {
+	if !route.Enabled && !allowHistoricalDisabled {
 		return nil, fmt.Errorf("canonical ILN route is disabled")
 	}
-	if err := protocol.ValidateILNRoute(route); err != nil {
+	// For historical settlement, the Gateway event/receipt proves that the
+	// original bridge was executed while this route was enabled. A governance
+	// disable later in that same block must not strand already locked assets.
+	validationRoute := route
+	validationRoute.Enabled = true
+	if err := protocol.ValidateILNRoute(validationRoute); err != nil {
 		return nil, fmt.Errorf("invalid canonical ILN route record: %w", err)
 	}
 	if err := verifyILNGatewayBinding(client, registry, route, block); err != nil {
@@ -351,6 +359,11 @@ func verifyILNGatewayBinding(
 	if warpRouter != route.SourceRouter {
 		return fmt.Errorf("ILN gateway source router mismatch")
 	}
+	// Dynamic Gateway.mailbox()/merkleTreeHook() getters deliberately reject
+	// disabled routes. For historical proofs, check immutable gateway registry
+	// and router here; the same-tx canonical Mailbox.Dispatch proof provides
+	// the remaining binding to the source message.
+	if !route.Enabled { return nil }
 	gatewayMailbox, err := callILNAddressGetter(client, route.Gateway, "mailbox()", block)
 	if err != nil {
 		return fmt.Errorf("verify ILN gateway mailbox: %w", err)
@@ -457,6 +470,46 @@ func GetConfirmedILNOperations(
 	return out, nil
 }
 
+// verifyILNDispatchInReceipt binds a fee-qualified Gateway event to the actual
+// canonical WarpRouter -> Mailbox dispatch in the SAME successful source tx.
+// An event from the wrong sender, transaction, route or message cannot pass.
+func verifyILNDispatchInReceipt(client *jsonrpc.Client, operation ILNOperation, gateway, mailbox, sourceRouter types.Address, destinationDomain uint32, destinationRouter types.Address) error {
+ if operation.TransactionHash == types.ZeroHash { return fmt.Errorf("missing ILN gateway transaction hash") }
+ receipt, err := client.Eth().GetTransactionReceipt(ethgo.Hash(operation.TransactionHash))
+ if err != nil || receipt == nil { return fmt.Errorf("ILN source transaction receipt unavailable: %v", err) }
+ if receipt.Status != 1 || receipt.BlockNumber != operation.BlockNumber || types.Hash(receipt.TransactionHash) != operation.TransactionHash {
+  return fmt.Errorf("ILN gateway transaction not successful or from wrong block")
+ }
+ dispatchTopic := ethgo.Hash(crypto.Keccak256Hash([]byte("Dispatch(address,uint32,bytes32,bytes)")))
+ operationTopic := ethgo.Hash(crypto.Keccak256Hash([]byte(ilnOperationEventSignature)))
+ found := 0
+ gatewayEvents:=0
+ for _, log := range receipt.Logs {
+  if log == nil || log.Removed { continue }
+  if types.Address(log.Address)==gateway && len(log.Topics)==4 && log.Topics[0]==operationTopic {
+   original,decodeErr:=parseILNOperationLog(log)
+   if decodeErr!=nil{return fmt.Errorf("invalid original ILN gateway event: %w",decodeErr)}
+   if original.RouteID==operation.RouteID && original.MessageID==operation.MessageID &&
+     original.DestinationDomain==operation.DestinationDomain &&
+     original.ValidatorFeeWei.Cmp(operation.ValidatorFeeWei)==0 &&
+     original.LogIndex==operation.LogIndex &&
+     types.Hash(log.TransactionHash)==operation.TransactionHash {gatewayEvents++}
+  }
+  if types.Address(log.Address) != mailbox || len(log.Topics) != 4 || log.Topics[0] != dispatchTopic { continue }
+  if types.BytesToAddress(log.Topics[1][12:]) != sourceRouter { continue }
+  if new(big.Int).SetBytes(log.Topics[2][:]).Cmp(new(big.Int).SetUint64(uint64(destinationDomain))) != 0 { continue }
+  if types.BytesToAddress(log.Topics[3][12:]) != destinationRouter { continue }
+  // ABI encoding for one dynamic bytes argument: offset=32, length at 32.
+  if len(log.Data) < 64 || new(big.Int).SetBytes(log.Data[:32]).Cmp(big.NewInt(32)) != 0 { continue }
+  length := new(big.Int).SetBytes(log.Data[32:64])
+  if !length.IsUint64() || length.Uint64() > uint64(len(log.Data)-64) { continue }
+  message := log.Data[64:64+int(length.Uint64())]
+  if crypto.Keccak256Hash(message) == operation.MessageID { found++ }
+ }
+ if gatewayEvents != 1 || found != 1 { return fmt.Errorf("ILN operation lacks unique matching Gateway event and canonical Mailbox.Dispatch in original source transaction") }
+ return nil
+}
+
 // GetILNOperationAtBlock verifies the exact Gateway event referenced by a peer
 // vote. More than one matching event for the same message ID is rejected.
 func GetILNOperationAtBlock(
@@ -487,6 +540,13 @@ func GetILNOperationAtBlock(
 	if match == nil {
 		return nil, fmt.Errorf("ILN operation %s not found at source block %d", messageID, blockNumber)
 	}
+	// Resolve canonical historical router/mailbox binding and verify actual
+	// same-tx Dispatch from the unforgeable Mailbox address.
+	snapshot, err := GetILNRouteAtBlock(source, destinationDomain, routeID, blockNumber)
+	if err != nil { return nil, err }
+	client, err := ilnSourceClient(source)
+	if err != nil { return nil, err }
+	if err := verifyILNDispatchInReceipt(client, *match, snapshot.Route.Gateway, snapshot.Route.Mailbox, snapshot.Route.SourceRouter, destinationDomain, snapshot.Route.DestinationRouter); err != nil { return nil, err }
 	return match, nil
 }
 
@@ -524,7 +584,48 @@ func parseILNOperationLog(log *ethgo.Log) (ILNOperation, error) {
 		DestinationDomain: uint32(destinationBig.Uint64()),
 		ValidatorFeeWei: fee,
 		BlockNumber: log.BlockNumber,
+		TransactionHash: types.Hash(log.TransactionHash),
+		LogIndex: log.LogIndex,
 	}, nil
+}
+
+// GetILNMessageDelivered queries the canonical destination router's Mailbox.
+// Unknown delivery state fails closed: it must never trigger replacement signing.
+func GetILNMessageDelivered(destination *Destination, destinationRouter types.Address, messageID types.Hash) (bool, error) {
+	if destination == nil || destinationRouter == types.ZeroAddress || messageID == types.ZeroHash {
+		return false, fmt.Errorf("invalid ILN delivery-status query")
+	}
+	if err := destination.ValidateMembershipRead(); err != nil {
+		return false, err
+	}
+	client, err := jsonrpc.NewClient(destination.RPCURL)
+	if err != nil {
+		return false, fmt.Errorf("create ILN destination RPC client: %w", err)
+	}
+	chainID, err := client.Eth().ChainID()
+	if err != nil || chainID == nil || !chainID.IsUint64() || chainID.Uint64() != destination.ChainID {
+		return false, fmt.Errorf("destination chain ID mismatch or RPC failure: %v", err)
+	}
+	mailbox, err := callILNAddressGetter(client, destinationRouter, "mailbox()", ethgo.Latest)
+	if err != nil {
+		return false, fmt.Errorf("resolve destination Mailbox: %w", err)
+	}
+	selector := crypto.Keccak256([]byte("delivered(bytes32)"))
+	data := append(append([]byte(nil), selector[:4]...), messageID.Bytes()...)
+	raw, err := callILNView(client, mailbox, data, ethgo.Latest)
+	if err != nil {
+		return false, fmt.Errorf("query destination Mailbox.delivered: %w", err)
+	}
+	if len(raw) != 32 {
+		return false, fmt.Errorf("invalid delivered result length %d", len(raw))
+	}
+	for _, b := range raw[:31] {
+		if b != 0 { return false, fmt.Errorf("noncanonical delivered boolean encoding") }
+	}
+	if raw[31] != 0 && raw[31] != 1 {
+		return false, fmt.Errorf("invalid delivered boolean value")
+	}
+	return raw[31] == 1, nil
 }
 
 func GetConfirmedILNCheckpoint(source *Destination, snapshot *ILNRouteSnapshot) (*ConfirmedCheckpoint, error) {

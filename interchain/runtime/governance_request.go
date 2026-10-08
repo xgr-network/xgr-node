@@ -15,6 +15,8 @@ type GovernanceRequestResult struct {
 	Error      string
 	ProposalID string
 	Approved   bool
+	TxHash     string
+	Nonce      uint64
 	Quorum     bool
 }
 
@@ -45,6 +47,12 @@ func EnqueueGovernanceApproveAndWait(
 		Action:     "approve",
 		ProposalID: proposalID,
 	}, timeout)
+}
+
+// Execution is explicit and only available via the local node control path.
+func EnqueueGovernanceExecuteAndWait(dataDir, proposalID string, timeout time.Duration) (*GovernanceRequestResult,error) {
+ if _,err:=parseGovernanceProposalID(proposalID);err!=nil{return nil,err}
+ return enqueueGovernanceAndWait(dataDir,localGovernanceRequest{Action:"execute",ProposalID:proposalID},timeout)
 }
 
 func enqueueGovernanceAndWait(
@@ -112,6 +120,8 @@ func enqueueGovernanceAndWait(
 				Error:      result.Error,
 				ProposalID: result.ProposalID,
 				Approved:   result.Approved,
+				TxHash: result.TxHash,
+				Nonce: result.Nonce,
 				Quorum:     result.Quorum,
 			}, nil
 		}

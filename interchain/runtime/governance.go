@@ -51,6 +51,8 @@ type localGovernanceResult struct {
 	Error      string `json:"error,omitempty"`
 	ProposalID string `json:"proposalId,omitempty"`
 	Approved   bool   `json:"approved,omitempty"`
+	TxHash     string `json:"txHash,omitempty"`
+	Nonce      uint64 `json:"nonce,omitempty"`
 	Quorum     bool   `json:"quorum,omitempty"`
 }
 
@@ -705,6 +707,30 @@ func (w *Worker) processLocalGovernanceRequests() error {
 			result.Approved = true
 			_, statErr := os.Stat(filepath.Join(w.governanceQuorumDir(), proposalID.String()+".json"))
 			result.Quorum = statErr == nil
+		case "execute":
+            // Offload any EVM submission and confirmation waiting: holding the
+            // 2s validator tick while a remote RPC waits would starve quorum
+            // signing, route discovery, expiry processing and heartbeat.
+            if w.governanceExecuteCh == nil {
+                result.Error = "ILN governance executor not running"
+                break
+            }
+            w.mu.Lock()
+            _,inFlight := w.governanceExecuteInFlight[id]
+            if !inFlight { w.governanceExecuteInFlight[id]=struct{}{} }
+            w.mu.Unlock()
+            if inFlight { continue }
+            select {
+            case w.governanceExecuteCh <- governanceExecuteRequest{id:id,proposalID:req.ProposalID}:
+                // Durable JSON request is deleted only after executor commits
+                // its result. Do not acknowledge execution here.
+                continue
+            default:
+                w.mu.Lock()
+                delete(w.governanceExecuteInFlight,id)
+                w.mu.Unlock()
+                continue
+            }
 		default:
 			result.Error = fmt.Sprintf("unsupported ILN governance local action %q", req.Action)
 		}

@@ -166,3 +166,27 @@ func TestXGRGetILNGovernanceQuorumNotFound(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not found")
 }
+
+func TestXGRSetSpecificILNQuorumRetrieval(t *testing.T) {
+ dir:=t.TempDir()
+ messageID:="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ root:="0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+ writeTestILNAttestation(t,dir,"base_to_xgr",messageID,root)
+ legacy:=filepath.Join(dir,"interchain","attestations","base_to_xgr",messageID+".json")
+ raw,err:=os.ReadFile(legacy)
+ require.NoError(t,err)
+ setDir:=filepath.Join(dir,"interchain","attestations","base_to_xgr",messageID)
+ require.NoError(t,os.MkdirAll(setDir,0o770))
+ require.NoError(t,os.WriteFile(filepath.Join(setDir,"7.json"),raw,0o660))
+ ep:=newXGREndpoint(nil,dir)
+ got,err:=ep.GetILNQuorumAttestation("BASE_TO_XGR",messageID,7)
+ require.NoError(t,err)
+ require.Equal(t,uint64(7),got.SetID)
+ require.Equal(t,messageID,got.AuthorizedMessageID)
+ _,err=ep.GetILNQuorumAttestation("base_to_xgr",messageID,8)
+ require.Error(t,err)
+ _,err=ep.GetILNQuorumAttestation("../base",messageID,7)
+ require.Error(t,err)
+ _,err=ep.GetILNQuorumAttestation("base_to_xgr",messageID,0)
+ require.Error(t,err)
+}

@@ -116,6 +116,7 @@ func getProposalCommand() *cobra.Command {
 	cmd.AddCommand(
 		getProposalCreateCommand(),
 		getProposalApproveCommand(),
+        getProposalExecuteCommand(),
 		getProposalShowCommand(),
 	)
 	return cmd
@@ -378,6 +379,46 @@ func getProposalShowCommand() *cobra.Command {
 	cmd.Flags().StringVar(&p.dataDir, "data-dir", "", "data directory of the validator node")
 	cmd.Flags().StringVar(&p.proposalID, "proposal-id", "", "32-byte ILN governance proposal ID")
 	return cmd
+}
+
+// Execute submits an already completed source-chain BLS governance quorum.
+// It never auto-approves or uses a relayer-dependent privileged signer.
+func getProposalExecuteCommand() *cobra.Command {
+ p:=&proposalApproveParams{}
+ cmd:=&cobra.Command{
+  Use:"execute", Short:"Execute a completed ILN governance quorum on its source chain",
+  Args:cobra.NoArgs,
+  PreRunE:func(_ *cobra.Command,_ []string) error {
+   if strings.TrimSpace(p.dataDir)=="" {return fmt.Errorf("--data-dir is required")}
+   if _,err:=parseNonZeroHash("--proposal-id",p.proposalID);err!=nil{return err}
+   if p.timeout<=0{return fmt.Errorf("--timeout must be positive")}
+   return nil
+  },
+  RunE:func(cmd *cobra.Command,_ []string)error {
+   out:=command.InitializeOutputter(cmd);defer out.WriteOutput()
+   result,err:=interchainRuntime.EnqueueGovernanceExecuteAndWait(p.dataDir,strings.ToLower(p.proposalID),p.timeout)
+   if err!=nil{out.SetError(err);return nil}
+   out.SetCommandResult(&ProposalExecuteResult{ProposalID:result.ProposalID,TxHash:result.TxHash,Nonce:result.Nonce})
+   return nil
+  },
+ }
+ cmd.Flags().StringVar(&p.dataDir,"data-dir","","local data directory of running validator node")
+ cmd.Flags().StringVar(&p.proposalID,"proposal-id","","32-byte governance proposal ID")
+ cmd.Flags().DurationVar(&p.timeout,"timeout",6*time.Minute,"wait for submission, source-chain confirmations and verified nonce")
+ return cmd
+}
+
+type ProposalExecuteResult struct {
+ ProposalID string `json:"proposalId"`
+ TxHash string `json:"transactionHash"`
+ Nonce uint64 `json:"nonce"`
+}
+func (r *ProposalExecuteResult) GetOutput() string {
+ return "\n[IBFT INTERCHAIN ILN PROPOSAL EXECUTED]\n"+helper.FormatKV([]string{
+  fmt.Sprintf("Proposal ID|%s",r.ProposalID),
+  fmt.Sprintf("Transaction hash|%s",r.TxHash),
+  fmt.Sprintf("Confirmed route nonce|%d",r.Nonce),
+ })
 }
 
 func normalizeProposalType(value string) protocol.ILNProposalType {

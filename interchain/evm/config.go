@@ -24,6 +24,7 @@ type Destination struct {
 	Domain                    uint32
 	RegistryAddress           string
 	ILNRegistryAddress        string
+	ILNRegistryActivationBlock uint64
 	RPCURL                    string
 	DeactivationReserveWei    *big.Int
 	Confirmations             uint64
@@ -99,6 +100,17 @@ func Load(name string) (*Destination, error) {
 		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 			return nil, fmt.Errorf("%sRPC must be a valid http(s) EVM JSON-RPC URL", prefix)
 		}
+	}
+
+	// Legacy ILN registries without activationBlock() may provide an explicit
+	// deployment block. Fresh v3.1.4 registries expose it on-chain instead.
+	activationRaw := strings.TrimSpace(os.Getenv(prefix + "ILN_REGISTRY_ACTIVATION_BLOCK"))
+	if activationRaw != "" {
+		activation, err := strconv.ParseUint(activationRaw, 10, 64)
+		if err != nil || activation == 0 {
+			return nil, fmt.Errorf("%sILN_REGISTRY_ACTIVATION_BLOCK must be a non-zero uint64", prefix)
+		}
+		cfg.ILNRegistryActivationBlock = activation
 	}
 
 	reserveRaw := strings.TrimSpace(os.Getenv(prefix + "DEACTIVATION_RESERVE_WEI"))

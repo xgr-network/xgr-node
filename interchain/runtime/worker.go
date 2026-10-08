@@ -61,6 +61,7 @@ type wireEnvelope struct {
 	Req                *wireRequest            `json:"request,omitempty"`
 	Vote               *wireVote               `json:"vote,omitempty"`
 	ILNCheckpointVote  *ilnCheckpointVote       `json:"ilnCheckpointVote,omitempty"`
+	ILNQuorumRequest   *requestedILNQuorum     `json:"ilnQuorumRequest,omitempty"`
 	GovernanceProposal *governanceProposalWire  `json:"governanceProposal,omitempty"`
 	GovernanceVote     *governanceVote         `json:"governanceVote,omitempty"`
 }
@@ -96,6 +97,7 @@ type Worker struct {
 	dataDir         string
 	destinations    map[string]*evmInterchain.Destination
 	routes          map[string]*evmInterchain.CheckpointRoute
+	ilnRestoredSources map[string]bool
 
 	txKey       ethgo.Key
 	localAddr   types.Address
@@ -112,6 +114,8 @@ type Worker struct {
 	ilnLocalVotes              map[types.Hash]*ilnLocalVoteState
 	ilnCheckpoints              map[types.Hash]*ilnCheckpointState
 	governance              map[types.Hash]*governanceState
+	governanceExecuteCh chan governanceExecuteRequest
+	governanceExecuteInFlight map[string]struct{}
 }
 
 func New(
@@ -216,6 +220,8 @@ func New(
 		ilnLocalVotes:                make(map[types.Hash]*ilnLocalVoteState),
 		ilnCheckpoints:               make(map[types.Hash]*ilnCheckpointState),
 		governance:                   make(map[types.Hash]*governanceState),
+		governanceExecuteCh: make(chan governanceExecuteRequest,1),
+		governanceExecuteInFlight: make(map[string]struct{}),
 	}, nil
 }
 
@@ -261,6 +267,11 @@ func (w *Worker) Start() error {
 	if err := os.MkdirAll(w.ilnCursorDir(), 0o770); err != nil {
 		return err
 	}
+	// Static route aliases must also be available for public RPC requests,
+	// including on a node that is currently not an eligible ILN signer.
+	for _,route := range w.routes {
+		if err := w.registerILNRPCRoute(route); err != nil { return err }
+	}
 	if err := os.MkdirAll(w.ilnVoteDir(), 0o770); err != nil {
 		return err
 	}
@@ -283,7 +294,10 @@ func (w *Worker) Start() error {
 		return err
 	}
 
-	w.wg.Add(1)
+	w.wg.Add(4)
+    go w.quorumHintLoop()
+	go w.storageMaintenanceLoop()
+	go w.governanceExecuteLoop()
 	go w.loop()
 	return nil
 }
@@ -355,7 +369,12 @@ func (w *Worker) tick() {
 			w.logger.Warn("interchain reserve check failed", "chain", destination.Name, "err", err)
 		}
 	}
-	for _, route := range w.routes {
+	w.discoverILNRoutes()
+	w.mu.Lock()
+	activeRoutes := make([]*evmInterchain.CheckpointRoute, 0, len(w.routes))
+	for _, route := range w.routes { activeRoutes = append(activeRoutes, route) }
+	w.mu.Unlock()
+	for _, route := range activeRoutes {
 		if err := w.signLatestILNCheckpoint(route); err != nil {
 			w.logger.Debug(
 				"ILN checkpoint not signed",
@@ -717,6 +736,9 @@ func (w *Worker) handleWire(raw []byte) error {
 		return w.acceptVote(*envelope.Vote)
 	case "checkpoint_vote":
 		return fmt.Errorf("legacy v3.1.1 checkpoint votes are disabled in v3.1.3")
+	case "iln_quorum_request":
+		if envelope.ILNQuorumRequest == nil { return fmt.Errorf("missing ILN quorum request") }
+		return w.acceptRequestedILNQuorum(*envelope.ILNQuorumRequest)
 	case "iln_checkpoint_vote":
 		if envelope.ILNCheckpointVote == nil {
 			return fmt.Errorf("missing ILN checkpoint vote")

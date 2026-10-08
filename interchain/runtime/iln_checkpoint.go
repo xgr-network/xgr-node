@@ -73,6 +73,7 @@ var (
 	getILNGatewayActivationBlock  = evmInterchain.GetILNGatewayActivationBlock
 	getConfirmedILNOperations     = evmInterchain.GetConfirmedILNOperations
 	getILNOperationAtBlock        = evmInterchain.GetILNOperationAtBlock
+	getILNMessageDelivered       = evmInterchain.GetILNMessageDelivered
 )
 
 func (w *Worker) ilnDir() string {
@@ -201,7 +202,7 @@ func (w *Worker) signLatestILNCheckpoint(route *evmInterchain.CheckpointRoute) e
 		return err
 	}
 	if !exists {
-		currentRoute, err := getConfirmedILNRoute(source, destination.Domain, route.RouteID)
+		currentRoute, err := getILNRouteAtBlock(source, destination.Domain, route.RouteID, confirmedHead)
 		if err != nil {
 			return err
 		}
@@ -209,6 +210,7 @@ func (w *Worker) signLatestILNCheckpoint(route *evmInterchain.CheckpointRoute) e
 		if err != nil {
 			return err
 		}
+		if activation == 0 || activation > confirmedHead { return fmt.Errorf("ILN gateway activation block is invalid or not yet confirmed") }
 		cursor = activation - 1
 		if err := w.writeILNCursor(route.Name, cursor); err != nil {
 			return err
@@ -224,7 +226,7 @@ func (w *Worker) signLatestILNCheckpoint(route *evmInterchain.CheckpointRoute) e
 		to = from + ilnOperationScanChunk - 1
 	}
 
-	currentRoute, err := getConfirmedILNRoute(source, destination.Domain, route.RouteID)
+	currentRoute, err := getILNRouteAtBlock(source, destination.Domain, route.RouteID, confirmedHead)
 	if err != nil {
 		return err
 	}
@@ -262,9 +264,28 @@ func (w *Worker) signILNOperation(
 		operation.ValidatorFeeWei.Sign() <= 0 {
 		return fmt.Errorf("ILN operation destination or validator fee is invalid")
 	}
-	if snapshot.Route.ValidatorFeeWei == nil ||
-		operation.ValidatorFeeWei.Cmp(snapshot.Route.ValidatorFeeWei) != 0 {
-		return fmt.Errorf("ILN operation validator fee does not match canonical route fee")
+	// Source Gateway verified the fee against canonical registry state DURING
+	// the bridge transaction. A later governance fee update in the SAME block
+	// must not invalidate the fee-qualified historical event.
+	if snapshot.Route.ValidatorFeeWei == nil {
+		return fmt.Errorf("ILN historical registry fee unavailable")
+	}
+	// The bulk Gateway log scanner only lists candidate operations. Before
+	// signing, independently reconstruct the exact source event and matching
+	// successful Mailbox.Dispatch receipt (also for automatic scans).
+	canonicalOperation, err := getILNOperationAtBlock(source, snapshot.Route.Gateway,
+		route.RouteID, destination.Domain, operation.MessageID, operation.BlockNumber)
+	if err != nil { return fmt.Errorf("ILN canonical source dispatch proof: %w", err) }
+	if canonicalOperation.ValidatorFeeWei == nil ||
+		canonicalOperation.ValidatorFeeWei.Cmp(operation.ValidatorFeeWei) != 0 {
+		return fmt.Errorf("ILN source event fee differs from canonical receipt")
+	}
+	delivered, err := getILNMessageDelivered(destination, snapshot.Route.DestinationRouter, operation.MessageID)
+	if err != nil {
+		return fmt.Errorf("ILN destination delivery state unavailable (fail closed): %w", err)
+	}
+	if delivered {
+		return nil // Already settled. Never regenerate historical signatures.
 	}
 	checkpoint, err := getConfirmedILNCheckpoint(source, snapshot)
 	if err != nil {
@@ -297,6 +318,18 @@ func (w *Worker) signILNOperation(
 		return err
 	}
 	hash := crypto.Keccak256Hash(raw)
+
+	// The supplied set may have rotated during source-chain proof reads.
+	// Do not spend BLS work on an obsolete signer set.
+	currentSet, err := getILNValidatorSet(destination)
+	if err != nil { return fmt.Errorf("refresh destination signer set: %w", err) }
+	if currentSet.SetID != set.SetID { return fmt.Errorf("ILN validator set rotated during source validation") }
+	eligible, err := w.interchainSignerEligible(currentSet, w.localAddr)
+	if err != nil { return err }
+	if !eligible { return fmt.Errorf("ILN signer no longer eligible in current set") }
+	delivered, err = getILNMessageDelivered(destination, snapshot.Route.DestinationRouter, operation.MessageID)
+	if err != nil { return fmt.Errorf("ILN last-pre-sign delivery check failed closed: %w", err) }
+	if delivered { return nil }
 
 	w.mu.Lock()
 	_, alreadySigned := w.ilnLocalVotes[hash]
@@ -336,7 +369,26 @@ func (w *Worker) signILNOperation(
 }
 
 func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
+	var payload protocol.ILNCheckpointPayload
+	if err := payload.UnmarshalBinary(vote.Payload); err != nil {
+		return err
+	}
+	w.mu.Lock()
 	route := w.routes[vote.Route]
+	// Old ENV route aliases and new deterministic on-chain-discovery route
+	// names must interoperate: the SIGNED canonical route identity wins.
+	if route == nil {
+		for _,candidate := range w.routes {
+			src := w.destinations[candidate.SourceNetwork]
+			dst := w.destinations[candidate.Destination]
+			if src!=nil && dst!=nil && candidate.RouteID==payload.RouteID &&
+				src.Domain==payload.SourceDomain && dst.Domain==payload.DestinationDomain {
+				route=candidate
+				break
+			}
+		}
+	}
+	w.mu.Unlock()
 	if route == nil || stringsTrim(route.SourceNetwork) == "" {
 		return fmt.Errorf("unknown ILN checkpoint route")
 	}
@@ -344,11 +396,6 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 	destination := w.destinations[route.Destination]
 	if source == nil || destination == nil {
 		return fmt.Errorf("ILN checkpoint route networks are not configured")
-	}
-
-	var payload protocol.ILNCheckpointPayload
-	if err := payload.UnmarshalBinary(vote.Payload); err != nil {
-		return err
 	}
 
 	if payload.RouteID != route.RouteID {
@@ -386,9 +433,16 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 	}
 	if operation.ValidatorFeeWei == nil ||
 		operation.ValidatorFeeWei.Cmp(payload.ValidatorFeeWei) != 0 ||
-		snapshot.Route.ValidatorFeeWei == nil ||
-		operation.ValidatorFeeWei.Cmp(snapshot.Route.ValidatorFeeWei) != 0 {
+		snapshot.Route.ValidatorFeeWei == nil {
 		return fmt.Errorf("ILN checkpoint operation fee mismatch")
+	}
+
+	delivered, err := getILNMessageDelivered(destination, snapshot.Route.DestinationRouter, payload.AuthorizedMessageID)
+	if err != nil {
+		return fmt.Errorf("ILN vote delivery state unavailable (fail closed): %w", err)
+	}
+	if delivered {
+		return fmt.Errorf("ILN message is already delivered; reject historical vote")
 	}
 
 	checkpoint, err := getConfirmedILNCheckpoint(source, snapshot)
@@ -460,6 +514,15 @@ func (w *Worker) finalizeILNCheckpointAttestation(
 		votesByAddress[addr] = append([]byte(nil), sig...)
 	}
 	w.mu.Unlock()
+
+	// BLS votes already collected for a retired set are audit material only.
+	// Recheck both current destination membership and delivery before writing.
+	currentSet, err := getILNValidatorSet(destination)
+	if err != nil { return fmt.Errorf("ILN finalization set unavailable: %w", err) }
+	if currentSet.SetID != payload.SetID || currentSet.SetID != set.SetID { return fmt.Errorf("ILN finalization refused stale validator set") }
+	delivered, err := getILNMessageDelivered(destination, payload.DestinationRouter, payload.AuthorizedMessageID)
+	if err != nil { return fmt.Errorf("ILN finalization delivery check failed closed: %w", err) }
+	if delivered { return fmt.Errorf("ILN finalized delivery already recorded by destination") }
 
 	threshold, err := protocol.QuorumThreshold(len(set.Validators))
 	if err != nil {
@@ -542,6 +605,14 @@ func (w *Worker) writeILNCheckpointAttestation(attestation ilnCheckpointAttestat
 	if err := os.Rename(latestTmp, latest); err != nil {
 		return err
 	}
+	// Immutable per-validator-set history survives subsequent rotations; the
+	// legacy messageId.json remains the latest compatibility view.
+	setDir := filepath.Join(routeDir, stringsTrim(attestation.AuthorizedMessageID))
+	if attestation.SetID == 0 { return fmt.Errorf("cannot archive empty ILN validator set") }
+	if err := os.MkdirAll(setDir, 0o770); err != nil { return err }
+	setPath := filepath.Join(setDir, strconv.FormatUint(attestation.SetID, 10)+".json")
+	if err := os.WriteFile(setPath+".tmp", raw, 0o660); err != nil { return err }
+	if err := os.Rename(setPath+".tmp", setPath); err != nil { return err }
 	archive := filepath.Join(routeDir, stringsTrim(attestation.AuthorizedMessageID)+".json")
 	if err := os.WriteFile(archive+".tmp", raw, 0o660); err != nil {
 		return err
@@ -581,7 +652,9 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
 			w.removeILNLocalVote(pending[i].hash)
 			continue
 		}
+		w.mu.Lock()
 		route := w.routes[pending[i].vote.Route]
+		w.mu.Unlock()
 		if route == nil {
 			w.removeILNLocalVote(pending[i].hash)
 			continue
@@ -595,7 +668,13 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
 		if err != nil {
 			continue
 		}
-		if set.SetID != payload.SetID {
+		// On-chain delivery allows reclaiming local vote memory and disk.
+        // A failed destination RPC is never grounds for deletion.
+        if delivered,deliveryErr:=getILNMessageDelivered(destination,payload.DestinationRouter,payload.AuthorizedMessageID);deliveryErr==nil&&delivered {
+          w.removeILNLocalVote(pending[i].hash)
+          continue
+        }
+        if set.SetID != payload.SetID {
 			operation, err := getILNOperationAtBlock(
 				source,
 				payload.Gateway,

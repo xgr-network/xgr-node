@@ -64,6 +64,7 @@ func GetCommand() *cobra.Command {
 	cmd.AddCommand(getSetActiveCommand())
 	cmd.AddCommand(getBootstrapProofCommand())
 	cmd.AddCommand(getProposalCommand())
+	cmd.AddCommand(getILNStorageStatusCommand())
 
 	return cmd
 }
