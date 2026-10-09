@@ -52,6 +52,8 @@ type localGovernanceResult struct {
 	ProposalID string `json:"proposalId,omitempty"`
 	Approved   bool   `json:"approved,omitempty"`
 	Quorum     bool   `json:"quorum,omitempty"`
+	TxHash     string `json:"txHash,omitempty"`
+	Nonce      uint64 `json:"nonce,omitempty"`
 }
 
 type GovernanceProposalView struct {
