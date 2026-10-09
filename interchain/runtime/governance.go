@@ -27,7 +27,7 @@ type governanceVote struct {
 }
 
 type governanceState struct {
-	proposal      protocol.ILNGovernanceProposal
+	proposal      protocol.ILNSourceFeeProposal
 	raw           []byte
 	firstSeen     time.Time
 	lastBroadcast time.Time
@@ -51,56 +51,41 @@ type localGovernanceResult struct {
 	Error      string `json:"error,omitempty"`
 	ProposalID string `json:"proposalId,omitempty"`
 	Approved   bool   `json:"approved,omitempty"`
-	TxHash     string `json:"txHash,omitempty"`
-	Nonce      uint64 `json:"nonce,omitempty"`
 	Quorum     bool   `json:"quorum,omitempty"`
 }
 
 type GovernanceProposalView struct {
-	ProposalID        string
-	Type              protocol.ILNProposalType
-	SetID             uint64
-	Nonce             uint64
-	ValidUntil        uint64
-	SourceChainID     uint64
-	SourceDomain      uint32
-	Registry          types.Address
-	DestinationDomain uint32
-	RouteID           types.Hash
-	Gateway           types.Address
-	SourceRouter      types.Address
-	Mailbox           types.Address
-	MerkleTreeHook    types.Address
-	DestinationRouter types.Address
-	ValidatorFeeWei   string
-	Enabled           bool
-	Payload           string
+ ProposalID string
+ SetID uint64
+ Nonce uint64
+ ValidUntil uint64
+ SourceChainID uint64
+ SourceDomain uint32
+ Registry types.Address
+ ValidatorFeeWei string
+ Payload string
 }
-
 type governanceQuorum struct {
-	Version                      string `json:"version"`
-	ProposalID                   string `json:"proposalId"`
-	ProposalType                 uint8  `json:"proposalType"`
-	SourceChainID                uint64 `json:"sourceChainId"`
-	SourceDomain                 uint32 `json:"sourceDomain"`
-	Registry                     string `json:"registry"`
-	DestinationDomain            uint32 `json:"destinationDomain"`
-	RouteID                      string `json:"routeId"`
-	ValidatorFeeWei              string `json:"validatorFeeWei"`
-	SetID                        uint64 `json:"setId"`
-	Nonce                        uint64 `json:"nonce"`
-	ValidUntil                   uint64 `json:"validUntil"`
-	Payload                      string `json:"payload"`
-	SignerBitmap                 string `json:"signerBitmap"`
-	AggregateSignature           string `json:"aggregateSignature"`
-	AggregateSignatureCompressed string `json:"aggregateSignatureCompressed"`
+ Version string `json:"version"`
+ ProposalID string `json:"proposalId"`
+ SourceChainID uint64 `json:"sourceChainId"`
+ SourceDomain uint32 `json:"sourceDomain"`
+ Registry string `json:"registry"`
+ ValidatorFeeWei string `json:"validatorFeeWei"`
+ SetID uint64 `json:"setId"`
+ Nonce uint64 `json:"nonce"`
+ ValidUntil uint64 `json:"validUntil"`
+ Payload string `json:"payload"`
+ SignerBitmap string `json:"signerBitmap"`
+ AggregateSignature string `json:"aggregateSignature"`
+ AggregateSignatureCompressed string `json:"aggregateSignatureCompressed"`
 }
 
 var getGovernanceValidatorSet = evmInterchain.GetValidatorSet
 
 // ProposeILNGovernance validates and gossips a governance proposal. Creating a
 // proposal does not approve it and never creates a validator signature.
-func (w *Worker) ProposeILNGovernance(proposal protocol.ILNGovernanceProposal) (types.Hash, error) {
+func (w *Worker) ProposeILNGovernance(proposal protocol.ILNSourceFeeProposal) (types.Hash, error) {
 	raw, err := proposal.MarshalBinary()
 	if err != nil {
 		return types.ZeroHash, err
@@ -152,7 +137,7 @@ func (w *Worker) createGovernanceVote(id types.Hash) (*governanceVote, error) {
 	state := w.governance[id]
 	if state == nil {
 		w.mu.Unlock()
-		return nil, fmt.Errorf("ILN governance proposal %s is unknown", id.String())
+		return nil, fmt.Errorf("ILN source-fee governance proposal %s is unknown", id.String())
 	}
 	proposal := state.proposal
 	raw := append([]byte(nil), state.raw...)
@@ -166,13 +151,10 @@ func (w *Worker) createGovernanceVote(id types.Hash) (*governanceVote, error) {
 	w.mu.Unlock()
 
 	if proposal.ValidUntil < uint64(time.Now().Unix()) {
-		return nil, fmt.Errorf("ILN governance proposal expired")
+		return nil, fmt.Errorf("ILN source-fee governance proposal expired")
 	}
 	source, err := w.governanceSource(proposal)
 	if err != nil {
-		return nil, err
-	}
-	if _, err := w.governanceDestination(proposal); err != nil {
 		return nil, err
 	}
 	set, err := getGovernanceValidatorSet(source)
@@ -180,7 +162,7 @@ func (w *Worker) createGovernanceVote(id types.Hash) (*governanceVote, error) {
 		return nil, err
 	}
 	if set.SetID != proposal.SetID {
-		return nil, fmt.Errorf("stale ILN governance proposal set id")
+		return nil, fmt.Errorf("stale ILN source-fee governance proposal set id")
 	}
 
 	index := indexOf(set.Validators, w.localAddr)
@@ -215,18 +197,15 @@ func (w *Worker) createGovernanceVote(id types.Hash) (*governanceVote, error) {
 }
 
 func (w *Worker) acceptGovernanceProposal(wire governanceProposalWire) error {
-	var proposal protocol.ILNGovernanceProposal
+	var proposal protocol.ILNSourceFeeProposal
 	if err := proposal.UnmarshalBinary(wire.Payload); err != nil {
 		return err
 	}
 	if proposal.ValidUntil < uint64(time.Now().Unix()) {
-		return fmt.Errorf("ILN governance proposal expired")
+		return fmt.Errorf("ILN source-fee governance proposal expired")
 	}
 	source, err := w.governanceSource(proposal)
 	if err != nil {
-		return err
-	}
-	if _, err := w.governanceDestination(proposal); err != nil {
 		return err
 	}
 	set, err := getGovernanceValidatorSet(source)
@@ -234,7 +213,7 @@ func (w *Worker) acceptGovernanceProposal(wire governanceProposalWire) error {
 		return err
 	}
 	if set.SetID != proposal.SetID {
-		return fmt.Errorf("stale ILN governance proposal set id")
+		return fmt.Errorf("stale ILN source-fee governance proposal set id")
 	}
 
 	id := crypto.Keccak256Hash(wire.Payload)
@@ -242,7 +221,7 @@ func (w *Worker) acceptGovernanceProposal(wire governanceProposalWire) error {
 	if existing := w.governance[id]; existing != nil {
 		w.mu.Unlock()
 		if !bytes.Equal(existing.raw, wire.Payload) {
-			return fmt.Errorf("ILN governance proposal id collision")
+			return fmt.Errorf("ILN source-fee governance proposal id collision")
 		}
 		return nil
 	}
@@ -276,16 +255,13 @@ func (w *Worker) acceptGovernanceVote(vote governanceVote) error {
 	w.mu.Unlock()
 
 	if !bytes.Equal(raw, vote.Payload) {
-		return fmt.Errorf("ILN governance vote payload mismatch")
+		return fmt.Errorf("ILN source-fee governance vote payload mismatch")
 	}
 	if proposal.ValidUntil < uint64(time.Now().Unix()) {
-		return fmt.Errorf("ILN governance proposal expired")
+		return fmt.Errorf("ILN source-fee governance proposal expired")
 	}
 	source, err := w.governanceSource(proposal)
 	if err != nil {
-		return err
-	}
-	if _, err := w.governanceDestination(proposal); err != nil {
 		return err
 	}
 	set, err := getGovernanceValidatorSet(source)
@@ -293,22 +269,22 @@ func (w *Worker) acceptGovernanceVote(vote governanceVote) error {
 		return err
 	}
 	if set.SetID != proposal.SetID {
-		return fmt.Errorf("stale ILN governance proposal set id")
+		return fmt.Errorf("stale ILN source-fee governance proposal set id")
 	}
 
 	index := indexOf(set.Validators, vote.Signer)
 	if index < 0 {
-		return fmt.Errorf("ILN governance signer is not in current interchain set")
+		return fmt.Errorf("ILN source-fee governance signer is not in current interchain set")
 	}
 	eligible, err := w.interchainSignerEligible(set, vote.Signer)
 	if err != nil {
 		return err
 	}
 	if !eligible {
-		return fmt.Errorf("ILN governance signer is not currently eligible")
+		return fmt.Errorf("ILN source-fee governance signer is not currently eligible")
 	}
 	if err := crypto.VerifyBLSSignatureFromBytes(set.BLSPublicKeys[index], vote.Signature, vote.Payload); err != nil {
-		return fmt.Errorf("invalid ILN governance vote: %w", err)
+		return fmt.Errorf("invalid ILN source-fee governance vote: %w", err)
 	}
 
 	w.mu.Lock()
@@ -375,14 +351,11 @@ func (w *Worker) finalizeGovernanceQuorum(
 	}
 
 	quorum := governanceQuorum{
-		Version:                      protocol.ILNGovernanceDomainV1,
+		Version:                      protocol.ILNFeeDomainV315,
 		ProposalID:                   id.String(),
-		ProposalType:                 uint8(proposal.Type),
-		SourceChainID:                proposal.Route.Key.SourceChainID,
-		SourceDomain:                 proposal.Route.Key.SourceDomain,
+		SourceChainID:                proposal.SourceChainID,
+		SourceDomain:                 proposal.SourceDomain,
 		Registry:                     proposal.Registry.String(),
-		DestinationDomain:            proposal.Route.Key.DestinationDomain,
-		RouteID:                      proposal.Route.Key.RouteID.String(),
 		ValidatorFeeWei:              governanceFeeString(proposal),
 		SetID:                        proposal.SetID,
 		Nonce:                        proposal.Nonce,
@@ -395,49 +368,31 @@ func (w *Worker) finalizeGovernanceQuorum(
 	return w.writeGovernanceQuorum(quorum)
 }
 
-func governanceFeeString(proposal protocol.ILNGovernanceProposal) string {
-	if proposal.Route.ValidatorFeeWei == nil {
-		return "0"
-	}
-	return proposal.Route.ValidatorFeeWei.String()
+func governanceFeeString(proposal protocol.ILNSourceFeeProposal) string { return proposal.ValidatorFeeWei.String()
 }
 
 func (w *Worker) governanceSource(
-	proposal protocol.ILNGovernanceProposal,
+	proposal protocol.ILNSourceFeeProposal,
 ) (*evmInterchain.Destination, error) {
 	for _, network := range w.destinations {
 		if network == nil {
 			continue
 		}
-		if network.ChainID == proposal.Route.Key.SourceChainID &&
-			network.Domain == proposal.Route.Key.SourceDomain {
+		if network.ChainID == proposal.SourceChainID &&
+			network.Domain == proposal.SourceDomain {
 			if stringsTrim(network.ILNRegistryAddress) == "" {
-				return nil, fmt.Errorf("ILN governance source network %q has no ILN registry", network.Name)
+				return nil, fmt.Errorf("ILN source-fee governance source network %q has no ILN registry", network.Name)
 			}
 			if types.StringToAddress(network.ILNRegistryAddress) != proposal.Registry {
-				return nil, fmt.Errorf("ILN governance registry does not match configured source registry")
+				return nil, fmt.Errorf("ILN source-fee governance registry does not match configured source registry")
 			}
 			return network, nil
 		}
 	}
 	return nil, fmt.Errorf(
-		"ILN governance source chain/domain %d/%d is not configured",
-		proposal.Route.Key.SourceChainID,
-		proposal.Route.Key.SourceDomain,
-	)
-}
-
-func (w *Worker) governanceDestination(
-	proposal protocol.ILNGovernanceProposal,
-) (*evmInterchain.Destination, error) {
-	for _, destination := range w.destinations {
-		if destination != nil && destination.Domain == proposal.Route.Key.DestinationDomain {
-			return destination, nil
-		}
-	}
-	return nil, fmt.Errorf(
-		"ILN governance destination domain %d is not configured",
-		proposal.Route.Key.DestinationDomain,
+		"ILN source-fee governance source chain/domain %d/%d is not configured",
+		proposal.SourceChainID,
+		proposal.SourceDomain,
 	)
 }
 
@@ -463,7 +418,7 @@ func (w *Worker) governanceQuorumDir() string {
 
 func (w *Worker) persistGovernanceProposal(id types.Hash, raw []byte) error {
 	if len(raw) == 0 {
-		return fmt.Errorf("ILN governance proposal payload is empty")
+		return fmt.Errorf("ILN source-fee governance proposal payload is empty")
 	}
 	if err := os.MkdirAll(w.governanceProposalDir(), 0o770); err != nil {
 		return err
@@ -497,7 +452,7 @@ func (w *Worker) recoverGovernanceProposals() error {
 		path := filepath.Join(w.governanceProposalDir(), entry.Name())
 		stored, proposal, raw, err := readStoredGovernanceProposal(path)
 		if err != nil {
-			w.logger.Warn("invalid persisted ILN governance proposal", "path", path, "err", err)
+			w.logger.Warn("invalid persisted ILN source-fee governance proposal", "path", path, "err", err)
 			continue
 		}
 		if proposal.ValidUntil < now {
@@ -506,19 +461,19 @@ func (w *Worker) recoverGovernanceProposals() error {
 		}
 		id := crypto.Keccak256Hash(raw)
 		if stored.ProposalID != id.String() {
-			w.logger.Warn("persisted ILN governance proposal id mismatch", "path", path)
+			w.logger.Warn("persisted ILN source-fee governance proposal id mismatch", "path", path)
 			continue
 		}
 		if err := w.acceptGovernanceProposal(governanceProposalWire{Payload: raw}); err != nil {
-			w.logger.Debug("persisted ILN governance proposal not recovered", "proposal", id.String(), "err", err)
+			w.logger.Debug("persisted ILN source-fee governance proposal not recovered", "proposal", id.String(), "err", err)
 		}
 	}
 	return nil
 }
 
-func readStoredGovernanceProposal(path string) (storedGovernanceProposal, protocol.ILNGovernanceProposal, []byte, error) {
+func readStoredGovernanceProposal(path string) (storedGovernanceProposal, protocol.ILNSourceFeeProposal, []byte, error) {
 	var stored storedGovernanceProposal
-	var proposal protocol.ILNGovernanceProposal
+	var proposal protocol.ILNSourceFeeProposal
 
 	rawFile, err := os.ReadFile(path)
 	if err != nil {
@@ -529,11 +484,11 @@ func readStoredGovernanceProposal(path string) (storedGovernanceProposal, protoc
 	}
 	payloadHex := stringsTrim(stored.Payload)
 	if len(payloadHex) < 3 || len(payloadHex)%2 != 0 || payloadHex[:2] != "0x" {
-		return stored, proposal, nil, fmt.Errorf("invalid stored ILN governance payload")
+		return stored, proposal, nil, fmt.Errorf("invalid stored ILN source-fee governance payload")
 	}
 	raw, err := hex.DecodeString(payloadHex[2:])
 	if err != nil {
-		return stored, proposal, nil, fmt.Errorf("decode stored ILN governance payload: %w", err)
+		return stored, proposal, nil, fmt.Errorf("decode stored ILN source-fee governance payload: %w", err)
 	}
 	if err := proposal.UnmarshalBinary(raw); err != nil {
 		return stored, proposal, nil, err
@@ -550,35 +505,26 @@ func ReadGovernanceProposal(dataDir, proposalID string) (*GovernanceProposalView
 	stored, proposal, raw, err := readStoredGovernanceProposal(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("ILN governance proposal not found")
+			return nil, fmt.Errorf("ILN source-fee governance proposal not found")
 		}
 		return nil, err
 	}
 	if stored.ProposalID != id.String() || crypto.Keccak256Hash(raw) != id {
-		return nil, fmt.Errorf("ILN governance proposal id mismatch")
+		return nil, fmt.Errorf("ILN source-fee governance proposal id mismatch")
 	}
 	fee := "0"
-	if proposal.Route.ValidatorFeeWei != nil {
-		fee = proposal.Route.ValidatorFeeWei.String()
+	if proposal.ValidatorFeeWei != nil {
+		fee = proposal.ValidatorFeeWei.String()
 	}
 	return &GovernanceProposalView{
 		ProposalID:        id.String(),
-		Type:              proposal.Type,
 		SetID:             proposal.SetID,
 		Nonce:             proposal.Nonce,
 		ValidUntil:        proposal.ValidUntil,
-		SourceChainID:     proposal.Route.Key.SourceChainID,
-		SourceDomain:      proposal.Route.Key.SourceDomain,
+		SourceChainID:     proposal.SourceChainID,
+		SourceDomain:      proposal.SourceDomain,
 		Registry:          proposal.Registry,
-		DestinationDomain: proposal.Route.Key.DestinationDomain,
-		RouteID:           proposal.Route.Key.RouteID,
-		Gateway:           proposal.Route.Gateway,
-		SourceRouter:      proposal.Route.SourceRouter,
-		Mailbox:           proposal.Route.Mailbox,
-		MerkleTreeHook:    proposal.Route.MerkleTreeHook,
-		DestinationRouter: proposal.Route.DestinationRouter,
 		ValidatorFeeWei:   fee,
-		Enabled:           proposal.Route.Enabled,
 		Payload:           "0x" + hex.EncodeToString(raw),
 	}, nil
 }
@@ -586,18 +532,18 @@ func ReadGovernanceProposal(dataDir, proposalID string) (*GovernanceProposalView
 func parseGovernanceProposalID(value string) (types.Hash, error) {
 	value = stringsTrim(value)
 	if len(value) != 66 || value[:2] != "0x" {
-		return types.ZeroHash, fmt.Errorf("ILN governance proposal id must be a 32-byte 0x-prefixed hash")
+		return types.ZeroHash, fmt.Errorf("ILN source-fee governance proposal id must be a 32-byte 0x-prefixed hash")
 	}
 	raw, err := hex.DecodeString(value[2:])
 	if err != nil || len(raw) != types.HashLength {
-		return types.ZeroHash, fmt.Errorf("ILN governance proposal id must be hexadecimal")
+		return types.ZeroHash, fmt.Errorf("ILN source-fee governance proposal id must be hexadecimal")
 	}
 	return types.BytesToHash(raw), nil
 }
 
 func (w *Worker) writeGovernanceQuorum(quorum governanceQuorum) error {
 	if stringsTrim(quorum.ProposalID) == "" {
-		return fmt.Errorf("ILN governance quorum proposal id is required")
+		return fmt.Errorf("ILN source-fee governance quorum proposal id is required")
 	}
 	raw, err := json.Marshal(quorum)
 	if err != nil {
@@ -680,7 +626,7 @@ func (w *Worker) processLocalGovernanceRequests() error {
 		result := localGovernanceResult{Done: true}
 		switch req.Action {
 		case "create":
-			var proposal protocol.ILNGovernanceProposal
+			var proposal protocol.ILNSourceFeeProposal
 			if err := proposal.UnmarshalBinary(req.Payload); err != nil {
 				result.Error = err.Error()
 				break
@@ -708,31 +654,27 @@ func (w *Worker) processLocalGovernanceRequests() error {
 			_, statErr := os.Stat(filepath.Join(w.governanceQuorumDir(), proposalID.String()+".json"))
 			result.Quorum = statErr == nil
 		case "execute":
-            // Offload any EVM submission and confirmation waiting: holding the
-            // 2s validator tick while a remote RPC waits would starve quorum
-            // signing, route discovery, expiry processing and heartbeat.
-            if w.governanceExecuteCh == nil {
-                result.Error = "ILN governance executor not running"
-                break
-            }
-            w.mu.Lock()
-            _,inFlight := w.governanceExecuteInFlight[id]
-            if !inFlight { w.governanceExecuteInFlight[id]=struct{}{} }
-            w.mu.Unlock()
-            if inFlight { continue }
-            select {
-            case w.governanceExecuteCh <- governanceExecuteRequest{id:id,proposalID:req.ProposalID}:
-                // Durable JSON request is deleted only after executor commits
-                // its result. Do not acknowledge execution here.
-                continue
-            default:
-                w.mu.Lock()
-                delete(w.governanceExecuteInFlight,id)
-                w.mu.Unlock()
-                continue
-            }
+			// EVM RPC submission must never block the validator signing tick.
+			if w.governanceExecuteCh == nil {
+				result.Error = "source fee executor not running"
+				break
+			}
+			w.mu.Lock()
+			_,inFlight := w.governanceExecuteInFlight[id]
+			if !inFlight { w.governanceExecuteInFlight[id]=struct{}{} }
+			w.mu.Unlock()
+			if inFlight { continue }
+			select {
+			case w.governanceExecuteCh <- governanceExecuteRequest{id:id,proposalID:req.ProposalID}:
+				continue
+			default:
+				w.mu.Lock()
+				delete(w.governanceExecuteInFlight,id)
+				w.mu.Unlock()
+				continue
+			}
 		default:
-			result.Error = fmt.Sprintf("unsupported ILN governance local action %q", req.Action)
+			result.Error = fmt.Sprintf("unsupported ILN source-fee governance local action %q", req.Action)
 		}
 		_ = w.writeLocalGovernanceResult(id, result)
 		_ = os.Remove(path)

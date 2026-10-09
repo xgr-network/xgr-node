@@ -1,12 +1,18 @@
 package jsonrpc
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
+	"github.com/xgr-network/xgr-node/crypto"
+	"github.com/xgr-network/xgr-node/types"
 )
 
 func writeTestILNAttestation(t *testing.T, dataDir, chain, messageID, root string) {
@@ -78,76 +84,81 @@ func TestXGRGetILNInterchainAttestationRejectsUnsafeLookup(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestXGRGetILNGovernanceQuorum(t *testing.T) {
-	dataDir := t.TempDir()
-	proposalID := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	dir := filepath.Join(dataDir, "interchain", "governance", "quorums")
-	require.NoError(t, os.MkdirAll(dir, 0o770))
-
-	value := interchainGovernanceQuorumRPC{
-		Version:                      "XGR_ILN_GOVERNANCE_V2",
-		ProposalID:                   proposalID,
-		ProposalType:                 1,
-		SourceChainID:                8453,
-		SourceDomain:                 8453,
-		Registry:                     "0x5555555555555555555555555555555555555555",
-		DestinationDomain:            1643,
-		RouteID:                      "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		ValidatorFeeWei:              "25",
-		SetID:                        7,
-		Nonce:                        12,
-		ValidUntil:                   1900000000,
-		Payload:                      "0x01",
-		SignerBitmap:                 "0x03",
-		AggregateSignature:           "0x02",
+func writeTestILNFeeQuorum(t *testing.T, dataDir string) (string, *interchainSourceFeeQuorumRPC) {
+	t.Helper()
+	p := protocol.ILNSourceFeeProposal{
+		SourceChainID: 8453, SourceDomain: 8453,
+		Registry: types.StringToAddress("0x5555555555555555555555555555555555555555"),
+		SetID: 7, Nonce: 12, ValidUntil: 1900000000,
+		ValidatorFeeWei: big.NewInt(25),
+	}
+	payload, err := p.MarshalBinary()
+	require.NoError(t, err)
+	id := crypto.Keccak256Hash(payload).String()
+	value := &interchainSourceFeeQuorumRPC{
+		Version: protocol.ILNFeeDomainV315, ProposalID: id,
+		SourceChainID: p.SourceChainID, SourceDomain: p.SourceDomain,
+		Registry: p.Registry.String(), ValidatorFeeWei: p.ValidatorFeeWei.String(),
+		SetID: p.SetID, Nonce: p.Nonce, ValidUntil: p.ValidUntil,
+		Payload: "0x" + hex.EncodeToString(payload),
+		SignerBitmap: "0x03", AggregateSignature: "0x02",
 		AggregateSignatureCompressed: "0x03",
 	}
-	raw, err := json.Marshal(value)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, proposalID+".json"), raw, 0o660))
-
-	ep := newXGREndpoint(nil, dataDir)
-	got, err := ep.GetILNGovernanceQuorum(proposalID)
-	require.NoError(t, err)
-	require.Equal(t, proposalID, got.ProposalID)
-	require.Equal(t, uint64(7), got.SetID)
-	require.Equal(t, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", got.RouteID)
-	require.Equal(t, "25", got.ValidatorFeeWei)
-	require.Equal(t, "0x03", got.SignerBitmap)
-	require.Equal(t, "0x02", got.AggregateSignature)
+	writeTestILNFeeQuorumFile(t, dataDir, id, value)
+	return id, value
 }
 
-
-func TestXGRGetILNGovernanceQuorumRejectsLegacyVersion(t *testing.T) {
-	dataDir := t.TempDir()
-	proposalID := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+func writeTestILNFeeQuorumFile(t *testing.T, dataDir, id string, value *interchainSourceFeeQuorumRPC) {
+	t.Helper()
 	dir := filepath.Join(dataDir, "interchain", "governance", "quorums")
 	require.NoError(t, os.MkdirAll(dir, 0o770))
-
-	value := interchainGovernanceQuorumRPC{
-		Version:            "XGR_ILN_GOVERNANCE_V1",
-		ProposalID:         proposalID,
-		ProposalType:       1,
-		SourceChainID:      8453,
-		SourceDomain:       8453,
-		Registry:           "0x5555555555555555555555555555555555555555",
-		DestinationDomain:  1643,
-		RouteID:            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		SetID:              7,
-		Nonce:              12,
-		ValidUntil:         1900000000,
-		Payload:            "0x01",
-		SignerBitmap:       "0x03",
-		AggregateSignature: "0x02",
-	}
 	raw, err := json.Marshal(value)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, proposalID+".json"), raw, 0o660))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, id+".json"), raw, 0o660))
+}
 
-	ep := newXGREndpoint(nil, dataDir)
-	_, err = ep.GetILNGovernanceQuorum(proposalID)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "incomplete")
+func TestXGRGetILNGovernanceQuorumV315Fee(t *testing.T) {
+	dir := t.TempDir()
+	id, _ := writeTestILNFeeQuorum(t, dir)
+	got, err := newXGREndpoint(nil, dir).GetILNGovernanceQuorum(id)
+	require.NoError(t, err)
+	require.Equal(t, id, got.ProposalID)
+	require.Equal(t, protocol.ILNFeeDomainV315, got.Version)
+	require.Equal(t, uint64(8453), got.SourceChainID)
+	require.Equal(t, uint32(8453), got.SourceDomain)
+	require.Equal(t, uint64(7), got.SetID)
+	require.Equal(t, uint64(12), got.Nonce)
+	require.Equal(t, "25", got.ValidatorFeeWei)
+	require.Equal(t, "0x03", got.SignerBitmap)
+}
+
+func TestXGRGetILNGovernanceQuorumRejectsLegacyVersion(t *testing.T) {
+	dir := t.TempDir()
+	id, value := writeTestILNFeeQuorum(t, dir)
+	value.Version = "XGR_ILN_GOVERNANCE_V2"
+	writeTestILNFeeQuorumFile(t, dir, id, value)
+	_, err := newXGREndpoint(nil, dir).GetILNGovernanceQuorum(id)
+	require.ErrorContains(t, err, "incomplete")
+}
+
+func TestXGRGetILNGovernanceQuorumRejectsForgedFee(t *testing.T) {
+	dir := t.TempDir()
+	id, value := writeTestILNFeeQuorum(t, dir)
+	value.ValidatorFeeWei = "200"
+	writeTestILNFeeQuorumFile(t, dir, id, value)
+	_, err := newXGREndpoint(nil, dir).GetILNGovernanceQuorum(id)
+	require.ErrorContains(t, err, "does not match")
+}
+
+func TestXGRGetILNGovernanceQuorumRejectsWrongProposalID(t *testing.T) {
+	dir := t.TempDir()
+	id, value := writeTestILNFeeQuorum(t, dir)
+	forged := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	require.NotEqual(t, id, forged)
+	value.ProposalID = forged
+	writeTestILNFeeQuorumFile(t, dir, forged, value)
+	_, err := newXGREndpoint(nil, dir).GetILNGovernanceQuorum(forged)
+	require.ErrorContains(t, err, "does not match")
 }
 
 func TestXGRGetILNGovernanceQuorumRejectsUnsafeID(t *testing.T) {

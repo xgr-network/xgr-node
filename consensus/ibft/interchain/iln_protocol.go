@@ -12,22 +12,14 @@ import (
 
 const (
 	ILNRouteDomainV1      = "XGR_ILN_ROUTE_V2"
-	ILNGovernanceDomainV1 = "XGR_ILN_GOVERNANCE_V2"
+	ILNFeeDomainV315     = "XITA_SOURCE_FEE_V315"
+	XITAAssetDomainV315 = "XITA_ASSET_V315"
+	XITARouteDomainV315 = "XITA_ROUTE_V315"
 	ILNCheckpointDomainV1 = "XGR_ILN_CHECKPOINT_V2"
 )
 
-type ILNProposalType uint8
-
-const (
-	ILNProposalFeeUpdate    ILNProposalType = 1
-	ILNProposalRouteAdd     ILNProposalType = 2
-	ILNProposalRouteEnable  ILNProposalType = 3
-	ILNProposalRouteDisable ILNProposalType = 4
-)
-
-// ILNRouteKey identifies one canonical ILN hop. RouteID permits multiple
-// independent routes between the same source and destination domains without
-// assigning asset semantics to the node protocol.
+// ILNRouteKey binds a deterministic asset+chain route ID to its source.
+// A v3.1.5 registry forbids multiple routes for the same directed asset pair.
 type ILNRouteKey struct {
 	SourceChainID     uint64
 	SourceDomain      uint32
@@ -74,6 +66,64 @@ func (k ILNRouteKey) Hash() (types.Hash, error) {
 	return crypto.Keccak256Hash(raw), nil
 }
 
+// XITACanonicalAssetID matches Solidity keccak256(abi.encode(
+ // keccak256("XITA_ASSET_V315"), uint64(originChainID), address(originToken),
+ // uint8(kind))). Native assets: kind=0, zero address; ERC20: kind=1.
+func XITACanonicalAssetID(originChainID uint64, originToken types.Address, kind uint8) (types.Hash, error) {
+	if originChainID == 0 || kind > 1 ||
+		(kind == 0 && originToken != types.ZeroAddress) ||
+		(kind == 1 && originToken == types.ZeroAddress) {
+		return types.ZeroHash, fmt.Errorf("invalid canonical XITA asset identity")
+	}
+	raw := make([]byte, 0, 128)
+	domain := crypto.Keccak256Hash([]byte(XITAAssetDomainV315))
+	raw = append(raw, domain.Bytes()...)
+	raw = append(raw, abiWordUint64(originChainID)...)
+	token := make([]byte, 32)
+	copy(token[12:], originToken.Bytes())
+	raw = append(raw, token...)
+	kindWord := make([]byte, 32)
+	kindWord[31] = kind
+	raw = append(raw, kindWord...)
+	return crypto.Keccak256Hash(raw), nil
+}
+
+// XITADirectedRouteID excludes token/router/gateway addresses and fees.
+// Those are immutable registered properties, not route identity inputs.
+// Reverse transfers use a distinct directed route ID.
+func XITADirectedRouteID(
+	assetID types.Hash, sourceChainID uint64, sourceDomain uint32,
+	destinationChainID uint64, destinationDomain uint32,
+) (types.Hash, error) {
+	if assetID == types.ZeroHash || sourceChainID == 0 || sourceDomain == 0 ||
+		destinationChainID == 0 || destinationDomain == 0 ||
+		sourceChainID == destinationChainID || sourceDomain == destinationDomain ||
+		(sourceDomain != 1643 && destinationDomain != 1643) {
+		return types.ZeroHash, fmt.Errorf("invalid XITA directed route identity")
+	}
+	raw := make([]byte, 0, 32*6)
+	domain := crypto.Keccak256Hash([]byte(XITARouteDomainV315))
+	raw = append(raw, domain.Bytes()...)
+	raw = append(raw, assetID.Bytes()...)
+	raw = append(raw, abiWordUint64(sourceChainID)...)
+	raw = append(raw, abiWordUint32(sourceDomain)...)
+	raw = append(raw, abiWordUint64(destinationChainID)...)
+	raw = append(raw, abiWordUint32(destinationDomain)...)
+	return crypto.Keccak256Hash(raw), nil
+}
+
+func abiWordUint64(n uint64) []byte {
+	word := make([]byte, 32)
+	binary.BigEndian.PutUint64(word[24:], n)
+	return word
+}
+
+func abiWordUint32(n uint32) []byte {
+	word := make([]byte, 32)
+	binary.BigEndian.PutUint32(word[28:], n)
+	return word
+}
+
 // ILNRoute contains the canonical on-chain configuration for one ILN hop.
 // Enabled is registry state and is intentionally not part of the route key.
 type ILNRoute struct {
@@ -87,7 +137,7 @@ type ILNRoute struct {
 	Enabled           bool
 }
 
-func (r ILNRoute) validateForAdd() error {
+func (r ILNRoute) validateActive() error {
 	if err := r.Key.validate(); err != nil {
 		return err
 	}
@@ -118,156 +168,79 @@ func (r ILNRoute) validateForAdd() error {
 // ValidateILNRoute validates a canonical enabled route read from an on-chain
 // ILN registry. Runtime signing must fail closed on any incomplete route.
 func ValidateILNRoute(r ILNRoute) error {
-	return r.validateForAdd()
+	return r.validateActive()
 }
 
 
-// ILNGovernanceProposal is the canonical payload signed by Interchain
-// validators for ILN protocol governance.
-//
-// SetID binds approval to a specific validator-set version.
-// Nonce provides replay protection at the route registry.
-// ValidUntil bounds the lifetime of an unexecuted proposal.
-type ILNGovernanceProposal struct {
-	Type       ILNProposalType
-	Registry   types.Address
-	SetID      uint64
-	Nonce      uint64
-	ValidUntil uint64
-	Route      ILNRoute
+// ILNSourceFeeProposal is the ONLY v3.1.5 governance message.
+// One native-currency validator fee applies to every route of this source.
+// Validator set, chain-wide nonce and expiry provide replay-safe BLS approval.
+type ILNSourceFeeProposal struct {
+	SourceChainID uint64
+	SourceDomain  uint32
+	Registry      types.Address
+	SetID         uint64
+	Nonce         uint64
+	ValidUntil    uint64
+	ValidatorFeeWei *big.Int
 }
 
-func (p ILNGovernanceProposal) validate() error {
-	if err := p.Route.Key.validate(); err != nil {
-		return err
+func (p ILNSourceFeeProposal) Validate() error {
+	if p.SourceChainID == 0 || p.SourceDomain == 0 {
+		return fmt.Errorf("source fee chain id and domain are required")
 	}
 	if p.Registry == types.ZeroAddress {
-		return fmt.Errorf("ILN governance registry must be non-zero")
+		return fmt.Errorf("source fee registry address is required")
 	}
-	if p.SetID == 0 {
-		return fmt.Errorf("ILN governance set id must be non-zero")
+	if p.SetID == 0 || p.Nonce == 0 || p.ValidUntil == 0 {
+		return fmt.Errorf("source fee validator set, nonce and expiry are required")
 	}
-	if p.Nonce == 0 {
-		return fmt.Errorf("ILN governance nonce must be non-zero")
-	}
-	if p.ValidUntil == 0 {
-		return fmt.Errorf("ILN governance valid-until must be non-zero")
-	}
-
-	switch p.Type {
-	case ILNProposalFeeUpdate:
-		if !emptyILNRouteContracts(p.Route) || p.Route.Enabled {
-			return fmt.Errorf("ILN fee update must contain only route key and fee")
-		}
-		return validateILNFee(p.Route.ValidatorFeeWei)
-	case ILNProposalRouteAdd:
-		return p.Route.validateForAdd()
-	case ILNProposalRouteEnable, ILNProposalRouteDisable:
-		if !emptyILNRouteContracts(p.Route) || p.Route.Enabled || nonZeroBigInt(p.Route.ValidatorFeeWei) {
-			return fmt.Errorf("ILN route state proposal must contain only route key")
-		}
-		return nil
-	default:
-		return fmt.Errorf("unsupported ILN proposal type %d", p.Type)
-	}
+	return validateILNFee(p.ValidatorFeeWei)
 }
 
-func (p ILNGovernanceProposal) MarshalBinary() ([]byte, error) {
-	if err := p.validate(); err != nil {
+// Packed encoding must match XGRILNProtocol.encodeSourceFeeProposalV315:
+// ASCII domain || uint64(chainId) || uint32(domain) || address(registry) ||
+// uint64(setId) || uint64(nonce) || uint64(expiry) || uint256(feeWei).
+func (p ILNSourceFeeProposal) MarshalBinary() ([]byte, error) {
+	if err := p.Validate(); err != nil {
 		return nil, err
 	}
-
-	fee, err := marshalUint256(p.Route.ValidatorFeeWei)
-	if err != nil {
-		return nil, err
-	}
-
 	var buf bytes.Buffer
-	buf.WriteString(ILNGovernanceDomainV1)
-	_ = binary.Write(&buf, binary.BigEndian, p.Route.Key.SourceChainID)
-	_ = binary.Write(&buf, binary.BigEndian, p.Route.Key.SourceDomain)
-	_ = binary.Write(&buf, binary.BigEndian, p.Route.Key.DestinationDomain)
-	buf.Write(p.Route.Key.RouteID.Bytes())
+	buf.WriteString(ILNFeeDomainV315)
+	_ = binary.Write(&buf, binary.BigEndian, p.SourceChainID)
+	_ = binary.Write(&buf, binary.BigEndian, p.SourceDomain)
 	buf.Write(p.Registry.Bytes())
 	_ = binary.Write(&buf, binary.BigEndian, p.SetID)
 	_ = binary.Write(&buf, binary.BigEndian, p.Nonce)
 	_ = binary.Write(&buf, binary.BigEndian, p.ValidUntil)
-	buf.WriteByte(byte(p.Type))
-	buf.Write(p.Route.Gateway.Bytes())
-	buf.Write(p.Route.SourceRouter.Bytes())
-	buf.Write(p.Route.Mailbox.Bytes())
-	buf.Write(p.Route.MerkleTreeHook.Bytes())
-	buf.Write(p.Route.DestinationRouter.Bytes())
+	fee, _ := marshalUint256(p.ValidatorFeeWei)
 	buf.Write(fee)
-
 	return buf.Bytes(), nil
 }
 
-func (p *ILNGovernanceProposal) UnmarshalBinary(raw []byte) error {
-	if p == nil {
-		return fmt.Errorf("ILN governance proposal is nil")
+func (p *ILNSourceFeeProposal) UnmarshalBinary(raw []byte) error {
+	const tail = 8 + 4 + types.AddressLength + 8 + 8 + 8 + 32
+	if p == nil || len(raw) != len(ILNFeeDomainV315)+tail ||
+		string(raw[:len(ILNFeeDomainV315)]) != ILNFeeDomainV315 {
+		return fmt.Errorf("invalid v3.1.5 source fee payload")
 	}
-
-	const fixedTail = 8 + 4 + 4 + types.HashLength + types.AddressLength + 8 + 8 + 8 + 1 +
-		types.AddressLength*5 + 32
-	if len(raw) != len(ILNGovernanceDomainV1)+fixedTail {
-		return fmt.Errorf("invalid ILN governance payload length %d", len(raw))
-	}
-	if string(raw[:len(ILNGovernanceDomainV1)]) != ILNGovernanceDomainV1 {
-		return fmt.Errorf("invalid ILN governance domain")
-	}
-
-	o := len(ILNGovernanceDomainV1)
-	p.Route.Key.SourceChainID = binary.BigEndian.Uint64(raw[o : o+8])
-	o += 8
-	p.Route.Key.SourceDomain = binary.BigEndian.Uint32(raw[o : o+4])
-	o += 4
-	p.Route.Key.DestinationDomain = binary.BigEndian.Uint32(raw[o : o+4])
-	o += 4
-	p.Route.Key.RouteID = types.BytesToHash(raw[o : o+types.HashLength])
-	o += types.HashLength
-	p.Registry = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.SetID = binary.BigEndian.Uint64(raw[o : o+8])
-	o += 8
-	p.Nonce = binary.BigEndian.Uint64(raw[o : o+8])
-	o += 8
-	p.ValidUntil = binary.BigEndian.Uint64(raw[o : o+8])
-	o += 8
-	p.Type = ILNProposalType(raw[o])
-	o++
-	p.Route.Gateway = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.Route.SourceRouter = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.Route.Mailbox = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.Route.MerkleTreeHook = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.Route.DestinationRouter = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.Route.ValidatorFeeWei = new(big.Int).SetBytes(raw[o : o+32])
-
-	// Enabled is registry state. Proposal encoding uses it only as a validation
-	// marker for ROUTE_ADD, where the canonical route is introduced enabled.
-	p.Route.Enabled = p.Type == ILNProposalRouteAdd
-
-	_, err := p.MarshalBinary()
-	return err
+	o := len(ILNFeeDomainV315)
+	p.SourceChainID = binary.BigEndian.Uint64(raw[o:o+8]); o += 8
+	p.SourceDomain = binary.BigEndian.Uint32(raw[o:o+4]); o += 4
+	p.Registry = types.BytesToAddress(raw[o:o+types.AddressLength]); o += types.AddressLength
+	p.SetID = binary.BigEndian.Uint64(raw[o:o+8]); o += 8
+	p.Nonce = binary.BigEndian.Uint64(raw[o:o+8]); o += 8
+	p.ValidUntil = binary.BigEndian.Uint64(raw[o:o+8]); o += 8
+	p.ValidatorFeeWei = new(big.Int).SetBytes(raw[o:o+32])
+	return p.Validate()
 }
 
-func (p ILNGovernanceProposal) Hash() (types.Hash, error) {
+func (p ILNSourceFeeProposal) ProposalID() (types.Hash, error) {
 	raw, err := p.MarshalBinary()
 	if err != nil {
 		return types.ZeroHash, err
 	}
 	return crypto.Keccak256Hash(raw), nil
-}
-
-// ProposalID is the canonical replay-safe content identifier presented by the
-// CLI and used by the worker when collecting governance votes.
-func (p ILNGovernanceProposal) ProposalID() (types.Hash, error) {
-	return p.Hash()
 }
 
 type ILNCheckpointPayload struct {
@@ -436,14 +409,3 @@ func marshalUint256(v *big.Int) ([]byte, error) {
 	return out, nil
 }
 
-func emptyILNRouteContracts(r ILNRoute) bool {
-	return r.Gateway == types.ZeroAddress &&
-		r.SourceRouter == types.ZeroAddress &&
-		r.Mailbox == types.ZeroAddress &&
-		r.MerkleTreeHook == types.ZeroAddress &&
-		r.DestinationRouter == types.ZeroAddress
-}
-
-func nonZeroBigInt(v *big.Int) bool {
-	return v != nil && v.Sign() != 0
-}

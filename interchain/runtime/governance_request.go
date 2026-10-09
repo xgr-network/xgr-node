@@ -22,7 +22,7 @@ type GovernanceRequestResult struct {
 
 func EnqueueGovernanceCreateAndWait(
 	dataDir string,
-	proposal protocol.ILNGovernanceProposal,
+	proposal protocol.ILNSourceFeeProposal,
 	timeout time.Duration,
 ) (*GovernanceRequestResult, error) {
 	raw, err := proposal.MarshalBinary()

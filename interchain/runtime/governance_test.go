@@ -158,21 +158,14 @@ func TestGovernanceRejectsStaleSetID(t *testing.T) {
 	require.Contains(t, err.Error(), "stale")
 }
 
-func testGovernanceProposal() protocol.ILNGovernanceProposal {
-	return protocol.ILNGovernanceProposal{
-		Type:       protocol.ILNProposalFeeUpdate,
+func testGovernanceProposal() protocol.ILNSourceFeeProposal {
+	return protocol.ILNSourceFeeProposal{
 		Registry:   types.StringToAddress("0x5555555555555555555555555555555555555555"),
 		SetID:      7,
 		Nonce:      1,
 		ValidUntil: uint64(time.Now().Add(5 * time.Minute).Unix()),
-		Route: protocol.ILNRoute{
-			Key: protocol.ILNRouteKey{
-				SourceChainID:     8453,
-				SourceDomain:      8453,
-				DestinationDomain: 1643,
-				RouteID:           types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-			},
-			ValidatorFeeWei: big.NewInt(1),
-		},
+		SourceChainID:8453,
+		SourceDomain:8453,
+		ValidatorFeeWei:big.NewInt(1),
 	}
 }

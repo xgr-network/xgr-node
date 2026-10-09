@@ -31,7 +31,6 @@ func TestValidateILNReadRequiresRegistry(t *testing.T) {
 
 
 func TestGetConfirmedILNGovernanceNonce(t *testing.T) {
-	routeID := types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	registry := types.StringToAddress("0x5555555555555555555555555555555555555555")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +54,7 @@ func TestGetConfirmedILNGovernanceNonce(t *testing.T) {
 			}
 			require.NoError(t, json.Unmarshal(req.Params[0], &call))
 			require.Equal(t, strings.ToLower(registry.String()), strings.ToLower(call.To))
-			require.True(t, strings.HasPrefix(strings.ToLower(call.Data), selectorHex("governanceNonce(uint32,bytes32)")))
+			require.True(t, strings.HasPrefix(strings.ToLower(call.Data), selectorHex("sourceFeeNonce()")))
 			result := "0x" + strings.Repeat("0", 63) + "7"
 			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"%s"}`, req.ID, result)
 		default:
@@ -72,7 +71,7 @@ func TestGetConfirmedILNGovernanceNonce(t *testing.T) {
 		Confirmations:      1,
 		ILNRegistryAddress: registry.String(),
 	}
-	got, err := GetConfirmedILNGovernanceNonce(source, 1643, routeID)
+	got, err := GetConfirmedILNGovernanceNonce(source)
 	require.NoError(t, err)
 	require.Equal(t, uint64(7), got)
 }

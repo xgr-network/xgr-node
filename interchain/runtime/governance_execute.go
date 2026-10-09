@@ -67,11 +67,8 @@ func (w *Worker) executeGovernanceJob(proposalID string) localGovernanceResult {
    quorum.SetID!=proposal.SetID||quorum.Nonce!=proposal.Nonce||
    quorum.ValidUntil!=proposal.ValidUntil||
    quorum.Registry!=proposal.Registry.String()||
-   quorum.ProposalType!=uint8(proposal.Type)||
-   quorum.SourceChainID!=proposal.Route.Key.SourceChainID||
-   quorum.SourceDomain!=proposal.Route.Key.SourceDomain||
-   quorum.DestinationDomain!=proposal.Route.Key.DestinationDomain||
-   quorum.RouteID!=proposal.Route.Key.RouteID.String()||
+   quorum.SourceChainID!=proposal.SourceChainID||
+   quorum.SourceDomain!=proposal.SourceDomain||
    quorum.ValidatorFeeWei!=governanceFeeString(proposal) {
   result.Error="stored ILN governance quorum conflicts with signed canonical proposal";return result
  }

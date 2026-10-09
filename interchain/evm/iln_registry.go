@@ -30,9 +30,6 @@ const ilnRegistryJSONABI = `[
 		{"internalType":"address","name":"destinationRouter","type":"address"},
 		{"internalType":"uint256","name":"validatorFeeWei","type":"uint256"},
 		{"internalType":"bool","name":"enabled","type":"bool"}
-	],"stateMutability":"view","type":"function"},
-	{"inputs":[{"internalType":"uint32","name":"destinationDomain","type":"uint32"},{"internalType":"bytes32","name":"routeId","type":"bytes32"}],"name":"governanceNonce","outputs":[
-		{"internalType":"uint64","name":"nonce","type":"uint64"}
 	],"stateMutability":"view","type":"function"}
 ]`
 
@@ -118,67 +115,15 @@ func confirmedILNHead(client *jsonrpc.Client, source *Destination) (uint64, erro
 	return head - source.Confirmations, nil
 }
 
-// GetConfirmedILNGovernanceNonce reads the route-scoped governance nonce
-// from the source ILN registry at the latest confirmed block.
-func GetConfirmedILNGovernanceNonce(
-	source *Destination,
-	destinationDomain uint32,
-	routeID types.Hash,
-) (uint64, error) {
-	if destinationDomain == 0 {
-		return 0, fmt.Errorf("ILN destination domain must be non-zero")
-	}
-	if routeID == types.ZeroHash {
-		return 0, fmt.Errorf("ILN route id must be non-zero")
-	}
-
-	client, err := ilnSourceClient(source)
-	if err != nil {
-		return 0, err
-	}
-	confirmed, err := confirmedILNHead(client, source)
-	if err != nil {
-		return 0, err
-	}
-
-	method := ilnRegistryABI.Methods["governanceNonce"]
-	if method == nil {
-		return 0, fmt.Errorf("ILN registry ABI missing governanceNonce")
-	}
-	input, err := method.Inputs.Encode(map[string]interface{}{
-		"destinationDomain": destinationDomain,
-		"routeId":           ethgo.Hash(routeID),
-	})
-	if err != nil {
-		return 0, fmt.Errorf("encode ILN governanceNonce: %w", err)
-	}
-	registry := types.StringToAddress(source.ILNRegistryAddress)
-	raw, err := callILNView(
-		client,
-		registry,
-		append(method.ID(), input...),
-		ethgo.BlockNumber(confirmed),
-	)
-	if err != nil {
-		return 0, fmt.Errorf("call ILN governanceNonce: %w", err)
-	}
-	decoded, err := method.Outputs.Decode(raw)
-	if err != nil {
-		return 0, fmt.Errorf("decode ILN governanceNonce: %w", err)
-	}
-	values, ok := decoded.(map[string]interface{})
-	if !ok {
-		return 0, fmt.Errorf("decode ILN governanceNonce: unexpected type")
-	}
-	value, ok := firstDecoded(values, "nonce", "0")
-	if !ok {
-		return 0, fmt.Errorf("decode ILN governanceNonce: missing nonce")
-	}
-	nonce, ok := uint64Value(value)
-	if !ok {
-		return 0, fmt.Errorf("decode ILN governanceNonce: invalid nonce")
-	}
-	return nonce, nil
+// GetConfirmedILNGovernanceNonce reads the single source-chain fee nonce.
+func GetConfirmedILNGovernanceNonce(source *Destination) (uint64, error) {
+ client,err:=ilnSourceClient(source); if err!=nil{return 0,err}
+ confirmed,err:=confirmedILNHead(client,source);if err!=nil{return 0,err}
+ raw,err:=callILNSignatureView(client,types.StringToAddress(source.ILNRegistryAddress),"sourceFeeNonce()",ethgo.BlockNumber(confirmed))
+ if err!=nil{return 0,fmt.Errorf("read source fee nonce: %w",err)}
+ if len(raw)!=32{return 0,fmt.Errorf("invalid source fee nonce response")}
+ value:=new(big.Int).SetBytes(raw); if !value.IsUint64(){return 0,fmt.Errorf("source fee nonce out of range")}
+ return value.Uint64(),nil
 }
 
 // GetConfirmedILNRoute reads the canonical source route at the latest confirmed

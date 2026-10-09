@@ -1,6 +1,7 @@
 package jsonrpc
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"unicode"
 
+	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
+	"github.com/xgr-network/xgr-node/crypto"
 	xgrsvc "github.com/xgr-network/xgr-node/jsonrpc/xgr"
 )
 
@@ -18,15 +21,12 @@ type xgrEndpoint struct {
 	dataDir string
 }
 
-type interchainGovernanceQuorumRPC struct {
+type interchainSourceFeeQuorumRPC struct {
 	Version                      string `json:"version"`
 	ProposalID                   string `json:"proposalId"`
-	ProposalType                 uint8  `json:"proposalType"`
 	SourceChainID                uint64 `json:"sourceChainId"`
 	SourceDomain                 uint32 `json:"sourceDomain"`
 	Registry                     string `json:"registry"`
-	DestinationDomain            uint32 `json:"destinationDomain"`
-	RouteID                      string `json:"routeId"`
 	ValidatorFeeWei              string `json:"validatorFeeWei"`
 	SetID                        uint64 `json:"setId"`
 	Nonce                        uint64 `json:"nonce"`
@@ -139,9 +139,10 @@ func (x *xgrEndpoint) readInterchainAttestation(path string) (*interchainAttesta
 	return &out, nil
 }
 
-// GetILNGovernanceQuorum returns one completed ILN governance quorum.
-// It is read-only and never creates, approves, signs, or executes a proposal.
-func (x *xgrEndpoint) GetILNGovernanceQuorum(proposalID string) (*interchainGovernanceQuorumRPC, error) {
+// GetILNGovernanceQuorum reads a completed v3.1.5 source-chain fee quorum.
+// The RPC method name remains stable; route-governance proposals are removed.
+// Reading never creates, approves, signs or executes a proposal.
+func (x *xgrEndpoint) GetILNGovernanceQuorum(proposalID string) (*interchainSourceFeeQuorumRPC, error) {
 	if x == nil || strings.TrimSpace(x.dataDir) == "" {
 		return nil, fmt.Errorf("ILN governance quorum storage is unavailable")
 	}
@@ -173,17 +174,38 @@ func (x *xgrEndpoint) GetILNGovernanceQuorum(proposalID string) (*interchainGove
 	if err != nil {
 		return nil, err
 	}
-	var out interchainGovernanceQuorumRPC
+	var out interchainSourceFeeQuorumRPC
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("decode ILN governance quorum: %w", err)
 	}
 	if strings.ToLower(out.ProposalID) != proposalID ||
-		out.Version != "XGR_ILN_GOVERNANCE_V2" ||
-		out.RouteID == "" ||
-		out.Payload == "" ||
-		out.SignerBitmap == "" ||
+		out.Version != protocol.ILNFeeDomainV315 ||
+		out.SourceChainID == 0 || out.SourceDomain == 0 ||
+		out.Registry == "" || out.SetID == 0 || out.Nonce == 0 ||
+		out.ValidUntil == 0 || out.ValidatorFeeWei == "" ||
+		out.Payload == "" || out.SignerBitmap == "" ||
 		out.AggregateSignature == "" {
-		return nil, fmt.Errorf("ILN governance quorum is incomplete")
+		return nil, fmt.Errorf("ILN source fee quorum is incomplete")
+	}
+	if !strings.HasPrefix(out.Payload, "0x") {
+		return nil, fmt.Errorf("ILN source fee quorum payload must be hexadecimal")
+	}
+	payload, err := hex.DecodeString(out.Payload[2:])
+	if err != nil {
+		return nil, fmt.Errorf("ILN source fee quorum payload is invalid")
+	}
+	var proposal protocol.ILNSourceFeeProposal
+	if err := proposal.UnmarshalBinary(payload); err != nil {
+		return nil, fmt.Errorf("ILN source fee quorum payload is invalid: %w", err)
+	}
+	if crypto.Keccak256Hash(payload).String() != proposalID ||
+		proposal.SourceChainID != out.SourceChainID ||
+		proposal.SourceDomain != out.SourceDomain ||
+		!strings.EqualFold(proposal.Registry.String(), out.Registry) ||
+		proposal.SetID != out.SetID || proposal.Nonce != out.Nonce ||
+		proposal.ValidUntil != out.ValidUntil ||
+		proposal.ValidatorFeeWei.String() != out.ValidatorFeeWei {
+		return nil, fmt.Errorf("ILN source fee quorum does not match signed proposal")
 	}
 	return &out, nil
 }
