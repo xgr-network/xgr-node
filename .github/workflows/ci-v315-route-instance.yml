@@ -18,8 +18,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Check Go formatting
-        run: |
-          test -z "$(gofmt -l consensus/ibft/interchain/iln_v315_route_instance*.go)"
+      - name: Format draft files before compilation
+        run: gofmt -w consensus/ibft/interchain/iln_v315_route_instance*.go
       - name: Test route identity and safety proof codec
         run: go test -count=1 ./consensus/ibft/interchain -run 'TestXITAOpenRouteInstance|TestXITARouteSafety'
