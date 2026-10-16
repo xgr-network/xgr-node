@@ -600,11 +600,40 @@ func (w *Worker) startLocalRequest(id string, req localRequest) error {
 		BLSPublicKey:        w.blsPubKey,
 		BLSPublicKeyEIP2537: eip2537Key,
 	}
-	rawPayload, err := payload.MarshalBinary()
+	blsKey, err := crypto.BytesToBLSSecretKey(w.blsRaw)
 	if err != nil {
 		return err
 	}
-	blsKey, err := crypto.BytesToBLSSecretKey(w.blsRaw)
+	if req.Active {
+		// Registry V3 requires the candidate's BLS key ownership to be proven
+		// on the destination before the unchanged membership quorum request.
+		bootstrap, err := protocol.MarshalBootstrapPayload(
+			payload.OriginChainID, payload.DestinationDomain, payload.Validator,
+			payload.BLSPublicKey, payload.BLSPublicKeyEIP2537,
+		)
+		if err != nil {
+			return fmt.Errorf("build Registry V3 candidate possession payload: %w", err)
+		}
+		proof, err := crypto.SignByBLS(blsKey, bootstrap)
+		if err != nil {
+			return fmt.Errorf("sign Registry V3 candidate possession payload: %w", err)
+		}
+		if err := evmInterchain.EnsureValidatorPossession(destination, w.txKey, payload, proof); err != nil {
+			return fmt.Errorf("register Registry V3 candidate possession: %w", err)
+		}
+		// A prior PoP transaction must never shorten quorum-signing validity.
+		// Fail closed if another membership change happened during registration.
+		latestSet, err := evmInterchain.GetValidatorSet(destination)
+		if err != nil {
+			return fmt.Errorf("recheck validator set after possession: %w", err)
+		}
+		if latestSet.SetID != payload.SetID {
+			return fmt.Errorf("validator set changed during possession registration: retry set-active")
+		}
+		payload.ValidUntil = uint64(time.Now().Add(
+			time.Duration(destination.MembershipValiditySeconds) * time.Second).Unix())
+	}
+	rawPayload, err := payload.MarshalBinary()
 	if err != nil {
 		return err
 	}
