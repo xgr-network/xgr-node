@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/go-hclog"
@@ -114,8 +115,8 @@ func TestXGRGetInterchainValidatorsReadsDestinationRegistryOverRPC(t *testing.T)
 				Data string `json:"data"`
 			}
 			require.NoError(t, json.Unmarshal(req.Params[0], &call))
-			require.EqualFold(t, registry, call.To)
-			require.EqualFold(t, "0x"+hex.EncodeToString(method.ID()), call.Data)
+			require.Equal(t, strings.ToLower(registry), strings.ToLower(call.To))
+			require.Equal(t, "0x"+hex.EncodeToString(method.ID()), strings.ToLower(call.Data))
 			result = "0x" + hex.EncodeToString(response)
 		default:
 			t.Errorf("unexpected EVM RPC method: %s", req.Method)
@@ -137,7 +138,7 @@ func TestXGRGetInterchainValidatorsReadsDestinationRegistryOverRPC(t *testing.T)
 	require.Equal(t, uint64(11), got.SetID)
 	require.Len(t, got.Validators, 1)
 	require.Equal(t, 1, got.QuorumThreshold)
-	require.EqualFold(t, "0x1111111111111111111111111111111111111111", got.Validators[0].Address)
+	require.Equal(t, "0x1111111111111111111111111111111111111111", strings.ToLower(got.Validators[0].Address))
 	// Registering methods uses the same reflection dispatcher as all xgr_* RPCs.
 	d := &Dispatcher{logger: hclog.NewNullLogger()}
 	require.NoError(t, d.registerService("xgr", ep))
