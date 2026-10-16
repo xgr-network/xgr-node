@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/umbracle/ethgo"
 	"github.com/umbracle/ethgo/abi"
