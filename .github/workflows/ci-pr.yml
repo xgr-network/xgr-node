@@ -22,5 +22,8 @@ jobs:
           pkgs=$(go list ./... | grep -vE '(/e2e($|/)|/e2e-polybft($|/)|/tests($|/)|/tracker($|/)|/command/rootchain/deploy($|/)|/consensus/polybft($|/)|/state/runtime/evm($|/))')
           go test -count=1 -short $pkgs
 
+      - name: ILN archive-independent route E2E
+        run: go test -count=1 ./e2e -run 'TestInterchainILNRoutesE2E' -v
+
       - name: Go build
         run: go build ./...

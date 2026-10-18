@@ -1,7 +1,9 @@
 package e2e
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +38,8 @@ type ilnRPCFixture struct {
 	feeWei            uint64
 	root              string
 	count             uint64
+	insertions        []map[string]interface{}
+	dropFirstInsertion bool
 }
 
 func newILNRPCFixture(
@@ -53,7 +57,7 @@ func newILNRPCFixture(
 	hook string,
 	destinationRouter string,
 	feeWei uint64,
-	root string,
+	seed string,
 	count uint64,
 ) (*ilnRPCFixture, *evmInterchain.Destination) {
 	t.Helper()
@@ -71,9 +75,31 @@ func newILNRPCFixture(
 		hook:              hook,
 		destinationRouter: destinationRouter,
 		feeWei:            feeWei,
-		root:              root,
 		count:             count,
 	}
+
+
+	// These are canonical, ordered Merkle insertions rather than arbitrary
+	// root()/count() mock values. Each route has an independent history.
+	seedHash := types.StringToHash(seed)
+	leaves := make([]types.Hash, 0, count)
+	fixture.insertions = make([]map[string]interface{}, 0, count)
+	insertedTopic := crypto.Keccak256Hash([]byte("InsertedIntoTree(bytes32,uint32)"))
+	for i := uint64(0); i < count; i++ {
+		leaf := crypto.Keccak256Hash(append(append([]byte(nil), seedHash.Bytes()...), byte(i)))
+		leaves = append(leaves, leaf)
+		fixture.insertions = append(fixture.insertions, map[string]interface{}{
+			"address": fixture.hook,
+			"topics": []string{insertedTopic.String()},
+			"data": "0x" + hex.EncodeToString(leaf.Bytes()) + fmt.Sprintf("%064x", i),
+			"blockNumber": fmt.Sprintf("0x%x", uint64(2)+i),
+			"logIndex": "0x0",
+			"transactionIndex": "0x0",
+			"transactionHash": leaf.String(),
+			"removed": false,
+		})
+	}
+	fixture.root = independentILNFixtureRoot(leaves).String()
 
 	fixture.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -102,6 +128,7 @@ func newILNRPCFixture(
 			fixture.mu.Lock()
 			fixture.lastBlockTags = append(fixture.lastBlockTags, blockTag)
 			fixture.mu.Unlock()
+			require.Equal(t, "latest", blockTag, "archive-free proof must not use historical eth_call")
 
 			to := strings.ToLower(call.To)
 			data := strings.ToLower(call.Data)
@@ -109,18 +136,31 @@ func newILNRPCFixture(
 
 			switch to {
 			case strings.ToLower(fixture.registry):
-				require.True(t, strings.HasPrefix(data, selectorHex("getRoute(uint32,bytes32)")))
-				require.Contains(t, data, strings.TrimPrefix(strings.ToLower(fixture.routeID), "0x"))
-				result = encodeILNRouteResult(
-					fixture.chainID,
-					fixture.sourceDomain,
-					fixture.gateway,
-					fixture.sourceRouter,
-					fixture.mailbox,
-					fixture.hook,
-					fixture.destinationRouter,
-					fixture.feeWei,
-				)
+				switch {
+				case data == selectorHex("factory()"):
+					// V315 exposes a non-zero immutable factory. The source
+					// implementation must never infer append-only status from
+					// a historical EVM-state snapshot.
+					result = encodeAddressResult("0x1717171717171717171717171717171717171717")
+				case data == selectorHex("activationBlock()"):
+					result = "0x" + fmt.Sprintf("%064x", uint64(1))
+				case strings.HasPrefix(data, selectorHex("getRoute(uint32,bytes32)")):
+					require.Contains(t, data, strings.TrimPrefix(strings.ToLower(fixture.routeID), "0x"))
+					result = encodeILNRouteResult(
+						fixture.chainID,
+						fixture.sourceDomain,
+						fixture.gateway,
+						fixture.sourceRouter,
+						fixture.mailbox,
+						fixture.hook,
+						fixture.destinationRouter,
+						fixture.feeWei,
+					)
+				default:
+					t.Errorf("unexpected registry eth_call data %s", call.Data)
+					http.Error(w, "unsupported registry selector", http.StatusBadRequest)
+					return
+				}
 			case strings.ToLower(fixture.gateway):
 				switch data {
 				case selectorHex("ilnRegistry()"):
@@ -137,21 +177,47 @@ func newILNRPCFixture(
 					t.Fatalf("unexpected gateway eth_call data %s", call.Data)
 				}
 			case strings.ToLower(fixture.hook):
-				switch data {
-				case selectorHex("count()"):
-					result = "0x" + fmt.Sprintf("%064x", fixture.count)
-				case selectorHex("root()"):
-					result = fixture.root
-				default:
-					t.Fatalf("unexpected hook eth_call data %s", call.Data)
-				}
+				// A hook eth_call (even latest) cannot establish the root at
+				// the original source block; proof must use insertion logs.
+				t.Errorf("unexpected hook eth_call data %s", call.Data)
+				http.Error(w, "hook state reads disabled in v3.1.7 fixture", http.StatusBadRequest)
+				return
 			default:
 				t.Fatalf("unexpected eth_call target %s", call.To)
 			}
 
 			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"%s"}`, req.ID, result)
+		case "eth_getLogs":
+			require.Len(t, req.Params, 1)
+			var filter struct {
+				FromBlock string `json:"fromBlock"`
+				ToBlock string `json:"toBlock"`
+			}
+			require.NoError(t, json.Unmarshal(req.Params[0], &filter))
+			from, err := strconv.ParseUint(strings.TrimPrefix(filter.FromBlock, "0x"), 16, 64)
+			require.NoError(t, err)
+			to, err := strconv.ParseUint(strings.TrimPrefix(filter.ToBlock, "0x"), 16, 64)
+			require.NoError(t, err)
+			fixture.mu.Lock()
+			insertions := append([]map[string]interface{}(nil), fixture.insertions...)
+			dropFirst := fixture.dropFirstInsertion
+			fixture.mu.Unlock()
+			out := make([]map[string]interface{}, 0)
+			for i, log := range insertions {
+				if dropFirst && i == 0 {
+					continue
+				}
+				block := uint64(2) + uint64(i)
+				if block >= from && block <= to {
+					out = append(out, log)
+				}
+			}
+			encoded, err := json.Marshal(out)
+			require.NoError(t, err)
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, encoded)
 		default:
-			t.Fatalf("unexpected JSON-RPC method %s", req.Method)
+			t.Errorf("unexpected JSON-RPC method %s", req.Method)
+			http.Error(w, "unsupported RPC method", http.StatusBadRequest)
 		}
 	}))
 
@@ -165,6 +231,28 @@ func newILNRPCFixture(
 		Confirmations:      confirmations,
 	}
 	return fixture, network
+}
+
+
+// independentILNFixtureRoot calculates the complete fixed-depth binary Merkle
+// tree from leaf history. The E2E oracle must not reuse the runtime's
+// incremental accumulator (which is itself the code under test).
+func independentILNFixtureRoot(leaves []types.Hash) types.Hash {
+	level := append([]types.Hash(nil), leaves...)
+	zero := types.ZeroHash
+	for depth := 0; depth < 32; depth++ {
+		if len(level)%2 != 0 {
+			level = append(level, zero)
+		}
+		next := make([]types.Hash, 0, len(level)/2)
+		for i := 0; i < len(level); i += 2 {
+			pair := append(append([]byte(nil), level[i].Bytes()...), level[i+1].Bytes()...)
+			next = append(next, crypto.Keccak256Hash(pair))
+		}
+		level = next
+		zero = crypto.Keccak256Hash(append(zero.Bytes(), zero.Bytes()...))
+	}
+	return level[0]
 }
 
 func (f *ilnRPCFixture) blockTags() []string {
@@ -221,7 +309,7 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
 		baseMailbox           = "0x1313131313131313131313131313131313131313"
 		baseHook              = "0x1414141414141414141414141414141414141414"
 		baseDestinationRouter = "0x1515151515151515151515151515151515151515"
-		baseRoot              = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		baseSeed              = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 		arbitrumRegistry          = "0x2020202020202020202020202020202020202020"
 		arbitrumGateway           = "0x2121212121212121212121212121212121212121"
@@ -229,20 +317,20 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
 		arbitrumMailbox           = "0x2323232323232323232323232323232323232323"
 		arbitrumHook              = "0x2424242424242424242424242424242424242424"
 		arbitrumDestinationRouter = "0x2525252525252525252525252525252525252525"
-		arbitrumRoot              = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		arbitrumSeed              = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	)
 
 	baseRPC, base := newILNRPCFixture(
 		t, 8453, 100, 3, 8453, xgrDomain, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		baseRegistry, baseGateway, baseSourceRouter, baseMailbox, baseHook, baseDestinationRouter,
-		1000, baseRoot, 4,
+		1000, baseSeed, 4,
 	)
 	base.Name = "base"
 
 	arbitrumRPC, arbitrum := newILNRPCFixture(
 		t, 42161, 200, 20, 42161, xgrDomain, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		arbitrumRegistry, arbitrumGateway, arbitrumSourceRouter, arbitrumMailbox, arbitrumHook, arbitrumDestinationRouter,
-		2000, arbitrumRoot, 9,
+		2000, arbitrumSeed, 9,
 	)
 	arbitrum.Name = "arbitrum"
 
@@ -289,9 +377,9 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(97), baseCheckpoint.BlockNumber)
 	require.Equal(t, uint32(3), baseCheckpoint.Index)
-	require.Equal(t, types.StringToHash(baseRoot), baseCheckpoint.Root)
+	require.Equal(t, types.StringToHash(baseRPC.root), baseCheckpoint.Root)
 	for _, tag := range baseRPC.blockTags() {
-		require.Equal(t, "0x61", tag)
+		require.Equal(t, "latest", tag)
 	}
 
 	arbitrumRoute := byName["arbitrum_to_xgr"]
@@ -314,11 +402,19 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(180), arbitrumCheckpoint.BlockNumber)
 	require.Equal(t, uint32(8), arbitrumCheckpoint.Index)
-	require.Equal(t, types.StringToHash(arbitrumRoot), arbitrumCheckpoint.Root)
+	require.Equal(t, types.StringToHash(arbitrumRPC.root), arbitrumCheckpoint.Root)
 	for _, tag := range arbitrumRPC.blockTags() {
-		require.Equal(t, "0xb4", tag)
+		require.Equal(t, "latest", tag)
 	}
 
 	require.NotEqual(t, baseCheckpoint.Root, arbitrumCheckpoint.Root)
 	require.NotEqual(t, baseRoute.Name, arbitrumRoute.Name)
+
+	// A provider omitting canonical insertion zero must never produce a
+	// partially reconstructed checkpoint that validators could sign.
+	baseRPC.mu.Lock()
+	baseRPC.dropFirstInsertion = true
+	baseRPC.mu.Unlock()
+	_, err = evmInterchain.GetConfirmedILNCheckpoint(base, baseSnapshot)
+	require.ErrorContains(t, err, "noncanonical ILN insertion index")
 }
