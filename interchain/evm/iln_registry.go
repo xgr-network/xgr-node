@@ -118,8 +118,9 @@ func confirmedILNHead(client *jsonrpc.Client, source *Destination) (uint64, erro
 // GetConfirmedILNGovernanceNonce reads the single source-chain fee nonce.
 func GetConfirmedILNGovernanceNonce(source *Destination) (uint64, error) {
  client,err:=ilnSourceClient(source); if err!=nil{return 0,err}
- confirmed,err:=confirmedILNHead(client,source);if err!=nil{return 0,err}
- raw,err:=callILNSignatureView(client,types.StringToAddress(source.ILNRegistryAddress),"sourceFeeNonce()",ethgo.BlockNumber(confirmed))
+ _,err=confirmedILNHead(client,source);if err!=nil{return 0,err}
+ // An ILN fee nonce is current governance state, not a historical checkpoint.
+ raw,err:=callILNSignatureView(client,types.StringToAddress(source.ILNRegistryAddress),"sourceFeeNonce()",ethgo.Latest)
  if err!=nil{return 0,fmt.Errorf("read source fee nonce: %w",err)}
  if len(raw)!=32{return 0,fmt.Errorf("invalid source fee nonce response")}
  value:=new(big.Int).SetBytes(raw); if !value.IsUint64(){return 0,fmt.Errorf("source fee nonce out of range")}
@@ -190,7 +191,15 @@ func getILNRouteAtBlock(
 	if err != nil {
 		return nil, fmt.Errorf("encode ILN getRoute: %w", err)
 	}
-	raw, err := callILNView(client, registry, append(method.ID(), input...), block)
+	// v3.1.7: V315 routes are append-only. The canonical successful Gateway
+	// receipt proves the route was registered and enabled when the source
+	// transfer executed. Historical eth_call is not available on pruned nodes.
+	// The gateway and router bindings are immutable across all source chains.
+	factory, err := callILNAddressGetter(client, registry, "factory()", ethgo.Latest)
+	if err != nil || factory == types.ZeroAddress {
+		return nil, fmt.Errorf("archive-free ILN route proof requires an append-only V315 registry: %v", err)
+	}
+	raw, err := callILNView(client, registry, append(method.ID(), input...), ethgo.Latest)
 	if err != nil {
 		return nil, fmt.Errorf("call ILN getRoute: %w", err)
 	}
@@ -273,7 +282,7 @@ func getILNRouteAtBlock(
 	if err := protocol.ValidateILNRoute(validationRoute); err != nil {
 		return nil, fmt.Errorf("invalid canonical ILN route record: %w", err)
 	}
-	if err := verifyILNGatewayBinding(client, registry, route, block); err != nil {
+	if err := verifyILNGatewayBinding(client, registry, route, ethgo.Latest); err != nil {
 		return nil, err
 	}
 	return &ILNRouteSnapshot{Registry: registry, Route: route, BlockNumber: blockNumber}, nil
@@ -338,7 +347,7 @@ func GetILNGatewayActivationBlock(source *Destination, gateway types.Address) (u
 	if err != nil {
 		return 0, err
 	}
-	block := ethgo.BlockNumber(confirmed)
+	block := ethgo.Latest
 	raw, err := callILNSignatureView(client, gateway, "activationBlock()", block)
 	if err != nil {
 		return 0, fmt.Errorf("read ILN gateway activation block: %w", err)
@@ -573,6 +582,10 @@ func GetILNMessageDelivered(destination *Destination, destinationRouter types.Ad
 	return raw[31] == 1, nil
 }
 
+// GetConfirmedILNCheckpoint reconstructs the historical Merkle root from
+// canonical InsertedIntoTree logs, never from a historical EVM state snapshot.
+// This works for XGRChain and every supported EVM source with ordinary
+// receipt/log history, without requiring an archive-state RPC.
 func GetConfirmedILNCheckpoint(source *Destination, snapshot *ILNRouteSnapshot) (*ConfirmedCheckpoint, error) {
 	if snapshot == nil {
 		return nil, fmt.Errorf("ILN route snapshot is nil")
@@ -581,39 +594,36 @@ func GetConfirmedILNCheckpoint(source *Destination, snapshot *ILNRouteSnapshot) 
 	if err != nil {
 		return nil, err
 	}
-	block := ethgo.BlockNumber(snapshot.BlockNumber)
-	if block < 0 || uint64(block) != snapshot.BlockNumber {
-		return nil, fmt.Errorf("ILN snapshot block does not fit ethgo.BlockNumber")
-	}
-
-	countRaw, err := callILNSignatureView(client, snapshot.Route.MerkleTreeHook, "count()", block)
+	confirmed, err := confirmedILNHead(client, source)
 	if err != nil {
-		return nil, fmt.Errorf("read ILN hook count: %w", err)
+		return nil, err
 	}
-	if len(countRaw) != 32 {
-		return nil, fmt.Errorf("unexpected ILN hook count response length %d", len(countRaw))
+	if snapshot.BlockNumber == 0 || snapshot.BlockNumber > confirmed {
+		return nil, fmt.Errorf("ILN checkpoint source block is not sufficiently confirmed")
 	}
-	count := new(big.Int).SetBytes(countRaw)
-	if count.Sign() == 0 {
+	// The registry's immutable activation height bounds the common case.
+	// If this hook predates the registry and has earlier insertions, restart
+	// from genesis rather than trusting a partial Merkle history.
+	start, err := GetILNRegistryActivationBlock(source)
+	if err != nil {
+		return nil, fmt.Errorf("locate ILN log replay start: %w", err)
+	}
+	if start > snapshot.BlockNumber {
+		return nil, fmt.Errorf("ILN registry activated after the checkpoint")
+	}
+	tree, err := reconstructILNMerkleFromLogs(client, snapshot.Route.MerkleTreeHook, start, snapshot.BlockNumber)
+	if err == errILNMerkleMissingPrefix && start > 1 {
+		tree, err = reconstructILNMerkleFromLogs(client, snapshot.Route.MerkleTreeHook, 1, snapshot.BlockNumber)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("rebuild canonical ILN Merkle history: %w", err)
+	}
+	if tree.count == 0 {
 		return &ConfirmedCheckpoint{BlockNumber: snapshot.BlockNumber}, nil
 	}
-	if count.BitLen() > 32 {
-		return nil, fmt.Errorf("ILN hook count exceeds uint32")
-	}
-	rootRaw, err := callILNSignatureView(client, snapshot.Route.MerkleTreeHook, "root()", block)
-	if err != nil {
-		return nil, fmt.Errorf("read ILN hook root: %w", err)
-	}
-	if len(rootRaw) != 32 {
-		return nil, fmt.Errorf("unexpected ILN hook root response length %d", len(rootRaw))
-	}
-	root := types.BytesToHash(rootRaw)
-	if root == types.ZeroHash {
-		return nil, fmt.Errorf("ILN hook returned zero root with non-zero count")
-	}
 	return &ConfirmedCheckpoint{
-		Root: root,
-		Index: uint32(count.Uint64()-1),
+		Root: tree.root(),
+		Index: uint32(tree.count - 1),
 		BlockNumber: snapshot.BlockNumber,
 	}, nil
 }

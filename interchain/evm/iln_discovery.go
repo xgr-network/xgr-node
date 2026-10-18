@@ -27,7 +27,7 @@ func GetILNRegistryActivationBlock(source *Destination) (uint64,error) {
  confirmed,err:=confirmedILNHead(client,source)
  if err!=nil{return 0,err}
  registry:=types.StringToAddress(source.ILNRegistryAddress)
- raw,callErr:=callILNSignatureView(client,registry,"activationBlock()",ethgo.BlockNumber(confirmed))
+ raw,callErr:=callILNSignatureView(client,registry,"activationBlock()",ethgo.Latest)
  if callErr==nil&&len(raw)==32{
   block:=new(big.Int).SetBytes(raw)
   if !block.IsUint64()||block.Sign()<=0||block.Uint64()>confirmed{
