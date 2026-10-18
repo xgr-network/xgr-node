@@ -23,8 +23,7 @@ jobs:
           go test -count=1 -short $pkgs
 
       - name: ILN archive-independent route E2E
-        run: go test -count=1 ./e2e -run '^TestInterchainILNRoutesE2E        run: go build ./...
- -v
+        run: go test -count=1 ./e2e -run 'TestInterchainILNRoutesE2E' -v
 
       - name: Go build
         run: go build ./...
