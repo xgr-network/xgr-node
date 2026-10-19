@@ -1,6 +1,9 @@
 package evm
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -253,4 +256,93 @@ func TestILNRouteSnapshotUsesAppendOnlyCurrentBindings(t *testing.T) {
 	// The present-day global fee can differ from the fee in the original receipt.
 	require.Equal(t, int64(200), snapshot.Route.ValidatorFeeWei.Int64())
 	require.EqualValues(t, 0, historicalCalls.Load())
+}
+
+
+func TestILNMerkleDurableReplayIncrementalReorgAndCorruption(t *testing.T) {
+ dir:=t.TempDir()
+ hook:=types.StringToAddress("0x1111111111111111111111111111111111111111")
+ a:=types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+ b:=types.StringToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+ c:=types.StringToHash("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+ replacement:=types.StringToHash("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+ hashes:=map[uint64]types.Hash{
+  20:a, 22:b, 24:c,
+ }
+ read:=func(n uint64)(types.Hash,error){
+  if id,ok:=hashes[n];ok{return id,nil}
+  return types.ZeroHash,errors.New("unavailable block hash")
+ }
+ events:=map[uint64]types.Hash{10:a,19:b,21:c}
+ var starts []uint64
+ replay:=func(start uint64,tree *ilnMerkleAccumulator,
+  save func(uint64,*ilnMerkleAccumulator)error)(*ilnMerkleAccumulator,error){
+  starts=append(starts,start)
+  var to uint64=20
+  if len(starts)>1{to=22}
+  if len(starts)>2{to=24}
+  for block:=start;block<=to;block++ {
+   if id,ok:=events[block];ok{
+    require.NoError(t,tree.insert(uint32(tree.count),id))
+   }
+  }
+  require.NoError(t,save(to,tree))
+  return tree,nil
+ }
+ result,err:=cachedILNMerkleReplay(dir,8453,hook,10,20,read,replay)
+ require.NoError(t,err)
+ require.Equal(t,uint64(2),result.count)
+ require.Equal(t,[]uint64{10},starts)
+ require.FileExists(t,ilnMerkleCachePath(dir,8453,hook,10))
+ // Saved state reuses the verified block-20 anchor across requests/restarts.
+ result,err=cachedILNMerkleReplay(dir,8453,hook,10,20,read,replay)
+ require.NoError(t,err)
+ require.Equal(t,uint64(2),result.count)
+ require.Equal(t,[]uint64{10},starts)
+ result,err=cachedILNMerkleReplay(dir,8453,hook,10,22,read,replay)
+ require.NoError(t,err)
+ require.Equal(t,uint64(3),result.count)
+ require.Equal(t,[]uint64{10,21},starts)
+ // A different canonical hash must invalidate and replay the entire prefix.
+ hashes[22]=replacement
+ events[21]=replacement
+ result,err=cachedILNMerkleReplay(dir,8453,hook,10,24,read,replay)
+ require.NoError(t,err)
+ require.Equal(t,uint64(3),result.count)
+ require.Equal(t,[]uint64{10,21,10},starts)
+ expected:=&ilnMerkleAccumulator{}
+ require.NoError(t,expected.insert(0,a))
+ require.NoError(t,expected.insert(1,b))
+ require.NoError(t,expected.insert(2,replacement))
+ require.Equal(t,expected.root(),result.root())
+ // An attacker/corruption cannot silently replace the on-disk branch.
+ path:=ilnMerkleCachePath(dir,8453,hook,10)
+ require.NoError(t,os.WriteFile(path,[]byte("{corrupt"),0o660))
+ result,err=cachedILNMerkleReplay(dir,8453,hook,10,24,read,func(start uint64,tree *ilnMerkleAccumulator,
+  save func(uint64,*ilnMerkleAccumulator)error)(*ilnMerkleAccumulator,error){
+  require.Equal(t,uint64(10),start)
+  for _,id:=range []types.Hash{a,b,replacement}{
+   require.NoError(t,tree.insert(uint32(tree.count),id))
+  }
+  require.NoError(t,save(24,tree))
+  return tree,nil
+ })
+ require.NoError(t,err)
+ require.Equal(t,expected.root(),result.root())
+ // A cache for Base can never authorize the same hook on another chain.
+ require.NotEqual(t,path,ilnMerkleCachePath(dir,1643,hook,10))
+ require.NotEqual(t,path,ilnMerkleCachePath(filepath.Join(dir,"other"),8453,hook,10))
+}
+
+func TestILNMerkleDurableReplayFailsClosedWhenLogsInvalid(t *testing.T) {
+ hook:=types.StringToAddress("0x1111111111111111111111111111111111111111")
+ hash:=types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+ fail:=errors.New("noncanonical insertion")
+ result,err:=cachedILNMerkleReplay(t.TempDir(),8453,hook,1,10,
+  func(uint64)(types.Hash,error){return hash,nil},
+  func(uint64,*ilnMerkleAccumulator,func(uint64,*ilnMerkleAccumulator)error)(*ilnMerkleAccumulator,error){
+   return nil,fail
+  })
+ require.Nil(t,result)
+ require.ErrorIs(t,err,fail)
 }
