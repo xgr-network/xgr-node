@@ -603,7 +603,10 @@ func (w *Worker) finalizeILNCheckpointAttestation(
 		w.logger.Warn("ILN quorum completion status persistence failed",
 			"route",route.Name,"err",progressErr)
 	}
-	w.removeILNLocalVote(hash)
+	// Keep locally signed votes until Mailbox.delivered becomes true. A
+	// validator that assembled 2/3 first must continue gossiping its
+	// authenticated vote so that lagging peers can independently assemble
+	// the same quorum after an outage or restart.
 	return nil
 }
 
