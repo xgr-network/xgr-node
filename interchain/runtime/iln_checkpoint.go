@@ -490,8 +490,19 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 		w.ilnCheckpoints[hash] = state
 	}
 	state.votes[vote.Signer] = append([]byte(nil), vote.Signature...)
+	voteCount := len(state.votes)
 	w.mu.Unlock()
 
+	threshold, err := protocol.QuorumThreshold(len(set.Validators))
+	if err != nil { return err }
+	if progressErr:=w.recordILNQuorumProgress(ilnQuorumProgress{
+		Route:route.Name,MessageID:payload.AuthorizedMessageID.String(),
+		SourceBlockNumber:payload.SourceBlockNumber,Status:"PARTIAL_QUORUM",
+		Votes:voteCount,QuorumThreshold:threshold,
+	});progressErr!=nil {
+		w.logger.Warn("ILN partial-quorum status persistence failed",
+			"route",route.Name,"err",progressErr)
+	}
 	return w.finalizeILNCheckpointAttestation(hash, route, destination, set)
 }
 
@@ -583,6 +594,14 @@ func (w *Worker) finalizeILNCheckpointAttestation(
 	}
 	if err := w.writeILNCheckpointAttestation(attestation); err != nil {
 		return err
+	}
+	if progressErr:=w.recordILNQuorumProgress(ilnQuorumProgress{
+		Route:route.Name,MessageID:payload.AuthorizedMessageID.String(),
+		SourceBlockNumber:payload.SourceBlockNumber,Status:"AVAILABLE_UNVERIFIED",
+		Votes:len(votes),QuorumThreshold:threshold,
+	});progressErr!=nil {
+		w.logger.Warn("ILN quorum completion status persistence failed",
+			"route",route.Name,"err",progressErr)
 	}
 	w.removeILNLocalVote(hash)
 	return nil
