@@ -25,6 +25,10 @@ type ilnQuorumStatusRPC struct {
  MessageID string `json:"messageId"`
  SourceBlockNumber uint64 `json:"sourceBlockNumber"`
  Status string `json:"status"`
+ Votes int `json:"votes,omitempty"`
+ QuorumThreshold int `json:"quorumThreshold,omitempty"`
+ FailureCategory string `json:"failureCategory,omitempty"`
+ UpdatedUnix int64 `json:"updatedUnix,omitempty"`
 }
 
 func (x *xgrEndpoint) RequestILNQuorum(route, messageID string, sourceBlockNumber uint64) (*ilnQuorumStatusRPC, error) {
@@ -113,6 +117,38 @@ func (x *xgrEndpoint) GetILNQuorum(route,messageID string)(*ilnQuorumStatusRPC,e
   // Current destination-set status is validated only by the executor and
   // validator worker. The raw archival quorum may be stale after rotation.
   return &ilnQuorumStatusRPC{Route:route,MessageID:messageID,Status:"AVAILABLE_UNVERIFIED"},nil
+ }
+ // The worker may already have signed and removed the admission hint
+ // without collecting 2/3 signatures. Persistent progress is therefore
+ // authoritative for *diagnostics*, never for creating an attestation.
+ statusPath:=filepath.Join(x.dataDir,"interchain","iln","quorum-status",route,messageID+".json")
+ if progressRaw,progressErr:=os.ReadFile(statusPath);progressErr==nil&&len(progressRaw)<=4096 {
+  var progress struct{
+   Version int `json:"version"`
+   Route string `json:"route"`
+   MessageID string `json:"messageId"`
+   SourceBlockNumber uint64 `json:"sourceBlockNumber"`
+   Status string `json:"status"`
+   Votes int `json:"votes"`
+   QuorumThreshold int `json:"quorumThreshold"`
+   FailureCategory string `json:"failureCategory"`
+   UpdatedUnix int64 `json:"updatedUnix"`
+  }
+  if json.Unmarshal(progressRaw,&progress)==nil&&progress.Version==1&&
+    progress.Route==route&&progress.MessageID==messageID&&
+    progress.SourceBlockNumber>0&&progress.UpdatedUnix>0&&
+    progress.UpdatedUnix<=time.Now().Unix()+60&&
+    time.Since(time.Unix(progress.UpdatedUnix,0))<24*time.Hour&&
+    (progress.Status=="PARTIAL_QUORUM"||
+     progress.Status=="RETRYING_VALIDATION"||
+     progress.Status=="AVAILABLE_UNVERIFIED"){
+   return &ilnQuorumStatusRPC{
+    Route:route,MessageID:messageID,SourceBlockNumber:progress.SourceBlockNumber,
+    Status:progress.Status,Votes:progress.Votes,
+    QuorumThreshold:progress.QuorumThreshold,
+    FailureCategory:progress.FailureCategory,UpdatedUnix:progress.UpdatedUnix,
+   },nil
+  }
  }
  raw,err:=os.ReadFile(filepath.Join(x.dataDir,"interchain","iln","quorum-requests",route,messageID+".json"))
  if err!=nil{return &ilnQuorumStatusRPC{Route:route,MessageID:messageID,Status:"NOT_FOUND"},nil}

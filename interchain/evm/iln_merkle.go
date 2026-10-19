@@ -1,10 +1,16 @@
 package evm
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
+	"path/filepath"
 	"sort"
+	"sync"
 
 	"github.com/umbracle/ethgo"
 	"github.com/umbracle/ethgo/jsonrpc"
@@ -107,11 +113,20 @@ func parseILNInsertionLog(log *ethgo.Log) (types.Hash, uint32, error) {
 func reconstructILNMerkleFromLogs(
 	client *jsonrpc.Client, hook types.Address, from, to uint64,
 ) (*ilnMerkleAccumulator, error) {
-	if client == nil || hook == types.ZeroAddress || from == 0 || to < from {
+	return replayILNMerkleLogs(client, hook, from, to, &ilnMerkleAccumulator{}, nil)
+}
+
+// replayILNMerkleLogs accepts only a previously canonical, independently
+// reconstructed accumulator. Each processed range can be checkpointed atomically
+// after all logs pass contiguous-index and canonical-order checks.
+func replayILNMerkleLogs(
+	client *jsonrpc.Client, hook types.Address, from, to uint64,
+	tree *ilnMerkleAccumulator, onRange func(uint64, *ilnMerkleAccumulator) error,
+) (*ilnMerkleAccumulator, error) {
+	if client == nil || tree == nil || hook == types.ZeroAddress || from == 0 || to < from {
 		return nil, fmt.Errorf("invalid ILN Merkle replay bounds")
 	}
 	topic := ethgo.Hash(crypto.Keccak256Hash([]byte("InsertedIntoTree(bytes32,uint32)")))
-	tree := &ilnMerkleAccumulator{}
 	var lastBlock, lastIndex uint64
 	var haveLast bool
 	for begin := from; begin <= to; {
@@ -156,10 +171,162 @@ func reconstructILNMerkleFromLogs(
 			}
 			lastBlock, lastIndex, haveLast = log.BlockNumber, log.LogIndex, true
 		}
+		if onRange != nil {
+			if err := onRange(end, tree); err != nil { return nil, err }
+		}
 		if end == to {
 			break
 		}
 		begin = end + 1
 	}
 	return tree, nil
+}
+
+// ILN Merkle cache v1 is a local performance accelerator, NEVER a source of
+// validator authority. Every cached accumulator was produced by strict canonical
+// log replay and must remain anchored to the canonical source block hash.
+// In particular, unknown/corrupt/pruned checkpoints are not trusted.
+type ilnMerkleDiskCheckpoint struct {
+ Version int `json:"version"`
+ ChainID uint64 `json:"chainId"`
+ Hook string `json:"hook"`
+ StartBlock uint64 `json:"startBlock"`
+ ThroughBlock uint64 `json:"throughBlock"`
+ BlockHash types.Hash `json:"blockHash"`
+ Count uint64 `json:"count"`
+ Branch []types.Hash `json:"branch"`
+ Digest string `json:"digest"`
+}
+var ilnMerkleReplayLocks sync.Map
+
+func (record ilnMerkleDiskCheckpoint) checksum() (string,error) {
+ record.Digest=""
+ raw,err:=json.Marshal(record)
+ if err!=nil{return "",err}
+ sum:=sha256.Sum256(raw)
+ return hex.EncodeToString(sum[:]),nil
+}
+
+func validateILNMerkleCheckpoint(record ilnMerkleDiskCheckpoint,chainID uint64,hook types.Address,from,to uint64) bool {
+ if record.Version!=1||record.ChainID!=chainID||
+    record.Hook!=hook.String()||record.StartBlock!=from||
+    record.ThroughBlock<from||record.ThroughBlock>to||
+    record.BlockHash==types.ZeroHash||record.Count>=uint64(1)<<32||
+    len(record.Branch)!=ilnMerkleDepth||len(record.Digest)!=64 {return false}
+ digest,err:=record.checksum()
+ return err==nil&&digest==record.Digest
+}
+
+func ilnMerkleCachePath(dir string,chainID uint64,hook types.Address,from uint64) string {
+ return filepath.Join(dir,fmt.Sprintf("v1-%d-%s-%d.json",chainID,hook.String(),from))
+}
+
+func readILNMerkleDiskCheckpoint(path string) (*ilnMerkleDiskCheckpoint,error) {
+ raw,err:=os.ReadFile(path)
+ if err!=nil{return nil,err}
+ if len(raw)>16384{return nil,fmt.Errorf("ILN Merkle cache checkpoint oversized")}
+ var record ilnMerkleDiskCheckpoint
+ if err:=json.Unmarshal(raw,&record);err!=nil{return nil,err}
+ return &record,nil
+}
+
+func saveILNMerkleDiskCheckpoint(path string,record ilnMerkleDiskCheckpoint) error {
+ digest,err:=record.checksum()
+ if err!=nil{return err}
+ record.Digest=digest
+ raw,err:=json.Marshal(record)
+ if err!=nil{return err}
+ if err:=os.MkdirAll(filepath.Dir(path),0o770);err!=nil{return err}
+ f,err:=os.CreateTemp(filepath.Dir(path),".iln-merkle-*")
+ if err!=nil{return err}
+ defer os.Remove(f.Name())
+ if err=f.Chmod(0o660);err!=nil{f.Close();return err}
+ if _,err=f.Write(raw);err!=nil{f.Close();return err}
+ if err=f.Sync();err!=nil{f.Close();return err}
+ if err=f.Close();err!=nil{return err}
+ return os.Rename(f.Name(),path)
+}
+
+// cachedILNMerkleReplay serializes requests for the same independent
+// source-chain/hook/start-boundary. It can handle restarts and reorgs without
+// trusting old roots: a cached height is reused ONLY if its canonical block
+// hash still matches the source chain. A mismatch forces full log replay.
+// The readBlock and replay callbacks are injectable for deterministic tests.
+func cachedILNMerkleReplay(
+ dir string,chainID uint64,hook types.Address,from,to uint64,
+ readBlock func(uint64)(types.Hash,error),
+ replay func(uint64,*ilnMerkleAccumulator,func(uint64,*ilnMerkleAccumulator) error)(*ilnMerkleAccumulator,error),
+) (*ilnMerkleAccumulator,error) {
+ if dir==""||chainID==0||hook==types.ZeroAddress||from==0||to<from||
+    readBlock==nil||replay==nil{return nil,fmt.Errorf("invalid ILN Merkle cache configuration")}
+ path:=ilnMerkleCachePath(dir,chainID,hook,from)
+ value,_:=ilnMerkleReplayLocks.LoadOrStore(path,&sync.Mutex{})
+ lock:=value.(*sync.Mutex)
+ lock.Lock()
+ defer lock.Unlock()
+
+ seed:=&ilnMerkleAccumulator{}
+ begin:=from
+ var anchor *ilnMerkleDiskCheckpoint
+ if record,err:=readILNMerkleDiskCheckpoint(path);err==nil &&
+    validateILNMerkleCheckpoint(*record,chainID,hook,from,to) {
+  if canonical,err:=readBlock(record.ThroughBlock);err==nil && canonical==record.BlockHash {
+   seed.count=record.Count
+   copy(seed.branch[:],record.Branch)
+   begin=record.ThroughBlock+1
+   anchor=record
+  }
+ }
+ if anchor!=nil&&anchor.ThroughBlock==to{return seed,nil}
+ saveRange:=func(height uint64,current *ilnMerkleAccumulator) error {
+  canonical,err:=readBlock(height)
+  if err!=nil||canonical==types.ZeroHash{
+   // Do not persist checkpoints which cannot be anchored on-chain.
+   // Replayed logs still remain usable for this single verification.
+   return nil
+  }
+  record:=ilnMerkleDiskCheckpoint{
+   Version:1,ChainID:chainID,Hook:hook.String(),
+   StartBlock:from,ThroughBlock:height,BlockHash:canonical,
+   Count:current.count,Branch:append([]types.Hash(nil),current.branch[:]...),
+  }
+  // Disk space errors may degrade performance but never change the trusted
+  // in-memory result of the already validated log replay.
+  _=saveILNMerkleDiskCheckpoint(path,record)
+  return nil
+ }
+ result,err:=replay(begin,seed,saveRange)
+ if err!=nil{return nil,err}
+ // Recheck the reused prefix after the replay, so a reorg during scanning
+ // cannot combine a stale prefix with current-chain suffix logs.
+ if anchor!=nil{
+  canonical,err:=readBlock(anchor.ThroughBlock)
+  if err!=nil||canonical!=anchor.BlockHash {
+   _=os.Remove(path)
+   return replay(from,&ilnMerkleAccumulator{},saveRange)
+  }
+ }
+ return result,nil
+}
+
+func reconstructILNMerkleFromLogsCached(
+ client *jsonrpc.Client,source *Destination,hook types.Address,from,to uint64,
+) (*ilnMerkleAccumulator,error) {
+ if source==nil||source.ILNMerkleCacheDir=="" {
+  return reconstructILNMerkleFromLogs(client,hook,from,to)
+ }
+ readBlock:=func(height uint64)(types.Hash,error){
+  if height==0{return types.ZeroHash,fmt.Errorf("invalid canonical ILN checkpoint block")}
+  block,err:=client.Eth().GetBlockByNumber(ethgo.BlockNumber(height),false)
+  if err!=nil{return types.ZeroHash,err}
+  if block==nil||block.Hash==(ethgo.Hash{}) {
+   return types.ZeroHash,fmt.Errorf("canonical ILN checkpoint block unavailable")
+  }
+  return types.Hash(block.Hash),nil
+ }
+ return cachedILNMerkleReplay(source.ILNMerkleCacheDir,source.ChainID,hook,from,to,
+  readBlock,func(begin uint64,seed *ilnMerkleAccumulator,
+    save func(uint64,*ilnMerkleAccumulator)error)(*ilnMerkleAccumulator,error){
+   return replayILNMerkleLogs(client,hook,begin,to,seed,save)
+  })
 }

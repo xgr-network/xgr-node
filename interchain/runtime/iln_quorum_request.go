@@ -22,6 +22,91 @@ type requestedILNQuorum struct {
  DestinationDomain uint32 `json:"destinationDomain,omitempty"`
 }
 
+
+// Validator-local diagnostic state, not authority to sign a message. The
+// caller's request is never itself a vote or a custody operation.
+type ilnQuorumProgress struct {
+ Version int `json:"version"`
+ Route string `json:"route"`
+ MessageID string `json:"messageId"`
+ SourceBlockNumber uint64 `json:"sourceBlockNumber"`
+ Status string `json:"status"`
+ Votes int `json:"votes"`
+ QuorumThreshold int `json:"quorumThreshold"`
+ FailureCategory string `json:"failureCategory,omitempty"`
+ UpdatedUnix int64 `json:"updatedUnix"`
+}
+func ilnQuorumErrorCategory(err error) string {
+ if err==nil{return ""}
+ s:=strings.ToLower(err.Error())
+ switch {
+ case strings.Contains(s,"rebuild canonical iln merkle")||strings.Contains(s,"insertion logs")||
+      strings.Contains(s,"checkpoint root")||strings.Contains(s,"merkle"):
+  return "SOURCE_MERKLE_RECONSTRUCTION"
+ case strings.Contains(s,"rpc")||strings.Contains(s,"eth_getlogs")||
+      strings.Contains(s,"get iln insertion logs")||strings.Contains(s,"chain id mismatch"):
+  return "CHAIN_RPC_UNAVAILABLE"
+ case strings.Contains(s,"signer")||strings.Contains(s,"bls")||
+      strings.Contains(s,"validator set"):
+  return "SIGNER_OR_VALIDATOR_SET"
+ case strings.Contains(s,"route")||strings.Contains(s,"gateway")||
+      strings.Contains(s,"operation")||strings.Contains(s,"dispatch"):
+  return "SOURCE_ROUTE_OR_DISPATCH"
+ case strings.Contains(s,"delivered")||strings.Contains(s,"destination"):
+  return "DESTINATION_DELIVERY_CHECK"
+ default:return "ILN_VALIDATION_PENDING"
+ }
+}
+func (w *Worker) ilnQuorumProgressPath(route,messageID string) string {
+ return filepath.Join(w.ilnDir(),"quorum-status",route,messageID+".json")
+}
+func (w *Worker) recordILNQuorumProgress(progress ilnQuorumProgress) error {
+ if w==nil||w.dataDir==""||progress.SourceBlockNumber==0||
+    len(progress.MessageID)!=66||!strings.HasPrefix(progress.MessageID,"0x")||
+    strings.ContainsAny(progress.Route,"/\\")||progress.Route==""{
+  return fmt.Errorf("invalid ILN quorum progress identity")
+ }
+ for _,c:=range progress.MessageID[2:]{
+  if (c<'0'||c>'9')&&(c<'a'||c>'f'){return fmt.Errorf("invalid ILN quorum progress message")}
+ }
+ progress.Version=1
+ progress.UpdatedUnix=time.Now().Unix()
+ path:=w.ilnQuorumProgressPath(progress.Route,progress.MessageID)
+ dir:=filepath.Dir(path)
+ if err:=os.MkdirAll(dir,0o770);err!=nil{return err}
+ f,err:=os.CreateTemp(dir,".quorum-status-*")
+ if err!=nil{return err}
+ defer os.Remove(f.Name())
+ if err=f.Chmod(0o660);err!=nil{f.Close();return err}
+ raw,err:=json.Marshal(progress)
+ if err!=nil{f.Close();return err}
+ if _,err=f.Write(raw);err!=nil{f.Close();return err}
+ if err=f.Sync();err!=nil{f.Close();return err}
+ if err=f.Close();err!=nil{return err}
+ return os.Rename(f.Name(),path)
+}
+func (w *Worker) trackILNQuorumRetry(route,message string,block uint64,err error) {
+ if block==0{return}
+ progress:=ilnQuorumProgress{
+  Route:route,MessageID:message,SourceBlockNumber:block,
+  Status:"RETRYING_VALIDATION",FailureCategory:ilnQuorumErrorCategory(err),
+ }
+ // A valid locally held vote must not be overwritten by a transient source
+ // error on another goroutine. Keep existing nonzero signature counts.
+ if raw,readErr:=os.ReadFile(w.ilnQuorumProgressPath(route,message));readErr==nil{
+  var previous ilnQuorumProgress
+  if json.Unmarshal(raw,&previous)==nil&&previous.MessageID==message&&
+     previous.SourceBlockNumber==block {
+   if previous.Votes>0{
+    progress.Votes=previous.Votes
+    progress.QuorumThreshold=previous.QuorumThreshold
+   }
+  }
+ }
+ if saveErr:=w.recordILNQuorumProgress(progress);saveErr!=nil{
+  w.logger.Warn("ILN quorum retry status persistence failed","route",route,"err",saveErr)
+ }
+}
 const maxILNRequestPerTick = 8
 // Public hints contain no funds or custody evidence. After expiry the client
 // can safely request a replacement for the ORIGINAL message.
@@ -68,6 +153,7 @@ func (w *Worker) processRequestedILNQuorums() {
    processed++
    if err:=w.processRequestedILNQuorum(route,types.StringToHash(messageID),request.SourceBlockNumber);err!=nil {
     w.logger.Debug("ILN quorum request pending validation", "route",routeName,"message",messageID,"err",err)
+    w.trackILNQuorumRetry(routeName,messageID,request.SourceBlockNumber,err)
     msg:=strings.ToLower(err.Error())
     // Only conclusive source-evidence failures are terminal. RPC failures
     // remain queued so that an unavailable chain cannot strand valid funds.
@@ -78,19 +164,28 @@ func (w *Worker) processRequestedILNQuorums() {
     }
     continue // temporary failures remain retryable.
    }
-   // A successful authorization leaves either a pending signed vote or
-   // a completed quorum. Request is no longer needed for admission.
-   _=os.Remove(path)
-   // Propagate only after local canonical source and destination checks pass.
-   // Every receiving validator independently verifies the same source event.
+   // Propagate only after full local authorization. Do not discard a hint
+   // until gossip accepts it; every peer re-verifies all source evidence.
    gossip:=request
    source:=w.destinations[route.SourceNetwork]
    destination:=w.destinations[route.Destination]
-   if source!=nil&&destination!=nil {
-    gossip.RouteID=route.RouteID.String()
-    gossip.SourceDomain=source.Domain
-    gossip.DestinationDomain=destination.Domain
-    _=w.publish(wireEnvelope{Type:"iln_quorum_request",ILNQuorumRequest:&gossip})
+   if source==nil||destination==nil {
+    w.trackILNQuorumRetry(routeName,messageID,request.SourceBlockNumber,
+     fmt.Errorf("route source or destination unavailable"))
+    continue
+   }
+   gossip.RouteID=route.RouteID.String()
+   gossip.SourceDomain=source.Domain
+   gossip.DestinationDomain=destination.Domain
+   if err:=w.publish(wireEnvelope{Type:"iln_quorum_request",ILNQuorumRequest:&gossip});err!=nil {
+    w.logger.Warn("ILN verified quorum request gossip retry","route",routeName,"message",messageID,"err",err)
+    w.trackILNQuorumRetry(routeName,messageID,request.SourceBlockNumber,err)
+    continue
+   }
+   // A locally signed vote survives in durable storage until quorum. Gossip
+   // acceptance removes only this redundant request admission hint.
+   if err:=os.Remove(path);err!=nil&&!os.IsNotExist(err){
+    w.logger.Warn("ILN processed quorum hint cleanup failed","route",routeName,"err",err)
    }
   }
  }

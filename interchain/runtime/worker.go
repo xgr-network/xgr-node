@@ -168,6 +168,9 @@ func New(
 		if d == nil {
 			continue
 		}
+		// One persistent source-chain/hook cache per validator node. All routes
+		// remain permissionless; no per-route configuration is introduced.
+		d.ILNMerkleCacheDir = filepath.Join(dataDir, "interchain", "iln", "merkle-cache")
 		if err := d.ValidateMembershipRead(); err != nil {
 			return nil, fmt.Errorf("destination %q: %w", d.Name, err)
 		}
