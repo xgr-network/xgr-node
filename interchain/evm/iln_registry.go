@@ -611,9 +611,9 @@ func GetConfirmedILNCheckpoint(source *Destination, snapshot *ILNRouteSnapshot) 
 	if start > snapshot.BlockNumber {
 		return nil, fmt.Errorf("ILN registry activated after the checkpoint")
 	}
-	tree, err := reconstructILNMerkleFromLogs(client, snapshot.Route.MerkleTreeHook, start, snapshot.BlockNumber)
+	tree, err := reconstructILNMerkleFromLogsCached(client, source, snapshot.Route.MerkleTreeHook, start, snapshot.BlockNumber)
 	if err == errILNMerkleMissingPrefix && start > 1 {
-		tree, err = reconstructILNMerkleFromLogs(client, snapshot.Route.MerkleTreeHook, 1, snapshot.BlockNumber)
+		tree, err = reconstructILNMerkleFromLogsCached(client, source, snapshot.Route.MerkleTreeHook, 1, snapshot.BlockNumber)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("rebuild canonical ILN Merkle history: %w", err)
