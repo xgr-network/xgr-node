@@ -1,6 +1,7 @@
 package jsonrpc
 
 import (
+ "encoding/json"
  "os"
  "path/filepath"
  "strings"
@@ -94,4 +95,43 @@ func TestILNQuorumHintLeaseUnblocksStaleSourceBlock(t *testing.T) {
  require.NoError(t,err)
  require.Equal(t,uint64(11),status.SourceBlockNumber)
  require.Equal(t,"PENDING",status.Status)
+}
+
+
+func TestILNQuorumProgressSurvivesRequestCleanup(t *testing.T) {
+ dir:=t.TempDir()
+ route:="iln_8453_1643_"+strings.Repeat("b",64)
+ path:=filepath.Join(dir,"interchain","iln","quorum-status",route,quorumTestMessage+".json")
+ require.NoError(t,os.MkdirAll(filepath.Dir(path),0o770))
+ progress:=map[string]interface{}{
+  "version":1,"route":route,"messageId":quorumTestMessage,
+  "sourceBlockNumber":uint64(52801389),"status":"PARTIAL_QUORUM",
+  "votes":1,"quorumThreshold":2,"updatedUnix":time.Now().Unix(),
+ }
+ raw,err:=json.Marshal(progress);require.NoError(t,err)
+ require.NoError(t,os.WriteFile(path,raw,0o660))
+ ep:=newXGREndpoint(nil,dir)
+ status,err:=ep.GetILNQuorum(route,quorumTestMessage)
+ require.NoError(t,err)
+ require.Equal(t,"PARTIAL_QUORUM",status.Status)
+ require.Equal(t,1,status.Votes)
+ require.Equal(t,2,status.QuorumThreshold)
+ require.Equal(t,uint64(52801389),status.SourceBlockNumber)
+ // Temporary validation errors must remain actionable after original
+ // admission file was deleted.
+ progress["status"]="RETRYING_VALIDATION"
+ progress["failureCategory"]="SOURCE_MERKLE_RECONSTRUCTION"
+ raw,err=json.Marshal(progress);require.NoError(t,err)
+ require.NoError(t,os.WriteFile(path,raw,0o660))
+ status,err=ep.GetILNQuorum(route,quorumTestMessage)
+ require.NoError(t,err)
+ require.Equal(t,"RETRYING_VALIDATION",status.Status)
+ require.Equal(t,"SOURCE_MERKLE_RECONSTRUCTION",status.FailureCategory)
+ // Stale/unknown state must not create a false signed quorum.
+ progress["updatedUnix"]=time.Now().Add(-48*time.Hour).Unix()
+ raw,err=json.Marshal(progress);require.NoError(t,err)
+ require.NoError(t,os.WriteFile(path,raw,0o660))
+ status,err=ep.GetILNQuorum(route,quorumTestMessage)
+ require.NoError(t,err)
+ require.Equal(t,"NOT_FOUND",status.Status)
 }
