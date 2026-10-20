@@ -372,7 +372,9 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
 	require.Equal(t, types.StringToAddress(baseDestinationRouter), baseSnapshot.Route.DestinationRouter)
 	require.Equal(t, int64(1000), baseSnapshot.Route.ValidatorFeeWei.Int64())
 
-	baseCheckpoint, err := evmInterchain.GetConfirmedILNCheckpoint(base, baseSnapshot)
+	baseOperationSnapshot := *baseSnapshot
+    baseOperationSnapshot.BlockNumber = 95 // operation is older than the confirmed epoch 96
+    baseCheckpoint, err := evmInterchain.GetConfirmedILNCheckpoint(base, &baseOperationSnapshot)
 	require.NoError(t, err)
 	require.Equal(t, uint64(96), baseCheckpoint.BlockNumber)
 	require.Equal(t, uint32(3), baseCheckpoint.Index)
@@ -396,7 +398,9 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
 	require.Equal(t, types.StringToAddress(arbitrumDestinationRouter), arbitrumSnapshot.Route.DestinationRouter)
 	require.Equal(t, int64(2000), arbitrumSnapshot.Route.ValidatorFeeWei.Int64())
 
-	arbitrumCheckpoint, err := evmInterchain.GetConfirmedILNCheckpoint(arbitrum, arbitrumSnapshot)
+	arbitrumOperationSnapshot := *arbitrumSnapshot
+    arbitrumOperationSnapshot.BlockNumber = 150 // operation is older than epoch 160
+    arbitrumCheckpoint, err := evmInterchain.GetConfirmedILNCheckpoint(arbitrum, &arbitrumOperationSnapshot)
 	require.NoError(t, err)
 	require.Equal(t, uint64(160), arbitrumCheckpoint.BlockNumber)
 	require.Equal(t, uint32(8), arbitrumCheckpoint.Index)
@@ -412,7 +416,7 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
     baseRPC.mu.Lock()
     baseRPC.invalidHookRoot = true
     baseRPC.mu.Unlock()
-    _, err = evmInterchain.GetConfirmedILNCheckpoint(base, baseSnapshot)
+    _, err = evmInterchain.GetConfirmedILNCheckpoint(base, &baseOperationSnapshot)
     require.ErrorContains(t, err, "noncanonical ILN hook root")
     require.Zero(t, baseRPC.getLogsCalls)
 }
