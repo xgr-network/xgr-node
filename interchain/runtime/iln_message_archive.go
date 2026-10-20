@@ -7,6 +7,7 @@ import (
     "strconv"
     "strings"
     "time"
+    "errors"
 
     "github.com/xgr-network/xgr-node/crypto"
     evmInterchain "github.com/xgr-network/xgr-node/interchain/evm"
@@ -55,8 +56,7 @@ func (w *Worker) captureRecentILNMessagesForRoute(route *evmInterchain.Checkpoin
     if !exists {
         // Only seed from the recent RPC retention window. A private
         // historical Gateway/indexer is NEVER an implicit requirement.
-        if to>=ilnMessageRecentScanLimit {cursor=to-ilnMessageRecentScanLimit}
-        else {cursor=0}
+        if to>=ilnMessageRecentScanLimit {cursor=to-ilnMessageRecentScanLimit} else {cursor=0}
     }
     if cursor>=to{return nil}
     from:=cursor+1
@@ -84,7 +84,7 @@ func (w *Worker) captureRecentILNMessagesForRoute(route *evmInterchain.Checkpoin
         if matched!=1{return fmt.Errorf("duplicate source Hook insertion")}
         if err:=verifyILNFeeAllocation(ctx.source,ctx.snapshot,
             message.MessageID,ctx.canonical.BlockNumber);err!=nil{
-            if err==evmInterchain.ErrILNFeeNotAllocated{continue}
+            if errors.Is(err,evmInterchain.ErrILNFeeNotAllocated){continue}
             return err
         }
         if err:=evmInterchain.StoreVerifiedILNMessage(
