@@ -192,29 +192,19 @@ func (w *Worker) processRequestedILNQuorums() {
 }
 
 func (w *Worker) processRequestedILNQuorum(route *evmInterchain.CheckpointRoute,messageID types.Hash,sourceBlock uint64) error {
- source:=w.destinations[route.SourceNetwork]
- destination:=w.destinations[route.Destination]
- if source==nil||destination==nil{return fmt.Errorf("route network unavailable")}
- snapshot,err:=getILNRouteAtBlock(source,destination.Domain,route.RouteID,sourceBlock)
- if err!=nil{return err}
- // Never infer eligibility from a caller's request; read the exact fee-paid
- // Gateway event from its confirmed block.
- operation,err:=getILNOperationAtBlock(source,snapshot.Route.Gateway,route.RouteID,destination.Domain,messageID,sourceBlock)
- if err!=nil{return err}
- currentSet,err:=getILNValidatorSet(destination)
- if err!=nil{return err}
- eligible,err:=w.interchainSignerEligible(currentSet,w.localAddr)
- if err!=nil{return err}
- if !eligible{
-  // Public RPC may run on a non-validator. It can still forward an authentic
-  // request, but MUST prove source fee, route, and undelivered destination.
-  if operation.ValidatorFeeWei==nil||operation.ValidatorFeeWei.Sign()<=0||snapshot.Route.ValidatorFeeWei==nil{return fmt.Errorf("invalid canonical ILN fee")}
-  delivered,checkErr:=getILNMessageDelivered(destination,snapshot.Route.DestinationRouter,messageID)
-  if checkErr!=nil{return checkErr}
-  if delivered{return fmt.Errorf("ILN message already delivered")}
-  return nil
- }
- return w.signILNOperation(route,source,destination,currentSet,*operation)
+    // A public RPC hint is neither proof nor an order to sign. The supplied
+    // transaction height is a display/recovery hint only; all authority
+    // comes from the CANONICAL confirmed Hook root, verified replica leaf,
+    // route-bound FeeVault and current destination validator set.
+    if route==nil||sourceBlock==0||messageID==types.ZeroHash{
+        return fmt.Errorf("invalid public ILN quorum request")
+    }
+    source:=w.destinations[route.SourceNetwork]
+    if source==nil{return fmt.Errorf("ILN source unavailable")}
+    confirmed,err:=getConfirmedILNHead(source)
+    if err!=nil{return err}
+    if sourceBlock>confirmed{return fmt.Errorf("hint source transaction is not confirmed")}
+    return w.signVerifiedILNReplicaMessage(route,messageID)
 }
 
 func (w *Worker) acceptRequestedILNQuorum(request requestedILNQuorum) error {
