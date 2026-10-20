@@ -28,7 +28,14 @@ func GetConfirmedILNHookCheckpoint(source *Destination, snapshot *ILNRouteSnapsh
     if confirmed > uint64(1<<63-1) {
         return nil, fmt.Errorf("ILN confirmed block exceeds RPC block range")
     }
-    at := ethgo.BlockNumber(confirmed)
+    // Align all validators to a stable checkpoint epoch instead of the
+    // moving tip, so independent BLS votes can agree during high throughput.
+    const checkpointWindow uint64 = 32
+    checkpointBlock := confirmed - confirmed%checkpointWindow
+    if checkpointBlock < snapshot.BlockNumber {
+        return nil, fmt.Errorf("ILN operation awaits next confirmed hook checkpoint epoch")
+    }
+    at := ethgo.BlockNumber(checkpointBlock)
     mailbox, err := callILNAddressGetter(client, snapshot.Route.MerkleTreeHook, "mailbox()", at)
     if err != nil { return nil, fmt.Errorf("read confirmed ILN hook mailbox: %w", err) }
     if mailbox != snapshot.Route.Mailbox {
@@ -38,12 +45,12 @@ func GetConfirmedILNHookCheckpoint(source *Destination, snapshot *ILNRouteSnapsh
     if err != nil { return nil, fmt.Errorf("read confirmed ILN hook count: %w", err) }
     if len(count) != 32 { return nil, fmt.Errorf("noncanonical ILN hook count response") }
     n := new(big.Int).SetBytes(count)
-    if n.Sign() == 0 { return &ConfirmedCheckpoint{BlockNumber: confirmed}, nil }
+    if n.Sign() == 0 { return &ConfirmedCheckpoint{BlockNumber: checkpointBlock}, nil }
     if n.BitLen() > 32 { return nil, fmt.Errorf("ILN hook count exceeds uint32") }
     root, err := callILNSignatureView(client, snapshot.Route.MerkleTreeHook, "root()", at)
     if err != nil { return nil, fmt.Errorf("read confirmed ILN hook root: %w", err) }
     if len(root) != 32 || types.BytesToHash(root) == types.ZeroHash {
         return nil, fmt.Errorf("noncanonical ILN hook root response")
     }
-    return &ConfirmedCheckpoint{Root: types.BytesToHash(root), Index: uint32(n.Uint64()-1), BlockNumber: confirmed}, nil
+    return &ConfirmedCheckpoint{Root: types.BytesToHash(root), Index: uint32(n.Uint64()-1), BlockNumber: checkpointBlock}, nil
 }

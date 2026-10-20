@@ -294,6 +294,9 @@ func (w *Worker) signILNOperation(
 	if checkpoint.Root == types.ZeroHash {
 		return fmt.Errorf("ILN operation has no non-zero checkpoint root")
 	}
+	if canonicalOperation.InsertionIndex > checkpoint.Index {
+		return fmt.Errorf("confirmed Hyperlane checkpoint does not contain original message insertion")
+	}
 
 	payload := protocol.ILNCheckpointPayload{
 		SourceChainID:       snapshot.Route.Key.SourceChainID,
@@ -450,7 +453,10 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 		return err
 	}
 	if checkpoint.Root != payload.Root || checkpoint.Index != payload.Index {
-		return fmt.Errorf("ILN checkpoint root or index mismatch at source block")
+		return fmt.Errorf("ILN confirmed Hyperlane checkpoint disagrees with vote")
+	}
+	if operation.InsertionIndex > checkpoint.Index {
+		return fmt.Errorf("ILN vote checkpoint predates authorized message insertion")
 	}
 
 	set, err := getILNValidatorSet(destination)
