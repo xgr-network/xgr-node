@@ -385,7 +385,7 @@ func (w *Worker) tick() {
 	for _, route := range w.routes { activeRoutes = append(activeRoutes, route) }
 	w.mu.Unlock()
 	for _, route := range activeRoutes {
-		if err := w.signLatestILNCheckpoint(route); err != nil {
+		if err := w.signVerifiedILNReplicaBatch(route); err != nil {
 			w.logger.Debug(
 				"ILN checkpoint not signed",
 				"route", route.Name,
