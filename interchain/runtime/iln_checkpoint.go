@@ -423,41 +423,44 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 		return fmt.Errorf("ILN checkpoint canonical route mismatch")
 	}
 
-	operation, err := getILNOperationAtBlock(
-		source,
-		snapshot.Route.Gateway,
-		payload.RouteID,
-		destination.Domain,
-		payload.AuthorizedMessageID,
-		payload.SourceBlockNumber,
-	)
-	if err != nil {
-		return err
-	}
-	if operation.ValidatorFeeWei == nil ||
-		operation.ValidatorFeeWei.Cmp(payload.ValidatorFeeWei) != 0 ||
-		snapshot.Route.ValidatorFeeWei == nil {
-		return fmt.Errorf("ILN checkpoint operation fee mismatch")
-	}
-
-	delivered, err := getILNMessageDelivered(destination, snapshot.Route.DestinationRouter, payload.AuthorizedMessageID)
-	if err != nil {
-		return fmt.Errorf("ILN vote delivery state unavailable (fail closed): %w", err)
-	}
-	if delivered {
-		return fmt.Errorf("ILN message is already delivered; reject historical vote")
-	}
-
-	checkpoint, err := getConfirmedILNCheckpoint(source, snapshot)
-	if err != nil {
-		return err
-	}
-	if checkpoint.Root != payload.Root || checkpoint.Index != payload.Index {
-		return fmt.Errorf("ILN confirmed Hyperlane checkpoint disagrees with vote")
-	}
-	if operation.InsertionIndex > checkpoint.Index {
-		return fmt.Errorf("ILN vote checkpoint predates authorized message insertion")
-	}
+    // v3.2.0: never ask the Gateway log indexer to authorize a BLS vote.
+    // The factory-bound route and FeeVault allocatedOperation are checked
+    // on the source chain at the EXACT signed confirmed checkpoint epoch.
+    // A local or remote index cannot substitute for Merkle inclusion proof.
+    checkpoint, err := getConfirmedILNCheckpoint(source, snapshot)
+    if err != nil { return err }
+    if checkpoint.Root != payload.Root || checkpoint.Index != payload.Index ||
+        checkpoint.BlockNumber != payload.SourceBlockNumber {
+        return fmt.Errorf("ILN confirmed Hook root/index/epoch differs from signed vote")
+    }
+    if snapshot.Route.ValidatorFeeWei==nil ||
+        payload.ValidatorFeeWei.Cmp(snapshot.Route.ValidatorFeeWei)!=0 {
+        return fmt.Errorf("ILN signed source fee policy differs from canonical current route")
+    }
+    canonical := evmInterchain.ILNReplicaCheckpoint{
+        ChainID:source.ChainID,Hook:snapshot.Route.MerkleTreeHook,
+        Root:checkpoint.Root,Count:uint64(checkpoint.Index)+1,
+        BlockNumber:checkpoint.BlockNumber,
+    }
+    replica, err := evmInterchain.LoadVerifiedILNReplica(w.ilnReplicaPath(canonical),canonical)
+    if err!=nil{return fmt.Errorf("ILN vote requires independently verified Merkle replica: %w",err)}
+    messageIndex:=-1
+    for i,id:=range replica.Leaves {
+        if id==payload.AuthorizedMessageID {
+            if messageIndex>=0{return fmt.Errorf("ambiguous ILN message insertion in root")}
+            messageIndex=i
+        }
+    }
+    if messageIndex<0 {return fmt.Errorf("ILN checkpoint does not contain authorized message ID")}
+    if _,err:=evmInterchain.BuildILNReplicaProof(replica,canonical,uint32(messageIndex));err!=nil {
+        return fmt.Errorf("invalid ILN Merkle proof in validator vote: %w",err)
+    }
+    if err:=verifyILNFeeAllocation(source,snapshot,payload.AuthorizedMessageID,checkpoint.BlockNumber);err!=nil {
+        return fmt.Errorf("ILN vote lacks source FeeVault eligibility: %w",err)
+    }
+    delivered,err:=getILNMessageDelivered(destination,snapshot.Route.DestinationRouter,payload.AuthorizedMessageID)
+    if err!=nil{return fmt.Errorf("ILN vote destination state unavailable: %w",err)}
+    if delivered{return fmt.Errorf("ILN message already delivered; reject historical vote")}
 
 	set, err := getILNValidatorSet(destination)
 	if err != nil {
