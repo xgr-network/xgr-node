@@ -95,7 +95,7 @@ func (w *Worker) refreshILNReplicaRoute(route *evmInterchain.CheckpointRoute) er
     if err!=nil{return err}
     epoch:=head/32*32
     if epoch==0{return fmt.Errorf("confirmed Hyperlane epoch not yet available")}
-    snapshot,err:=getILNRouteAtBlock(source,dest.Domain,route.RouteID,head)
+    snapshot,err:=getILNRouteAtBlock(source,dest.Domain,route.RouteID,epoch)
     if err!=nil{return err}
     // The Hook state is an independent confirmed checkpoint epoch, not the
     // older transaction's operation block. Read it only at the recent epoch.
