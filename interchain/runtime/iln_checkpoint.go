@@ -7,7 +7,6 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"time"
 
@@ -16,8 +15,6 @@ import (
 	evmInterchain "github.com/xgr-network/xgr-node/interchain/evm"
 	"github.com/xgr-network/xgr-node/types"
 )
-
-const ilnOperationScanChunk = uint64(1000)
 
 type ilnCheckpointVote struct {
 	Route     string        `json:"route"`
@@ -70,8 +67,6 @@ var (
 	getConfirmedILNCheckpoint     = evmInterchain.GetConfirmedILNCheckpoint
 	getILNValidatorSet            = evmInterchain.GetValidatorSet
 	getConfirmedILNHead           = evmInterchain.GetConfirmedILNHead
-	getILNGatewayActivationBlock  = evmInterchain.GetILNGatewayActivationBlock
-	getConfirmedILNOperations     = evmInterchain.GetConfirmedILNOperations
 	getILNOperationAtBlock        = evmInterchain.GetILNOperationAtBlock
 	getILNMessageDelivered       = evmInterchain.GetILNMessageDelivered
 )
@@ -169,206 +164,6 @@ func (w *Worker) removeILNLocalVote(hash types.Hash) {
 	delete(w.ilnCheckpoints, hash)
 	w.mu.Unlock()
 	_ = os.Remove(filepath.Join(w.ilnVoteDir(), hash.String()+".json"))
-}
-
-func (w *Worker) signLatestILNCheckpoint(route *evmInterchain.CheckpointRoute) error {
-	if route == nil || stringsTrim(route.SourceNetwork) == "" {
-		return fmt.Errorf("ILN route source network is required")
-	}
-	source := w.destinations[route.SourceNetwork]
-	destination := w.destinations[route.Destination]
-	if source == nil || destination == nil {
-		return fmt.Errorf("ILN route networks are not configured")
-	}
-
-	set, err := getILNValidatorSet(destination)
-	if err != nil {
-		return err
-	}
-	eligible, err := w.interchainSignerEligible(set, w.localAddr)
-	if err != nil {
-		return err
-	}
-	if !eligible {
-		return nil
-	}
-
-	confirmedHead, err := getConfirmedILNHead(source)
-	if err != nil {
-		return err
-	}
-	cursor, exists, err := w.readILNCursor(route.Name)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		currentRoute, err := getILNRouteAtBlock(source, destination.Domain, route.RouteID, confirmedHead)
-		if err != nil {
-			return err
-		}
-		activation, err := getILNGatewayActivationBlock(source, currentRoute.Route.Gateway)
-		if err != nil {
-			return err
-		}
-		if activation == 0 || activation > confirmedHead { return fmt.Errorf("ILN gateway activation block is invalid or not yet confirmed") }
-		cursor = activation - 1
-		if err := w.writeILNCursor(route.Name, cursor); err != nil {
-			return err
-		}
-	}
-	if cursor >= confirmedHead {
-		return nil
-	}
-
-	from := cursor + 1
-	to := confirmedHead
-	if to-from+1 > ilnOperationScanChunk {
-		to = from + ilnOperationScanChunk - 1
-	}
-
-	currentRoute, err := getILNRouteAtBlock(source, destination.Domain, route.RouteID, confirmedHead)
-	if err != nil {
-		return err
-	}
-	operations, err := getConfirmedILNOperations(
-		source, currentRoute.Route.Gateway, route.RouteID, destination.Domain, from, to,
-	)
-	if err != nil {
-		return err
-	}
-	sort.SliceStable(operations, func(i, j int) bool {
-		return operations[i].BlockNumber < operations[j].BlockNumber
-	})
-	for i := range operations {
-		if err := w.signILNOperation(route, source, destination, set, operations[i]); err != nil {
-			return err
-		}
-	}
-	return w.writeILNCursor(route.Name, to)
-}
-
-func (w *Worker) signILNOperation(
-	route *evmInterchain.CheckpointRoute,
-	source *evmInterchain.Destination,
-	destination *evmInterchain.Destination,
-	set *evmInterchain.ValidatorSet,
-	operation evmInterchain.ILNOperation,
-) error {
-	snapshot, err := getILNRouteAtBlock(source, destination.Domain, route.RouteID, operation.BlockNumber)
-	if err != nil {
-		return err
-	}
-	if operation.RouteID != route.RouteID ||
-		operation.DestinationDomain != destination.Domain ||
-		operation.ValidatorFeeWei == nil ||
-		operation.ValidatorFeeWei.Sign() <= 0 {
-		return fmt.Errorf("ILN operation destination or validator fee is invalid")
-	}
-	// Source Gateway verified the fee against canonical registry state DURING
-	// the bridge transaction. A later governance fee update in the SAME block
-	// must not invalidate the fee-qualified historical event.
-	if snapshot.Route.ValidatorFeeWei == nil {
-		return fmt.Errorf("ILN historical registry fee unavailable")
-	}
-	// The bulk Gateway log scanner only lists candidate operations. Before
-	// signing, independently reconstruct the exact source event and matching
-	// successful Mailbox.Dispatch receipt (also for automatic scans).
-	canonicalOperation, err := getILNOperationAtBlock(source, snapshot.Route.Gateway,
-		route.RouteID, destination.Domain, operation.MessageID, operation.BlockNumber)
-	if err != nil { return fmt.Errorf("ILN canonical source dispatch proof: %w", err) }
-	if canonicalOperation.ValidatorFeeWei == nil ||
-		canonicalOperation.ValidatorFeeWei.Cmp(operation.ValidatorFeeWei) != 0 {
-		return fmt.Errorf("ILN source event fee differs from canonical receipt")
-	}
-	delivered, err := getILNMessageDelivered(destination, snapshot.Route.DestinationRouter, operation.MessageID)
-	if err != nil {
-		return fmt.Errorf("ILN destination delivery state unavailable (fail closed): %w", err)
-	}
-	if delivered {
-		return nil // Already settled. Never regenerate historical signatures.
-	}
-	checkpoint, err := getConfirmedILNCheckpoint(source, snapshot)
-	if err != nil {
-		return err
-	}
-	if checkpoint.Root == types.ZeroHash {
-		return fmt.Errorf("ILN operation has no non-zero checkpoint root")
-	}
-	if canonicalOperation.InsertionIndex > checkpoint.Index {
-		return fmt.Errorf("confirmed Hyperlane checkpoint does not contain original message insertion")
-	}
-
-	payload := protocol.ILNCheckpointPayload{
-		SourceChainID:       snapshot.Route.Key.SourceChainID,
-		SourceDomain:        snapshot.Route.Key.SourceDomain,
-		DestinationDomain:   snapshot.Route.Key.DestinationDomain,
-		RouteID:             snapshot.Route.Key.RouteID,
-		SetID:               set.SetID,
-		SourceBlockNumber:   snapshot.BlockNumber,
-		Registry:            snapshot.Registry,
-		Gateway:             snapshot.Route.Gateway,
-		SourceRouter:        snapshot.Route.SourceRouter,
-		Mailbox:             snapshot.Route.Mailbox,
-		MerkleTreeHook:      snapshot.Route.MerkleTreeHook,
-		DestinationRouter:   snapshot.Route.DestinationRouter,
-		ValidatorFeeWei:     new(big.Int).Set(operation.ValidatorFeeWei),
-		AuthorizedMessageID: operation.MessageID,
-		Root:                checkpoint.Root,
-		Index:               checkpoint.Index,
-	}
-	raw, err := payload.MarshalBinary()
-	if err != nil {
-		return err
-	}
-	hash := crypto.Keccak256Hash(raw)
-
-	// The supplied set may have rotated during source-chain proof reads.
-	// Do not spend BLS work on an obsolete signer set.
-	currentSet, err := getILNValidatorSet(destination)
-	if err != nil { return fmt.Errorf("refresh destination signer set: %w", err) }
-	if currentSet.SetID != set.SetID { return fmt.Errorf("ILN validator set rotated during source validation") }
-	eligible, err := w.interchainSignerEligible(currentSet, w.localAddr)
-	if err != nil { return err }
-	if !eligible { return fmt.Errorf("ILN signer no longer eligible in current set") }
-	delivered, err = getILNMessageDelivered(destination, snapshot.Route.DestinationRouter, operation.MessageID)
-	if err != nil { return fmt.Errorf("ILN last-pre-sign delivery check failed closed: %w", err) }
-	if delivered { return nil }
-
-	w.mu.Lock()
-	_, alreadySigned := w.ilnLocalVotes[hash]
-	w.mu.Unlock()
-	if alreadySigned {
-		return nil
-	}
-
-	blsKey, err := crypto.BytesToBLSSecretKey(w.blsRaw)
-	if err != nil {
-		return err
-	}
-	signature, err := crypto.SignByBLS(blsKey, raw)
-	if err != nil {
-		return err
-	}
-	vote := ilnCheckpointVote{
-		Route: route.Name,
-		Payload: raw,
-		Signer: w.localAddr,
-		Signature: signature,
-	}
-	if err := w.persistILNLocalVote(hash, vote); err != nil {
-		return err
-	}
-	w.mu.Lock()
-	w.ilnLocalVotes[hash] = &ilnLocalVoteState{
-		vote: vote,
-		lastBroadcast: time.Now(),
-	}
-	w.mu.Unlock()
-
-	if err := w.acceptILNCheckpointVote(vote); err != nil {
-		return err
-	}
-	return w.publish(wireEnvelope{Type: "iln_checkpoint_vote", ILNCheckpointVote: &vote})
 }
 
 func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
