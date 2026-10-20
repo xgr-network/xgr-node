@@ -80,11 +80,11 @@ func (w *Worker) writeILNIndexerHealth() {
   if rh.Leaves>=rh.LocalLeaves{rh.LagLeaves=rh.Leaves-rh.LocalLeaves}
   health.Routes=append(health.Routes,rh)
   labels:=[]metrics.Label{{Name:"route",Value:rh.Route},{Name:"source",Value:rh.Source}}
-  metrics.SetPrecisionGaugeWithLabels([]string{"interchain","iln","replica","ready"},boolMetric(rh.State=="ok"),labels)
-  metrics.SetPrecisionGaugeWithLabels([]string{"interchain","iln","replica","lag_leaves"},float64(rh.LagLeaves),labels)
-  metrics.SetPrecisionGaugeWithLabels([]string{"interchain","iln","source_rpc","up"},boolMetric(rh.State!="unavailable"),labels)
+  metrics.SetGaugeWithLabels([]string{"interchain","iln","replica","ready"},boolMetric(rh.State=="ok"),labels)
+  metrics.SetGaugeWithLabels([]string{"interchain","iln","replica","lag_leaves"},float32(rh.LagLeaves),labels)
+  metrics.SetGaugeWithLabels([]string{"interchain","iln","source_rpc","up"},boolMetric(rh.State!="unavailable"),labels)
  }
- metrics.SetPrecisionGauge([]string{"interchain","iln","worker","up"},1)
+ metrics.SetGauge([]string{"interchain","iln","worker","up"},1)
  path:=filepath.Join(w.ilnDir(),"indexer-health.json")
  if err:=os.MkdirAll(filepath.Dir(path),0o770);err!=nil{return}
  raw,err:=json.Marshal(health);if err!=nil{return}
@@ -94,4 +94,4 @@ func (w *Worker) writeILNIndexerHealth() {
  if err=f.Close();err!=nil{return}
  _=os.Rename(f.Name(),path)
 }
-func boolMetric(b bool)float64{if b{return 1};return 0}
+func boolMetric(b bool)float32{if b{return 1};return 0}
