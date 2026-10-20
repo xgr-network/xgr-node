@@ -30,7 +30,13 @@ import (
 
 const (
 	TopicID                    = "/xgr/interchain/3.0.0"
-	defaultPollInterval        = 2 * time.Second
+	defaultPollInterval        = 2 * time.Second // local state / gossip, no periodic external RPC
+	// XGR v3.2.1: external RPC traffic must not follow the fast 2s loop.
+	ilnExternalCheckpointInterval = 30 * time.Second
+	ilnExternalDiscoveryInterval  = 60 * time.Second
+	ilnExternalMembershipInterval = 60 * time.Second
+	ilnExternalRetryInterval      = 30 * time.Second
+	ilnLocalHealthInterval        = 10 * time.Second
 	maximumMembershipLifetime  = 10 * time.Minute
 	requestRebroadcastInterval = 10 * time.Second
 )
@@ -103,6 +109,14 @@ type Worker struct {
 	destinations    map[string]*evmInterchain.Destination
 	routes          map[string]*evmInterchain.CheckpointRoute
 	ilnRestoredSources map[string]bool
+	// Last independently verified per-route observations for local-only health.
+	ilnRouteHealthByName map[string]ilnRouteHealth
+	// Accessed only by the interchain worker loop, never from gossip handlers.
+	ilnLastCheckpointPoll time.Time
+	ilnLastDiscoveryPoll  time.Time
+	ilnLastMembershipPoll time.Time
+	ilnLastRetryPoll      time.Time
+	ilnLastHealthWrite    time.Time
     ilnReplicaSync map[string]*ilnReplicaSyncState
     ilnReplicaServed map[peer.ID]time.Time
     ilnRouteLastPublished map[string]time.Time
@@ -361,6 +375,15 @@ func (w *Worker) loop() {
 	}
 }
 
+// dueILNPeriodicPolling updates a loop-local schedule before performing a
+// potentially failing RPC operation. A 429 must never cause a 2-second retry
+// storm. On-demand quorum and membership requests bypass this background gate.
+func dueILNPeriodicPolling(now time.Time,last *time.Time,interval time.Duration)bool{
+	if !last.IsZero()&&now.Sub(*last)<interval{return false}
+	*last=now
+	return true
+}
+
 func (w *Worker) tick() {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -374,6 +397,7 @@ func (w *Worker) tick() {
 		w.logger.Debug("interchain signing paused while XGR node is synchronizing")
 		return
 	}
+	// Fast, local/event-driven queue processing remains responsive at 2s.
 	if err := w.processLocalRequests(); err != nil {
 		w.logger.Warn("process local interchain requests failed", "err", err)
 	}
@@ -383,39 +407,49 @@ func (w *Worker) tick() {
 	if err := w.processLocalGovernanceRequests(); err != nil {
 		w.logger.Warn("process local ILN governance requests failed", "err", err)
 	}
-	for _, destination := range w.destinations {
-		if err := w.detectForcedRemovals(destination); err != nil {
-			w.logger.Warn("forced removal scan failed", "chain", destination.Name, "err", err)
-		}
-		if err := w.checkLocalReserve(destination); err != nil {
-			w.logger.Warn("interchain reserve check failed", "chain", destination.Name, "err", err)
+	now:=time.Now()
+	if dueILNPeriodicPolling(now,&w.ilnLastMembershipPoll,ilnExternalMembershipInterval) {
+		for _,destination:=range w.destinations{
+			if err:=w.detectForcedRemovals(destination);err!=nil{
+				w.logger.Warn("forced removal scan failed","chain",destination.Name,"err",err)
+			}
+			if err:=w.checkLocalReserve(destination);err!=nil{
+				w.logger.Warn("interchain reserve check failed","chain",destination.Name,"err",err)
+			}
 		}
 	}
-	w.discoverILNRoutes()
-    w.publishVerifiedILNRoutes()
-    w.refreshILNReplicas()
-    w.captureRecentILNMessages()
-    w.writeILNIndexerHealth()
-	w.mu.Lock()
-	activeRoutes := make([]*evmInterchain.CheckpointRoute, 0, len(w.routes))
-	for _, route := range w.routes { activeRoutes = append(activeRoutes, route) }
-	w.mu.Unlock()
-	for _, route := range activeRoutes {
-		if err := w.signVerifiedILNReplicaBatch(route); err != nil {
-			w.logger.Debug(
-				"ILN checkpoint not signed",
-				"route", route.Name,
-				"source", route.SourceNetwork,
-				"destination", route.Destination,
-				"err", err,
-			)
+	if dueILNPeriodicPolling(now,&w.ilnLastDiscoveryPoll,ilnExternalDiscoveryInterval) {
+		w.discoverILNRoutes()
+		w.publishVerifiedILNRoutes()
+	}
+	if dueILNPeriodicPolling(now,&w.ilnLastCheckpointPoll,ilnExternalCheckpointInterval) {
+		w.refreshILNReplicas()
+		w.captureRecentILNMessages()
+		w.mu.Lock()
+		activeRoutes:=make([]*evmInterchain.CheckpointRoute,0,len(w.routes))
+		for _,route:=range w.routes { activeRoutes=append(activeRoutes,route) }
+		w.mu.Unlock()
+		for _,route:=range activeRoutes{
+			if err:=w.signVerifiedILNReplicaBatch(route);err!=nil{
+				w.logger.Debug("ILN checkpoint not signed",
+					"route",route.Name,"source",route.SourceNetwork,
+					"destination",route.Destination,"err",err)
+			}
 		}
+	}
+	if dueILNPeriodicPolling(now,&w.ilnLastHealthWrite,ilnLocalHealthInterval) {
+		// v3.2.1: purely local persisted observations; never query Base/XGR.
+		w.writeILNIndexerHealth()
 	}
 	w.rebroadcastPendingRequests()
-	w.rebroadcastILNCheckpointVotes()
-    w.replicateILNMissingMessages()
+	if dueILNPeriodicPolling(now,&w.ilnLastRetryPoll,ilnExternalRetryInterval) {
+		// Pending votes/message repair may require remote reads. They MUST NOT
+		// retry every 2s when the remote chain rate-limits a validator.
+		w.rebroadcastILNCheckpointVotes()
+		w.replicateILNMissingMessages()
+		w.trySubmissions()
+	}
 	w.rebroadcastGovernance()
-	w.trySubmissions()
 }
 
 func (w *Worker) requestDir() string { return filepath.Join(w.dataDir, "interchain", "requests") }
