@@ -2,12 +2,16 @@ package evm
 
 import (
     "fmt"
+    "errors"
     "math/big"
 
     "github.com/umbracle/ethgo"
     "github.com/xgr-network/xgr-node/crypto"
     "github.com/xgr-network/xgr-node/types"
 )
+
+// ErrILNFeeNotAllocated is a conclusive non-route leaf, not an RPC outage.
+var ErrILNFeeNotAllocated = errors.New("ILN message not allocated by route FeeVault")
 
 // VerifyConfirmedILNFeeAllocation checks the ORIGINAL protocol-level fee
 // qualification without replaying historical Gateway logs or confusing the
@@ -82,7 +86,7 @@ func VerifyConfirmedILNFeeAllocation(
         return fmt.Errorf("ILN allocatedOperation at confirmed checkpoint unavailable: %v", err)
     }
     if new(big.Int).SetBytes(allocated).Cmp(big.NewInt(1)) != 0 {
-        return fmt.Errorf("ILN message has no mandatory validator fee allocation at checkpoint")
+        return fmt.Errorf("%w at confirmed checkpoint",ErrILNFeeNotAllocated)
     }
     selector = crypto.Keccak256Hash([]byte("allocatedSetId(bytes32)"))
     copy(data[:4],selector[:4])
