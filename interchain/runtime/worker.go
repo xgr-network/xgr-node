@@ -395,6 +395,7 @@ func (w *Worker) tick() {
     w.publishVerifiedILNRoutes()
     w.refreshILNReplicas()
     w.captureRecentILNMessages()
+    w.writeILNIndexerHealth()
 	w.mu.Lock()
 	activeRoutes := make([]*evmInterchain.CheckpointRoute, 0, len(w.routes))
 	for _, route := range w.routes { activeRoutes = append(activeRoutes, route) }
