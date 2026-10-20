@@ -705,31 +705,27 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
           w.removeILNLocalVote(pending[i].hash)
           continue
         }
-        if set.SetID != payload.SetID {
-			operation, err := getILNOperationAtBlock(
-				source,
-				payload.Gateway,
-				payload.RouteID,
-				destination.Domain,
-				payload.AuthorizedMessageID,
-				payload.SourceBlockNumber,
-			)
-			if err != nil {
-				continue
-			}
-			w.removeILNLocalVote(pending[i].hash)
-			if err := w.signILNOperation(route, source, destination, set, *operation); err != nil {
-				w.logger.Debug(
-					"ILN local vote not refreshed for new validator set",
-					"route", route.Name,
-					"message", payload.AuthorizedMessageID.String(),
-					"err", err,
-				)
-			}
-			continue
-		}
+        // A new destination set or confirmed Hook epoch changes the signed
+        // payload. Re-prove from the source-anchored Merkle replica and
+        // immutable FeeVault instead of replaying old Gateway receipts.
+        needsRefresh:=set.SetID!=payload.SetID
+        if !needsRefresh {
+            if current,verifyErr:=w.verifiedILNReplicaRoute(route);verifyErr==nil {
+                needsRefresh=payload.Root!=current.canonical.Root ||
+                    payload.Index!=current.checkpoint.Index ||
+                    payload.SourceBlockNumber!=current.canonical.BlockNumber
+            }
+        }
+        if needsRefresh {
+            w.removeILNLocalVote(pending[i].hash)
+            if err:=w.signVerifiedILNReplicaMessage(route,payload.AuthorizedMessageID);err!=nil {
+                w.logger.Debug("ILN local vote awaits fresh confirmed root/set",
+                    "route",route.Name,"message",payload.AuthorizedMessageID,"err",err)
+            }
+            continue
+        }
 
-		// Re-accept the local vote after restart so it contributes to this
+        // Re-accept the local vote after restart so it contributes to this
 		// process's in-memory aggregate state before rebroadcast.
 		_ = w.acceptILNCheckpointVote(pending[i].vote)
 		_ = w.publish(wireEnvelope{Type: "iln_checkpoint_vote", ILNCheckpointVote: &pending[i].vote})
