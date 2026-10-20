@@ -2,7 +2,6 @@ package runtime
 
 import (
  "encoding/json"
- "fmt"
  "os"
  "path/filepath"
  "sort"
@@ -10,6 +9,7 @@ import (
 
  "github.com/armon/go-metrics"
  evm "github.com/xgr-network/xgr-node/interchain/evm"
+ "github.com/xgr-network/xgr-node/types"
 )
 
 type ilnRouteHealth struct {
@@ -63,7 +63,7 @@ func (w *Worker) writeILNIndexerHealth() {
     if epoch>0{
      if snapshot,e:=getILNRouteAtBlock(source,destination.Domain,route.RouteID,head);e==nil{
       snapshot.BlockNumber=epoch
-      if cp,e:=getConfirmedILNCheckpoint(source,snapshot);e==nil&&cp.Root!=[32]byte{}{
+      if cp,e:=getConfirmedILNCheckpoint(source,snapshot);e==nil&&cp.Root!=types.ZeroHash{
        canonical:=evm.ILNReplicaCheckpoint{ChainID:source.ChainID,Hook:snapshot.Route.MerkleTreeHook,Root:cp.Root,Count:uint64(cp.Index)+1,BlockNumber:cp.BlockNumber}
        rh.CheckpointBlock=cp.BlockNumber
        rh.Leaves=canonical.Count
@@ -74,7 +74,7 @@ func (w *Worker) writeILNIndexerHealth() {
     }
    }
    w.mu.Lock()
-   if snapshot:=w.ilnReplicaSync[fmt.Sprintf("%d-%s",source.ChainID, source.Name)];snapshot!=nil{rh.PendingPeers=len(snapshot.attempts)}
+   for _,snapshot:=range w.ilnReplicaSync {if snapshot!=nil && snapshot.canonical.ChainID==source.ChainID && snapshot.canonical.Count==rh.Leaves {rh.PendingPeers=len(snapshot.attempts);break}}
    w.mu.Unlock()
   }
   if rh.Leaves>=rh.LocalLeaves{rh.LagLeaves=rh.Leaves-rh.LocalLeaves}
