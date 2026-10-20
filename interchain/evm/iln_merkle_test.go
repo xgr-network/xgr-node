@@ -90,86 +90,60 @@ func testILNInsertedLog(hook types.Address, id types.Hash, index uint32, block u
 	}
 }
 
-func TestILNCheckpointRebuildDoesNotRequireArchiveState(t *testing.T) {
-	hook := types.StringToAddress("0x1111111111111111111111111111111111111111")
-	registry := types.StringToAddress("0x2222222222222222222222222222222222222222")
-	a := types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	b := types.StringToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-	c := types.StringToHash("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
-	// Index zero predates the source registry: replay must restart at genesis.
-	logs := []map[string]interface{}{
-		testILNInsertedLog(hook, a, 0, 11),
-		testILNInsertedLog(hook, b, 1, 101),
-		testILNInsertedLog(hook, c, 2, 105),
-	}
-	var historicalCalls, logCalls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			ID json.RawMessage `json:"id"`
-			Method string `json:"method"`
-			Params []json.RawMessage `json:"params"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		w.Header().Set("Content-Type", "application/json")
-		var value interface{}
-		switch req.Method {
-		case "eth_chainId":
-			value = "0x2105"
-		case "eth_blockNumber":
-			value = "0x200"
-		case "eth_call":
-			if len(req.Params) < 2 || string(req.Params[1]) != `"latest"` {
-				historicalCalls.Add(1)
-				_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"state not found"}}`, req.ID)
-				return
-			}
-			// The immutable registry activationBlock() is available at latest.
-			value = fmt.Sprintf("0x%064x", 100)
-		case "eth_getLogs":
-			logCalls.Add(1)
-			var filter struct {
-				FromBlock string `json:"fromBlock"`
-				ToBlock string `json:"toBlock"`
-			}
-			_ = json.Unmarshal(req.Params[0], &filter)
-			from, _ := strconv.ParseUint(strings.TrimPrefix(filter.FromBlock, "0x"), 16, 64)
-			to, _ := strconv.ParseUint(strings.TrimPrefix(filter.ToBlock, "0x"), 16, 64)
-			selected := make([]map[string]interface{}, 0)
-			for _, event := range logs {
-				n, _ := strconv.ParseUint(strings.TrimPrefix(event["blockNumber"].(string), "0x"), 16, 64)
-				if n >= from && n <= to { selected = append(selected, event) }
-			}
-			value = selected
-		default:
-			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"method unknown"}}`, req.ID)
-			return
-		}
-		encoded, _ := json.Marshal(value)
-		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, encoded)
-	}))
-	defer srv.Close()
-
-	source := &Destination{
-		Name: "base", ChainID: 8453, Domain: 8453,
-		RPCURL: srv.URL, ILNRegistryAddress: registry.String(), Confirmations: 1,
-	}
-	snapshot := &ILNRouteSnapshot{
-		Registry: registry,
-		Route: protocol.ILNRoute{MerkleTreeHook: hook},
-		BlockNumber: 110,
-	}
-	result, err := GetConfirmedILNCheckpoint(source, snapshot)
-	require.NoError(t, err)
-	require.Equal(t, uint32(2), result.Index)
-	require.Equal(t, uint64(110), result.BlockNumber)
-	require.NotEqual(t, types.ZeroHash, result.Root)
-	expected := &ilnMerkleAccumulator{}
-	for i, leaf := range []types.Hash{a, b, c} {
-		require.NoError(t, expected.insert(uint32(i), leaf))
-	}
-	require.Equal(t, expected.root(), result.Root)
-	require.EqualValues(t, 0, historicalCalls.Load(), "no source chain may require eth_call on an old block")
-	require.GreaterOrEqual(t, logCalls.Load(), int32(2), "must retry when hook predates registry")
+func TestILNCheckpointUsesConfirmedHookStateWithoutHistoricalLogs(t *testing.T) {
+ hook:=types.StringToAddress("0x1111111111111111111111111111111111111111")
+ registry:=types.StringToAddress("0x2222222222222222222222222222222222222222")
+ mailbox:=types.StringToAddress("0x3333333333333333333333333333333333333333")
+ message:=types.StringToHash("0xf735484813a91eda5c60e959f4038b97ea518de5a9e92de440bd5612c1f387a5")
+ tree:=&ilnMerkleAccumulator{}
+ require.NoError(t,tree.insert(0,message))
+ selector:=func(name string)string{return crypto.Keccak256Hash([]byte(name)).String()[:10]}
+ var logs,badCalls atomic.Int32
+ srv:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  var req struct{ID json.RawMessage `json:"id"`;Method string `json:"method"`;Params []json.RawMessage `json:"params"`}
+  _=json.NewDecoder(r.Body).Decode(&req)
+  var output interface{}
+  switch req.Method {
+  case "eth_chainId":output="0x2105"
+  case "eth_blockNumber":output="0x8e" // 142 - 12 confirmations = 130; epoch checkpoint = 128.
+  case "eth_getLogs":
+   logs.Add(1)
+   _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"error":{"code":-32005,"message":"historical logs unavailable"}}`,req.ID)
+   return
+  case "eth_call":
+   if len(req.Params)!=2 || string(req.Params[1])!=`"0x80"` {
+    badCalls.Add(1)
+    _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"unavailable historical state"}}`,req.ID)
+    return
+   }
+   var call struct{Data string `json:"data"`}
+   _=json.Unmarshal(req.Params[0],&call)
+   if len(call.Data)<10 {t.Errorf("short eth_call");return}
+   switch strings.ToLower(call.Data[:10]) {
+   case selector("mailbox()"):output=fmt.Sprintf("0x%064x",mailbox.Bytes())
+   case selector("count()"):output=fmt.Sprintf("0x%064x",1)
+   case selector("root()"):output=tree.root().String()
+   default:t.Errorf("unexpected getter: %s",call.Data);return
+   }
+  default:t.Errorf("unexpected rpc: %s",req.Method);return
+  }
+  encoded,_:=json.Marshal(output)
+  w.Header().Set("Content-Type","application/json")
+  _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"result":%s}`,req.ID,encoded)
+ }))
+ defer srv.Close()
+ source:=&Destination{Name:"base",ChainID:8453,Domain:8453,RPCURL:srv.URL,ILNRegistryAddress:registry.String(),Confirmations:12}
+ snapshot:=&ILNRouteSnapshot{Registry:registry,Route:protocol.ILNRoute{Mailbox:mailbox,MerkleTreeHook:hook},BlockNumber:110}
+ got,err:=GetConfirmedILNCheckpoint(source,snapshot)
+ require.NoError(t,err)
+ require.Equal(t,tree.root(),got.Root)
+ require.Equal(t,uint32(0),got.Index)
+ require.Equal(t,uint64(128),got.BlockNumber)
+ require.Zero(t,logs.Load())
+ require.Zero(t,badCalls.Load())
+ snapshot.BlockNumber=129
+ _,err=GetConfirmedILNCheckpoint(source,snapshot)
+ require.ErrorContains(t,err,"awaits next confirmed")
 }
 
 func TestILNRouteSnapshotUsesAppendOnlyCurrentBindings(t *testing.T) {
