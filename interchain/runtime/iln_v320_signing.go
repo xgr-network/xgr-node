@@ -42,7 +42,7 @@ func (w *Worker) verifiedILNReplicaRoute(route *evmInterchain.CheckpointRoute)(*
     if err!=nil{return nil,err}
     epoch:=head/32*32
     if epoch==0{return nil,fmt.Errorf("confirmed Hyperlane epoch not available")}
-    snapshot,err:=getILNRouteAtBlock(source,destination.Domain,route.RouteID,head)
+    snapshot,err:=getILNRouteAtBlock(source,destination.Domain,route.RouteID,epoch)
     if err!=nil{return nil,err}
     snapshot.BlockNumber=epoch // signed value is now the confirmed ROOT epoch
     checkpoint,err:=getConfirmedILNCheckpoint(source,snapshot)
