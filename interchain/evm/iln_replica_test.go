@@ -76,3 +76,45 @@ func TestILNReplicaParallelTenThousandLeaves(t *testing.T){
  _,err=AssembleILNReplica(canonical,corrupted)
  require.ErrorIs(t,err,ErrILNReplicaUnverified)
 }
+
+func TestILNReplicaThreeValidatorColdJoinFailoverE2E(t *testing.T) {
+ canonical,chunks:=makeILNReplicaFixture(t,4096)
+ // Validator one is corrupt, validator two has lost its final chunk,
+ // validator three is honest. New validator must fail closed on two peers
+ // before installing data from the independently verified third.
+ incoming:=[][]ILNReplicaChunk{
+  append([]ILNReplicaChunk(nil),chunks...),
+  chunks[:len(chunks)-1],
+  chunks,
+ }
+ poisoned:=incoming[0][0]
+ poisoned.Leaves=append([]types.Hash(nil),poisoned.Leaves...)
+ poisoned.Leaves[7]=crypto.Keccak256Hash([]byte("byzantine peer"))
+ incoming[0][0]=poisoned
+ install:=filepath.Join(t.TempDir(),"data","interchain","merkle","8453","replica.json")
+ rejected:=0
+ for _,peer:=range incoming {
+  replica,err:=AssembleILNReplica(canonical,peer)
+  if err!=nil {
+   rejected++
+   _,statErr:=os.Stat(install)
+   require.True(t,os.IsNotExist(statErr),"a rejected peer must never create live state")
+   continue
+  }
+  require.NoError(t,StoreVerifiedILNReplica(install,replica,canonical))
+ }
+ require.Equal(t,2,rejected)
+ restarted,err:=LoadVerifiedILNReplica(install,canonical)
+ require.NoError(t,err)
+ require.Len(t,restarted.Leaves,4096)
+ oldBytes:=mustReadILNReplica(t,install)
+ // A stale source checkpoint cannot promote a peer's signed-but-wrong root.
+ stale:=canonical
+ stale.BlockNumber++
+ require.ErrorIs(t,StoreVerifiedILNReplica(install,restarted,stale),ErrILNReplicaUnverified)
+ require.Equal(t,oldBytes,mustReadILNReplica(t,install))
+ // Post-restart local disk corruption must be detected independently.
+ require.NoError(t,os.WriteFile(install,[]byte("{\"leaves\":[]}"),0o660))
+ _,err=LoadVerifiedILNReplica(install,canonical)
+ require.ErrorIs(t,err,ErrILNReplicaUnverified)
+}
