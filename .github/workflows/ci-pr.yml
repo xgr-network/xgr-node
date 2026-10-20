@@ -26,7 +26,11 @@ jobs:
         run: go test -count=1 ./e2e -run 'TestInterchainILNRoutesE2E' -v
 
       - name: ILN three-peer authenticated replica E2E
-        run: go test -count=1 ./interchain/runtime -run '^TestILNReplicaThreeAuthenticatedLibp2pValidatorsE2E -v -timeout 180s
+        run: go test -count=1 ./interchain/runtime -run '^(TestILNReplicaThreeAuthenticatedLibp2pValidatorsE2E|TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs|TestILNValidatorRestartRetainsVerifiedReplicaAndPerSetCursor)
+
+      - name: Go build
+        run: go build ./...
+ -v -timeout 180s
 
       - name: Go build
         run: go build ./...
