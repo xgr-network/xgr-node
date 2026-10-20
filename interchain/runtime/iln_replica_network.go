@@ -113,6 +113,7 @@ func (w *Worker) refreshILNReplicaRoute(route *evmInterchain.CheckpointRoute) er
     if canonical.Count>1<<20{return fmt.Errorf("ILN replica over bounded snapshot capacity")}
     if _,err:=evmInterchain.LoadVerifiedILNReplica(w.ilnReplicaPath(canonical),canonical);err==nil {
         w.mu.Lock();delete(w.ilnReplicaSync,ilnReplicaKey(canonical));w.mu.Unlock()
+        w.recordILNReplicaVerified(route,canonical,head)
         return nil
     }
 
@@ -138,6 +139,7 @@ func (w *Worker) refreshILNReplicaRoute(route *evmInterchain.CheckpointRoute) er
         if updateErr==nil {
             if err:=evmInterchain.StoreVerifiedILNReplica(w.ilnReplicaPath(canonical),extended,canonical);err==nil {
                 w.mu.Lock();delete(w.ilnReplicaSync,key);w.mu.Unlock()
+                w.recordILNReplicaVerified(route,canonical,head)
                 return nil
             }
         }
