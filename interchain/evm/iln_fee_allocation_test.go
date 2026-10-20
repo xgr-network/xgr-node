@@ -114,7 +114,7 @@ func TestILNFeeVaultAllocationIsOnChainAndIndependentFromHistoricLogs(t *testing
     require.NoError(t,VerifyConfirmedILNFeeAllocation(source,snapshot,message,128))
     mu.Lock();allocated=false;mu.Unlock()
     require.ErrorContains(t,VerifyConfirmedILNFeeAllocation(source,snapshot,message,128),
-        "no mandatory validator fee")
+        "not allocated by route FeeVault")
     mu.Lock();allocated=true;wrongRoute=true;mu.Unlock()
     require.ErrorContains(t,VerifyConfirmedILNFeeAllocation(source,snapshot,message,128),
         "routeId mismatch")
