@@ -2,7 +2,7 @@ name: CI (PR)
 
 on:
   pull_request:
-    branches: [ "main", "XGR3.0" ]
+    branches: ["main", "XGR3.0"]
   workflow_dispatch:
 
 jobs:
@@ -23,7 +23,14 @@ jobs:
           go test -count=1 -short $pkgs
 
       - name: ILN archive-independent route E2E
-        run: go test -count=1 ./e2e -run 'TestInterchainILNRoutesE2E' -v
+        run: go test -count=1 ./e2e -run '^TestInterchainILNRoutesE2E$' -v
+
+      - name: ILN three-validator replica, route discovery and restart E2E
+        run: |
+          set -euo pipefail
+          go test -count=1 ./interchain/runtime \
+            -run '^(TestILNReplicaThreeAuthenticatedLibp2pValidatorsE2E|TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs|TestILNValidatorRestartRetainsVerifiedReplicaAndPerSetCursor)$' \
+            -v -timeout 180s
 
       - name: Go build
         run: go build ./...

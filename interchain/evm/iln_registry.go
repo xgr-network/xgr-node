@@ -49,6 +49,7 @@ type ILNOperation struct {
 	BlockNumber       uint64
 	TransactionHash types.Hash
 	LogIndex uint64
+	InsertionIndex uint32 // Authenticated by canonical receipt Hook event.
 }
 
 func (d *Destination) ValidateILNRead() error {
@@ -427,27 +428,37 @@ func GetConfirmedILNOperations(
 // verifyILNDispatchInReceipt binds a fee-qualified Gateway event to the actual
 // canonical WarpRouter -> Mailbox dispatch in the SAME successful source tx.
 // An event from the wrong sender, transaction, route or message cannot pass.
-func verifyILNDispatchInReceipt(client *jsonrpc.Client, operation ILNOperation, gateway, mailbox, sourceRouter types.Address, destinationDomain uint32, destinationRouter types.Address) error {
- if operation.TransactionHash == types.ZeroHash { return fmt.Errorf("missing ILN gateway transaction hash") }
+func verifyILNDispatchInReceipt(client *jsonrpc.Client, operation ILNOperation, gateway, mailbox, hook, sourceRouter types.Address, destinationDomain uint32, destinationRouter types.Address) (uint32, error) {
+ if operation.TransactionHash == types.ZeroHash { return 0, fmt.Errorf("missing ILN gateway transaction hash") }
  receipt, err := client.Eth().GetTransactionReceipt(ethgo.Hash(operation.TransactionHash))
- if err != nil || receipt == nil { return fmt.Errorf("ILN source transaction receipt unavailable: %v", err) }
+ if err != nil || receipt == nil { return 0, fmt.Errorf("ILN source transaction receipt unavailable: %v", err) }
  if receipt.Status != 1 || receipt.BlockNumber != operation.BlockNumber || types.Hash(receipt.TransactionHash) != operation.TransactionHash {
-  return fmt.Errorf("ILN gateway transaction not successful or from wrong block")
+  return 0, fmt.Errorf("ILN gateway transaction not successful or from wrong block")
  }
  dispatchTopic := ethgo.Hash(crypto.Keccak256Hash([]byte("Dispatch(address,uint32,bytes32,bytes)")))
  operationTopic := ethgo.Hash(crypto.Keccak256Hash([]byte(ilnOperationEventSignature)))
  found := 0
  gatewayEvents:=0
+ insertions:=0
+ var insertionIndex uint32
  for _, log := range receipt.Logs {
   if log == nil || log.Removed { continue }
   if types.Address(log.Address)==gateway && len(log.Topics)==4 && log.Topics[0]==operationTopic {
    original,decodeErr:=parseILNOperationLog(log)
-   if decodeErr!=nil{return fmt.Errorf("invalid original ILN gateway event: %w",decodeErr)}
+   if decodeErr!=nil{return 0, fmt.Errorf("invalid original ILN gateway event: %w",decodeErr)}
    if original.RouteID==operation.RouteID && original.MessageID==operation.MessageID &&
      original.DestinationDomain==operation.DestinationDomain &&
      original.ValidatorFeeWei.Cmp(operation.ValidatorFeeWei)==0 &&
      original.LogIndex==operation.LogIndex &&
      types.Hash(log.TransactionHash)==operation.TransactionHash {gatewayEvents++}
+  }
+  if types.Address(log.Address)==hook {
+    msg,index,parseErr:=parseILNInsertionLog(log)
+    if parseErr!=nil {return 0,fmt.Errorf("invalid canonical Hook insertion: %w",parseErr)}
+    if types.Hash(log.TransactionHash)!=operation.TransactionHash || log.BlockNumber!=operation.BlockNumber {
+      return 0,fmt.Errorf("Hook insertion transaction/block mismatch")
+    }
+    if msg==operation.MessageID {insertions++;insertionIndex=index}
   }
   if types.Address(log.Address) != mailbox || len(log.Topics) != 4 || log.Topics[0] != dispatchTopic { continue }
   if types.BytesToAddress(log.Topics[1][12:]) != sourceRouter { continue }
@@ -460,8 +471,10 @@ func verifyILNDispatchInReceipt(client *jsonrpc.Client, operation ILNOperation, 
   message := log.Data[64:64+int(length.Uint64())]
   if crypto.Keccak256Hash(message) == operation.MessageID { found++ }
  }
- if gatewayEvents != 1 || found != 1 { return fmt.Errorf("ILN operation lacks unique matching Gateway event and canonical Mailbox.Dispatch in original source transaction") }
- return nil
+ if gatewayEvents != 1 || found != 1 || insertions != 1 {
+  return 0,fmt.Errorf("ILN source receipt must contain unique Gateway, Dispatch and canonical Hook insertion")
+ }
+ return insertionIndex,nil
 }
 
 // GetILNOperationAtBlock verifies the exact Gateway event referenced by a peer
@@ -500,8 +513,10 @@ func GetILNOperationAtBlock(
 	if err != nil { return nil, err }
 	client, err := ilnSourceClient(source)
 	if err != nil { return nil, err }
-	if err := verifyILNDispatchInReceipt(client, *match, snapshot.Route.Gateway, snapshot.Route.Mailbox, snapshot.Route.SourceRouter, destinationDomain, snapshot.Route.DestinationRouter); err != nil { return nil, err }
-	return match, nil
+	index,err:=verifyILNDispatchInReceipt(client, *match, snapshot.Route.Gateway, snapshot.Route.Mailbox, snapshot.Route.MerkleTreeHook, snapshot.Route.SourceRouter, destinationDomain, snapshot.Route.DestinationRouter)
+	if err!=nil{return nil,err}
+	match.InsertionIndex=index
+	return match,nil
 }
 
 func parseILNOperationLog(log *ethgo.Log) (ILNOperation, error) {
@@ -582,50 +597,10 @@ func GetILNMessageDelivered(destination *Destination, destinationRouter types.Ad
 	return raw[31] == 1, nil
 }
 
-// GetConfirmedILNCheckpoint reconstructs the historical Merkle root from
-// canonical InsertedIntoTree logs, never from a historical EVM state snapshot.
-// This works for XGRChain and every supported EVM source with ordinary
-// receipt/log history, without requiring an archive-state RPC.
+// GetConfirmedILNCheckpoint restores the confirmed Hyperlane MerkleTreeHook
+// contract-state path from v3.1.1. No historical Merkle log replay is required.
 func GetConfirmedILNCheckpoint(source *Destination, snapshot *ILNRouteSnapshot) (*ConfirmedCheckpoint, error) {
-	if snapshot == nil {
-		return nil, fmt.Errorf("ILN route snapshot is nil")
-	}
-	client, err := ilnSourceClient(source)
-	if err != nil {
-		return nil, err
-	}
-	confirmed, err := confirmedILNHead(client, source)
-	if err != nil {
-		return nil, err
-	}
-	if snapshot.BlockNumber == 0 || snapshot.BlockNumber > confirmed {
-		return nil, fmt.Errorf("ILN checkpoint source block is not sufficiently confirmed")
-	}
-	// The registry's immutable activation height bounds the common case.
-	// If this hook predates the registry and has earlier insertions, restart
-	// from genesis rather than trusting a partial Merkle history.
-	start, err := GetILNRegistryActivationBlock(source)
-	if err != nil {
-		return nil, fmt.Errorf("locate ILN log replay start: %w", err)
-	}
-	if start > snapshot.BlockNumber {
-		return nil, fmt.Errorf("ILN registry activated after the checkpoint")
-	}
-	tree, err := reconstructILNMerkleFromLogsCached(client, source, snapshot.Route.MerkleTreeHook, start, snapshot.BlockNumber)
-	if err == errILNMerkleMissingPrefix && start > 1 {
-		tree, err = reconstructILNMerkleFromLogsCached(client, source, snapshot.Route.MerkleTreeHook, 1, snapshot.BlockNumber)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("rebuild canonical ILN Merkle history: %w", err)
-	}
-	if tree.count == 0 {
-		return &ConfirmedCheckpoint{BlockNumber: snapshot.BlockNumber}, nil
-	}
-	return &ConfirmedCheckpoint{
-		Root: tree.root(),
-		Index: uint32(tree.count - 1),
-		BlockNumber: snapshot.BlockNumber,
-	}, nil
+    return GetConfirmedILNHookCheckpoint(source, snapshot)
 }
 
 func callILNAddressGetter(client *jsonrpc.Client, address types.Address, signature string, block ethgo.BlockNumber) (types.Address, error) {

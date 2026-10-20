@@ -3,7 +3,6 @@ package e2e
 import (
 	"encoding/hex"
 	"encoding/json"
-	"strconv"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +25,7 @@ type ilnRPCFixture struct {
 
 	chainID           uint64
 	head              uint64
+	confirmations uint64
 	sourceDomain      uint32
 	destinationDomain uint32
 	routeID           string
@@ -39,7 +39,8 @@ type ilnRPCFixture struct {
 	root              string
 	count             uint64
 	insertions        []map[string]interface{}
-	dropFirstInsertion bool
+	invalidHookRoot bool
+	getLogsCalls int
 }
 
 func newILNRPCFixture(
@@ -65,6 +66,7 @@ func newILNRPCFixture(
 	fixture := &ilnRPCFixture{
 		chainID:           chainID,
 		head:              head,
+		confirmations: confirmations,
 		sourceDomain:      sourceDomain,
 		destinationDomain: destinationDomain,
 		routeID:           routeID,
@@ -128,7 +130,13 @@ func newILNRPCFixture(
 			fixture.mu.Lock()
 			fixture.lastBlockTags = append(fixture.lastBlockTags, blockTag)
 			fixture.mu.Unlock()
-			require.Equal(t, "latest", blockTag, "archive-free proof must not use historical eth_call")
+            expectedTag := "latest"
+            if strings.EqualFold(call.To, fixture.hook) {
+                checkpoint := (fixture.head - fixture.confirmations) / 32 * 32
+                expectedTag = fmt.Sprintf("0x%x", checkpoint)
+            }
+            require.Equal(t, expectedTag, blockTag,
+                "only recent confirmed hook state may use a numeric block; all route reads use latest")
 
 			to := strings.ToLower(call.To)
 			data := strings.ToLower(call.Data)
@@ -177,44 +185,35 @@ func newILNRPCFixture(
 					t.Fatalf("unexpected gateway eth_call data %s", call.Data)
 				}
 			case strings.ToLower(fixture.hook):
-				// A hook eth_call (even latest) cannot establish the root at
-				// the original source block; proof must use insertion logs.
-				t.Errorf("unexpected hook eth_call data %s", call.Data)
-				http.Error(w, "hook state reads disabled in v3.1.7 fixture", http.StatusBadRequest)
-				return
+                switch data {
+                case selectorHex("mailbox()"):
+                    result = encodeAddressResult(fixture.mailbox)
+                case selectorHex("count()"):
+                    result = "0x" + fmt.Sprintf("%064x", fixture.count)
+                case selectorHex("root()"):
+                    fixture.mu.Lock()
+                    invalid := fixture.invalidHookRoot
+                    fixture.mu.Unlock()
+                    if invalid {
+                        result = "0x" + strings.Repeat("0", 64)
+                    } else {
+                        result = fixture.root
+                    }
+                default:
+                    t.Errorf("unexpected hook selector %s", call.Data)
+                    http.Error(w, "unsupported hook selector", http.StatusBadRequest)
+                    return
+                }
 			default:
 				t.Fatalf("unexpected eth_call target %s", call.To)
 			}
 
 			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"%s"}`, req.ID, result)
 		case "eth_getLogs":
-			require.Len(t, req.Params, 1)
-			var filter struct {
-				FromBlock string `json:"fromBlock"`
-				ToBlock string `json:"toBlock"`
-			}
-			require.NoError(t, json.Unmarshal(req.Params[0], &filter))
-			from, err := strconv.ParseUint(strings.TrimPrefix(filter.FromBlock, "0x"), 16, 64)
-			require.NoError(t, err)
-			to, err := strconv.ParseUint(strings.TrimPrefix(filter.ToBlock, "0x"), 16, 64)
-			require.NoError(t, err)
-			fixture.mu.Lock()
-			insertions := append([]map[string]interface{}(nil), fixture.insertions...)
-			dropFirst := fixture.dropFirstInsertion
-			fixture.mu.Unlock()
-			out := make([]map[string]interface{}, 0)
-			for i, log := range insertions {
-				if dropFirst && i == 0 {
-					continue
-				}
-				block := uint64(2) + uint64(i)
-				if block >= from && block <= to {
-					out = append(out, log)
-				}
-			}
-			encoded, err := json.Marshal(out)
-			require.NoError(t, err)
-			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, encoded)
+            fixture.mu.Lock()
+            fixture.getLogsCalls++
+            fixture.mu.Unlock()
+            _, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32005,"message":"historical logs unavailable"}}`, req.ID)
 		default:
 			t.Errorf("unexpected JSON-RPC method %s", req.Method)
 			http.Error(w, "unsupported RPC method", http.StatusBadRequest)
@@ -373,14 +372,15 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
 	require.Equal(t, types.StringToAddress(baseDestinationRouter), baseSnapshot.Route.DestinationRouter)
 	require.Equal(t, int64(1000), baseSnapshot.Route.ValidatorFeeWei.Int64())
 
-	baseCheckpoint, err := evmInterchain.GetConfirmedILNCheckpoint(base, baseSnapshot)
+	baseOperationSnapshot := *baseSnapshot
+    baseOperationSnapshot.BlockNumber = 95 // operation is older than the confirmed epoch 96
+    baseCheckpoint, err := evmInterchain.GetConfirmedILNCheckpoint(base, &baseOperationSnapshot)
 	require.NoError(t, err)
-	require.Equal(t, uint64(97), baseCheckpoint.BlockNumber)
+	require.Equal(t, uint64(96), baseCheckpoint.BlockNumber)
 	require.Equal(t, uint32(3), baseCheckpoint.Index)
 	require.Equal(t, types.StringToHash(baseRPC.root), baseCheckpoint.Root)
-	for _, tag := range baseRPC.blockTags() {
-		require.Equal(t, "latest", tag)
-	}
+	require.Contains(t, baseRPC.blockTags(), "0x60")
+    require.Zero(t, baseRPC.getLogsCalls)
 
 	arbitrumRoute := byName["arbitrum_to_xgr"]
 	require.NotNil(t, arbitrumRoute)
@@ -398,23 +398,25 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
 	require.Equal(t, types.StringToAddress(arbitrumDestinationRouter), arbitrumSnapshot.Route.DestinationRouter)
 	require.Equal(t, int64(2000), arbitrumSnapshot.Route.ValidatorFeeWei.Int64())
 
-	arbitrumCheckpoint, err := evmInterchain.GetConfirmedILNCheckpoint(arbitrum, arbitrumSnapshot)
+	arbitrumOperationSnapshot := *arbitrumSnapshot
+    arbitrumOperationSnapshot.BlockNumber = 150 // operation is older than epoch 160
+    arbitrumCheckpoint, err := evmInterchain.GetConfirmedILNCheckpoint(arbitrum, &arbitrumOperationSnapshot)
 	require.NoError(t, err)
-	require.Equal(t, uint64(180), arbitrumCheckpoint.BlockNumber)
+	require.Equal(t, uint64(160), arbitrumCheckpoint.BlockNumber)
 	require.Equal(t, uint32(8), arbitrumCheckpoint.Index)
 	require.Equal(t, types.StringToHash(arbitrumRPC.root), arbitrumCheckpoint.Root)
-	for _, tag := range arbitrumRPC.blockTags() {
-		require.Equal(t, "latest", tag)
-	}
+	require.Contains(t, arbitrumRPC.blockTags(), "0xa0")
+    require.Zero(t, arbitrumRPC.getLogsCalls)
 
 	require.NotEqual(t, baseCheckpoint.Root, arbitrumCheckpoint.Root)
 	require.NotEqual(t, baseRoute.Name, arbitrumRoute.Name)
 
-	// A provider omitting canonical insertion zero must never produce a
-	// partially reconstructed checkpoint that validators could sign.
-	baseRPC.mu.Lock()
-	baseRPC.dropFirstInsertion = true
-	baseRPC.mu.Unlock()
-	_, err = evmInterchain.GetConfirmedILNCheckpoint(base, baseSnapshot)
-	require.ErrorContains(t, err, "noncanonical ILN insertion index")
+	// A corrupt or empty canonical hook root is rejected, even when its
+    // count matches. No historical eth_getLogs fallback is permissible.
+    baseRPC.mu.Lock()
+    baseRPC.invalidHookRoot = true
+    baseRPC.mu.Unlock()
+    _, err = evmInterchain.GetConfirmedILNCheckpoint(base, &baseOperationSnapshot)
+    require.ErrorContains(t, err, "noncanonical ILN hook root")
+    require.Zero(t, baseRPC.getLogsCalls)
 }

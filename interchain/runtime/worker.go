@@ -60,7 +60,12 @@ type wireEnvelope struct {
 	Type               string                  `json:"type"`
 	Req                *wireRequest            `json:"request,omitempty"`
 	Vote               *wireVote               `json:"vote,omitempty"`
-	ILNCheckpointVote  *ilnCheckpointVote       `json:"ilnCheckpointVote,omitempty"`
+	ILNCheckpointVote  *ilnCheckpointVote `json:"ilnCheckpointVote,omitempty"`
+    ILNReplicaRequest *ilnReplicaRequestWire `json:"ilnReplicaRequest,omitempty"`
+    ILNReplicaChunk *ilnReplicaChunkWire `json:"ilnReplicaChunk,omitempty"`
+    ILNRouteNotice *ilnRouteNoticeWire `json:"ilnRouteNotice,omitempty"`
+    ILNMessageRequest *ilnMessageRequestWire `json:"ilnMessageRequest,omitempty"`
+    ILNMessageResponse *ilnMessageResponseWire `json:"ilnMessageResponse,omitempty"`
 	ILNQuorumRequest   *requestedILNQuorum     `json:"ilnQuorumRequest,omitempty"`
 	GovernanceProposal *governanceProposalWire  `json:"governanceProposal,omitempty"`
 	GovernanceVote     *governanceVote         `json:"governanceVote,omitempty"`
@@ -98,6 +103,13 @@ type Worker struct {
 	destinations    map[string]*evmInterchain.Destination
 	routes          map[string]*evmInterchain.CheckpointRoute
 	ilnRestoredSources map[string]bool
+    ilnReplicaSync map[string]*ilnReplicaSyncState
+    ilnReplicaServed map[peer.ID]time.Time
+    ilnRouteLastPublished map[string]time.Time
+    ilnRouteLastSeen map[peer.ID]time.Time
+    ilnMessageLastScan map[string]time.Time
+    ilnMessageRequests map[string]time.Time
+    ilnMessageLastServed map[peer.ID]time.Time
 
 	txKey       ethgo.Key
 	localAddr   types.Address
@@ -221,7 +233,14 @@ func New(
 		requests:         make(map[types.Hash]*requestState),
 		reserveWarned:    make(map[string]bool),
 		ilnLocalVotes:                make(map[types.Hash]*ilnLocalVoteState),
-		ilnCheckpoints:               make(map[types.Hash]*ilnCheckpointState),
+		ilnCheckpoints: make(map[types.Hash]*ilnCheckpointState),
+        ilnReplicaSync: make(map[string]*ilnReplicaSyncState),
+        ilnReplicaServed: make(map[peer.ID]time.Time),
+        ilnRouteLastPublished: make(map[string]time.Time),
+        ilnRouteLastSeen: make(map[peer.ID]time.Time),
+        ilnMessageLastScan: make(map[string]time.Time),
+        ilnMessageRequests: make(map[string]time.Time),
+        ilnMessageLastServed: make(map[peer.ID]time.Time),
 		governance:                   make(map[types.Hash]*governanceState),
 		governanceExecuteCh: make(chan governanceExecuteRequest,1),
 		governanceExecuteInFlight: make(map[string]struct{}),
@@ -236,7 +255,7 @@ func (w *Worker) Start() error {
 	if err != nil {
 		return err
 	}
-	if err := topic.Subscribe(func(obj interface{}, _ peer.ID) {
+	if err := topic.Subscribe(func(obj interface{}, from peer.ID) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				w.logger.Error("interchain gossip panic isolated", "panic", recovered)
@@ -246,7 +265,7 @@ func (w *Worker) Start() error {
 		if !ok || value == nil {
 			return
 		}
-		if err := w.handleWire(value.Value); err != nil {
+		if err := w.handleWireFrom(value.Value, from); err != nil {
 			w.logger.Warn("interchain gossip rejected", "err", err)
 		}
 	}); err != nil {
@@ -373,12 +392,16 @@ func (w *Worker) tick() {
 		}
 	}
 	w.discoverILNRoutes()
+    w.publishVerifiedILNRoutes()
+    w.refreshILNReplicas()
+    w.captureRecentILNMessages()
+    w.writeILNIndexerHealth()
 	w.mu.Lock()
 	activeRoutes := make([]*evmInterchain.CheckpointRoute, 0, len(w.routes))
 	for _, route := range w.routes { activeRoutes = append(activeRoutes, route) }
 	w.mu.Unlock()
 	for _, route := range activeRoutes {
-		if err := w.signLatestILNCheckpoint(route); err != nil {
+		if err := w.signVerifiedILNReplicaBatch(route); err != nil {
 			w.logger.Debug(
 				"ILN checkpoint not signed",
 				"route", route.Name,
@@ -390,6 +413,7 @@ func (w *Worker) tick() {
 	}
 	w.rebroadcastPendingRequests()
 	w.rebroadcastILNCheckpointVotes()
+    w.replicateILNMissingMessages()
 	w.rebroadcastGovernance()
 	w.trySubmissions()
 }
@@ -748,7 +772,11 @@ func (w *Worker) detectForcedRemovals(destination *evmInterchain.Destination) er
 }
 
 func (w *Worker) handleWire(raw []byte) error {
-	var envelope wireEnvelope
+    return w.handleWireFrom(raw,"")
+}
+func (w *Worker) handleWireFrom(raw []byte, from peer.ID) error {
+    if len(raw)>128<<10 {return fmt.Errorf("oversized interchain gossip frame")}
+    var envelope wireEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return err
 	}
@@ -771,8 +799,28 @@ func (w *Worker) handleWire(raw []byte) error {
 	case "iln_quorum_request":
 		if envelope.ILNQuorumRequest == nil { return fmt.Errorf("missing ILN quorum request") }
 		return w.acceptRequestedILNQuorum(*envelope.ILNQuorumRequest)
-	case "iln_checkpoint_vote":
-		if envelope.ILNCheckpointVote == nil {
+	case "iln_message_request":
+        if envelope.ILNMessageRequest==nil{return fmt.Errorf("missing ILN message request")}
+        if from==""{return fmt.Errorf("ILN message request requires authenticated peer")}
+        return w.respondILNMessageRequest(from,*envelope.ILNMessageRequest)
+    case "iln_message_response":
+        if envelope.ILNMessageResponse==nil{return fmt.Errorf("missing ILN message response")}
+        if from==""{return fmt.Errorf("ILN message response requires authenticated peer")}
+        return w.acceptILNMessageResponse(from,*envelope.ILNMessageResponse)
+    case "iln_route_notice":
+        if envelope.ILNRouteNotice==nil{return fmt.Errorf("missing ILN route notice")}
+        if from==""{return fmt.Errorf("ILN route notice requires authenticated peer")}
+        return w.acceptVerifiedILNRouteNotice(from,*envelope.ILNRouteNotice)
+    case "iln_replica_request":
+        if envelope.ILNReplicaRequest==nil {return fmt.Errorf("missing ILN replica request")}
+        if from=="" {return fmt.Errorf("ILN replica request requires authenticated transport peer")}
+        return w.respondILNReplicaRequest(from,*envelope.ILNReplicaRequest)
+    case "iln_replica_chunk":
+        if envelope.ILNReplicaChunk==nil {return fmt.Errorf("missing ILN replica chunk")}
+        if from=="" {return fmt.Errorf("ILN replica chunk requires authenticated transport peer")}
+        return w.acceptILNReplicaChunk(from,*envelope.ILNReplicaChunk)
+    case "iln_checkpoint_vote":
+        if envelope.ILNCheckpointVote == nil {
 			return fmt.Errorf("missing ILN checkpoint vote")
 		}
 		return w.acceptILNCheckpointVote(*envelope.ILNCheckpointVote)

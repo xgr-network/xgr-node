@@ -34,6 +34,10 @@ func (w *Worker) registerILNRPCRoute(route *evmInterchain.CheckpointRoute) error
  return os.Rename(tmp,path)
 }
 
+// Bounded discovery scans use registry events only for bootstrap; gossip and
+// confirmed on-chain getters independently validate routes for late joiners.
+const ilnRouteDiscoveryScanChunk uint64 = 1000
+
 var getConfirmedILNRouteAdds = evmInterchain.GetConfirmedILNRouteAdds
 var getILNRegistryActivationBlock = evmInterchain.GetILNRegistryActivationBlock
 
@@ -147,7 +151,7 @@ func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) 
  }
  if cursor>=head{return nil}
  from,to:=cursor+1,head
- if to-from+1>ilnOperationScanChunk{to=from+ilnOperationScanChunk-1}
+ if to-from+1>ilnRouteDiscoveryScanChunk{to=from+ilnRouteDiscoveryScanChunk-1}
  events,err:=getConfirmedILNRouteAdds(source,from,to)
  if err!=nil{return err}
  for _,event:=range events {
