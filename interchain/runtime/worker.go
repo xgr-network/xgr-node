@@ -72,7 +72,6 @@ type wireEnvelope struct {
     ILNRouteNotice *ilnRouteNoticeWire `json:"ilnRouteNotice,omitempty"`
     ILNMessageRequest *ilnMessageRequestWire `json:"ilnMessageRequest,omitempty"`
     ILNMessageResponse *ilnMessageResponseWire `json:"ilnMessageResponse,omitempty"`
- BootstrapPublicProof *bootstrapPublicProofWire `json:"bootstrapPublicProof,omitempty"`
 	ILNQuorumRequest   *requestedILNQuorum     `json:"ilnQuorumRequest,omitempty"`
 	GovernanceProposal *governanceProposalWire  `json:"governanceProposal,omitempty"`
 	GovernanceVote     *governanceVote         `json:"governanceVote,omitempty"`
@@ -118,8 +117,6 @@ type Worker struct {
 	ilnLastMembershipPoll time.Time
 	ilnLastRetryPoll      time.Time
 	ilnLastHealthWrite    time.Time
- bootstrapLastPublished time.Time
- bootstrapDomains []uint32
     ilnReplicaSync map[string]*ilnReplicaSyncState
     ilnReplicaServed map[peer.ID]time.Time
     ilnRouteLastPublished map[string]time.Time
@@ -206,8 +203,6 @@ func New(
 		byName[d.Name] = d
 	}
 
-	bootstrapDomains,err:=parseILNBootstrapDomains(os.Getenv("XGR_INTERCHAIN_BOOTSTRAP_DOMAINS"))
- if err!=nil{return nil,err}
 	routesByName := make(map[string]*evmInterchain.CheckpointRoute, len(routes))
 	routeIdentities := make(map[string]string, len(routes))
 	for _, route := range routes {
@@ -244,7 +239,6 @@ func New(
 		dataDir:         dataDir,
 		destinations:    byName,
 		routes:          routesByName,
-        bootstrapDomains: bootstrapDomains,
 		txKey:        txKey,
 		localAddr:    types.Address(txKey.Address()),
 		blsRaw:       blsRaw,
@@ -443,10 +437,7 @@ func (w *Worker) tick() {
 			}
 		}
 	}
-	if dueILNPeriodicPolling(now,&w.bootstrapLastPublished,bootstrapPublicBroadcastInterval){
-  w.publishBootstrapPublicProofs()
- }
- if dueILNPeriodicPolling(now,&w.ilnLastHealthWrite,ilnLocalHealthInterval) {
+	if dueILNPeriodicPolling(now,&w.ilnLastHealthWrite,ilnLocalHealthInterval) {
 		// v3.2.1: purely local persisted observations; never query Base/XGR.
 		w.writeILNIndexerHealth()
 	}
@@ -824,10 +815,6 @@ func (w *Worker) handleWireFrom(raw []byte, from peer.ID) error {
 		return err
 	}
 	switch envelope.Type {
-    case "bootstrap_public_proof":
-        if from=="" {return fmt.Errorf("bootstrap public proof requires an authenticated peer")}
-        if envelope.BootstrapPublicProof==nil {return fmt.Errorf("missing bootstrap public proof")}
-        return w.acceptBootstrapPublicProof(*envelope.BootstrapPublicProof)
 	case "request":
 		if envelope.Req == nil {
 			return fmt.Errorf("missing request")
