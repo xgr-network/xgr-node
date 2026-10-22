@@ -245,19 +245,19 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
     if uint64(payload.Index)>=matured {
         return fmt.Errorf("ILN received BLS vote references immature source Merkle insertion")
     }
-    operation,err:=getILNOperationAtBlock(source,snapshot.Route.Gateway,
-        payload.RouteID,destination.Domain,payload.AuthorizedMessageID,
-        payload.SourceBlockNumber)
-    if err!=nil{return fmt.Errorf("ILN receipt-bound vote proof unavailable: %w",err)}
-    if operation==nil || operation.BlockNumber!=payload.SourceBlockNumber ||
-        operation.InsertionIndex!=payload.Index {
-        return fmt.Errorf("ILN receipt insertion does not match signed checkpoint")
+    // SourceBlockNumber is a confirmation checkpoint label in the existing
+    // ISM encoding, not independently proven operation history. No peer-
+    // provided block can establish finality: verify source depth locally.
+    confirmed,err:=getConfirmedILNHead(source)
+    if err!=nil{return err}
+    if payload.SourceBlockNumber==0||payload.SourceBlockNumber>confirmed{
+        return fmt.Errorf("ILN checkpoint label exceeds locally confirmed source head")
     }
     _,prefix,err:=evmInterchain.VerifiedILNMessagePrefix(
         replica,canonical,payload.Index,payload.SourceBlockNumber)
     if err!=nil{return err}
-    if prefix.Root!=payload.Root || prefix.Count!=uint64(payload.Index)+1 {
-        return fmt.Errorf("ILN signed insertion root differs from confirmed receipt-bound Merkle prefix")
+    if prefix.Root!=payload.Root||prefix.Count!=uint64(payload.Index)+1{
+        return fmt.Errorf("ILN signed insertion root differs from confirmed Hook prefix")
     }
     if snapshot.Route.ValidatorFeeWei==nil ||
         payload.ValidatorFeeWei.Cmp(snapshot.Route.ValidatorFeeWei)!=0 {
