@@ -512,7 +512,7 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
         }
         if needsRefresh {
             w.removeILNLocalVote(pending[i].hash)
-            if err:=w.signVerifiedILNReplicaMessage(route,payload.AuthorizedMessageID);err!=nil {
+            if err:=w.signVerifiedILNReplicaMessage(route,payload.AuthorizedMessageID,payload.SourceBlockNumber);err!=nil {
                 w.logger.Debug("ILN local vote awaits fresh confirmed root/set",
                     "route",route.Name,"message",payload.AuthorizedMessageID,"err",err)
             }
