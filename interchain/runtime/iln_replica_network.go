@@ -117,6 +117,22 @@ func (w *Worker) refreshILNReplicaRoute(route *evmInterchain.CheckpointRoute) er
         return nil
     }
 
+    // A Merkle prefix is content-addressed. The source chain may advance
+    // through many confirmed blocks without a new Hook insertion. When its
+    // independently queried canonical root/count is unchanged, re-anchor a
+    // previously verified complete prefix to the new confirmed block.
+    // Never use a peer-provided root, or bypass full Merkle reconstruction.
+    if prior:=w.ilnReplicaCandidate(canonical);uint64(len(prior.Leaves))==canonical.Count &&
+        prior.Root==canonical.Root && prior.CheckpointBlock<=canonical.BlockNumber {
+        updated:=prior
+        updated.CheckpointBlock=canonical.BlockNumber
+        if err:=evmInterchain.StoreVerifiedILNReplica(w.ilnReplicaPath(canonical),updated,canonical);err==nil {
+            w.mu.Lock();delete(w.ilnReplicaSync,ilnReplicaKey(canonical));w.mu.Unlock()
+            w.recordILNReplicaVerified(route,canonical,head)
+            return nil
+        }
+    }
+
     key:=ilnReplicaKey(canonical)
     w.mu.Lock()
     if w.ilnReplicaSync==nil {w.ilnReplicaSync=make(map[string]*ilnReplicaSyncState)}
