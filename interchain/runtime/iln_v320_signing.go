@@ -160,17 +160,22 @@ func (w *Worker) signVerifiedILNReplicaLeaf(
         return fmt.Errorf("ILN message already delivered")
     }
 
-    // This is the CURRENT confirmed source fee policy. The original amount
-    // was atomically charged by Gateway/FeeVault at dispatch; V315 does NOT
-    // preserve a per-message historical fee amount. Never misrepresent this
-    // signed nonzero value as the original charge.
+    ready,err:=w.confirmedILNPrefixCount(ctx.source,ctx.canonical,ctx.replica)
+    if err!=nil{return fmt.Errorf("source finality verification: %w",err)}
+    if uint64(messageIndex)>=ready{return fmt.Errorf("ILN source Hook insertion awaiting independent finality")}
+    _,prefix,err:=evmInterchain.VerifiedILNMessagePrefix(ctx.replica,ctx.canonical,messageIndex)
+    if err!=nil{return err}
+
+    // The ISM payload retains a nonzero sourceBlockNumber field. It is a
+    // DETERMINISTIC 1-based Merkle insertion sequence, not an RPC block.
+    // Source finality was independently established above.
     payload:=protocol.ILNCheckpointPayload{
         SourceChainID:ctx.snapshot.Route.Key.SourceChainID,
         SourceDomain:ctx.snapshot.Route.Key.SourceDomain,
         DestinationDomain:ctx.snapshot.Route.Key.DestinationDomain,
         RouteID:ctx.snapshot.Route.Key.RouteID,
         SetID:set.SetID,
-        SourceBlockNumber:ctx.canonical.BlockNumber,
+        SourceBlockNumber:prefix.BlockNumber,
         Registry:ctx.snapshot.Registry,
         Gateway:ctx.snapshot.Route.Gateway,
         SourceRouter:ctx.snapshot.Route.SourceRouter,
@@ -179,7 +184,7 @@ func (w *Worker) signVerifiedILNReplicaLeaf(
         DestinationRouter:ctx.snapshot.Route.DestinationRouter,
         ValidatorFeeWei:new(big.Int).Set(ctx.snapshot.Route.ValidatorFeeWei),
         AuthorizedMessageID:messageID,
-        Root:ctx.canonical.Root,Index:ctx.checkpoint.Index,
+        Root:prefix.Root,Index:messageIndex,
     }
     raw,err:=payload.MarshalBinary()
     if err!=nil{return err}
