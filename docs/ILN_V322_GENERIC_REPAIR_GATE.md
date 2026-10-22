@@ -53,3 +53,8 @@ Do not downgrade or remove canonical, cryptographic or fee assertions to force a
 - A validator reconstructs every leaf in the locally assembled/P2P-supplied tree, and signing/receiving require an independently confirmed original Gateway/Dispatch/Hook receipt, the deterministic insertion prefix, FeeVault allocation and the CURRENT destination BLS set. A peer never supplies finality or authorization.
 - This branch still queries **historical transaction receipts and a one-block Gateway event range** for the original operation. It does NOT use historical `eth_call` state for the Hook or route, but cannot claim literally zero historical RPC reads yet. Removing receipt lookups safely requires a proven alternative original-operation source.
 - CI and the strict multi-validator settlement proof must pass before merging or triggering v3.2.2. DO NOT release from a draft branch or failing CI.
+
+## Outstanding final release gate after receipt-free path
+- Normal signing/receiving no longer calls the historic Gateway receipt; FeeVault allocation + independently reconstructed Hook prefix + local finality guard remain mandatory.
+- DO NOT RELEASE yet: SourceBlockNumber is still encoded in the deployed ISM's BLS message, and independently chosen confirmed heads/hints can yield different hashes for the same Merkle leaf. A canonical shared checkpoint label (not a false historical provenance claim), quorum-convergence proof, and downstream relayer/proof compatibility must be settled.
+- Current legacy BLS fixtures and E2E suite are failing under the stricter independent finality requirement; tests must be updated with real observations, not bypassed.
