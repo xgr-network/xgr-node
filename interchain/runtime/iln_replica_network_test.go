@@ -156,3 +156,31 @@ func TestILNReplicaThreeAuthenticatedLibp2pValidatorsE2E(t *testing.T) {
     _,err:=os.Stat(filepath.Join(client.ilnDir(),"replicas","8453",hook.String()+".json"))
     require.NoError(t,err,"honest peer should complete an authenticated cold join despite poisoned replica peer")
 }
+
+func TestV322ReplicaPeerSlotsRotateWithoutRelaxingCanonicalRoot(t *testing.T) {
+    canonical:=evmInterchain.ILNReplicaCheckpoint{
+        ChainID:42161,Hook:types.StringToAddress("0x1111111111111111111111111111111111111111"),
+        Root:crypto.Keccak256Hash([]byte("canonical")),Count:1,BlockNumber:128,
+    }
+    w:=&Worker{ilnReplicaSync:map[string]*ilnReplicaSyncState{}}
+    key:=ilnReplicaKey(canonical)
+    w.ilnReplicaSync[key]=&ilnReplicaSyncState{
+        canonical:canonical,attempts:make(map[peer.ID]*ilnReplicaPeerAttempt),
+    }
+    ids:=[]peer.ID{"peer-a","peer-b","peer-c","peer-honest"}
+    for _,id:=range ids[:3]{
+        _,ok:=w.nextILNReplicaPeerRequest(key,id)
+        require.True(t,ok)
+    }
+    _,ok:=w.nextILNReplicaPeerRequest(key,ids[3])
+    require.False(t,ok,"peer set stays bounded during the in-flight window")
+    for _,id:=range ids[:3]{
+        w.ilnReplicaSync[key].attempts[id].lastRequested=time.Now().Add(-31*time.Second)
+    }
+    request,ok:=w.nextILNReplicaPeerRequest(key,ids[3])
+    require.True(t,ok,"honest peer cannot remain permanently starved")
+    require.Equal(t,canonical.Root,request.Root)
+    require.Equal(t,canonical.Count,request.Count)
+    require.Equal(t,canonical.BlockNumber,request.CheckpointBlock)
+    require.Len(t,w.ilnReplicaSync[key].attempts,ilnReplicaMaxPeers)
+}
