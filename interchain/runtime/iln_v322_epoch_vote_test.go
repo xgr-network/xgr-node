@@ -49,7 +49,10 @@ func TestV322ThreeValidatorsAggregateSamePayloadAcrossDivergentConfirmedEpochs(t
 		DestinationRouter: destinationRouter, ValidatorFeeWei: big.NewInt(10), Enabled: true,
 	}
 
-	oldRoute := getILNRouteAtBlock
+	oldHead := getConfirmedILNHead
+    getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 132,nil}
+    defer func(){getConfirmedILNHead=oldHead}()
+    oldRoute := getILNRouteAtBlock
 	oldCheckpoint := getConfirmedILNCheckpoint
 	oldOperation := getILNOperationAtBlock
 	oldSet := getILNValidatorSet
