@@ -222,22 +222,23 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
     // Reconstruct the receiver's independently confirmed current full Hook
     // tree. The signed root is a deterministic earlier insertion prefix,
     // authenticated by the original successful Gateway/Dispatch/Hook receipt.
-    current,err:=w.verifiedILNReplicaRoute(route)
-    if err!=nil{return fmt.Errorf("ILN peer vote current source replica unavailable: %w",err)}
-    if current.snapshot.Registry!=payload.Registry ||
-        current.snapshot.Route.Gateway!=payload.Gateway ||
-        current.snapshot.Route.MerkleTreeHook!=payload.MerkleTreeHook ||
-        current.snapshot.Route.Mailbox!=payload.Mailbox ||
-        current.snapshot.Route.SourceRouter!=payload.SourceRouter ||
-        current.snapshot.Route.DestinationRouter!=payload.DestinationRouter {
-        return fmt.Errorf("ILN canonical source route changed while proving vote")
+    checkpoint,err:=getConfirmedILNCheckpoint(source,snapshot)
+    if err!=nil{return fmt.Errorf("independent source Hook observation unavailable: %w",err)}
+    if checkpoint==nil||checkpoint.Root==types.ZeroHash||
+        checkpoint.Index==^uint32(0)||
+        checkpoint.BlockNumber<payload.SourceBlockNumber{
+        return fmt.Errorf("ILN signed source insertion is not confirmed")
     }
-    if payload.SourceBlockNumber>current.canonical.BlockNumber {
-        return fmt.Errorf("ILN vote references unconfirmed source insertion")
+    canonical:=evmInterchain.ILNReplicaCheckpoint{
+        ChainID:source.ChainID,Hook:snapshot.Route.MerkleTreeHook,
+        Root:checkpoint.Root,Count:uint64(checkpoint.Index)+1,
+        BlockNumber:checkpoint.BlockNumber,
     }
-    if uint64(payload.Index)>=current.canonical.Count ||
-        current.replica.Leaves[payload.Index]!=payload.AuthorizedMessageID {
-        return fmt.Errorf("ILN vote message not at signed source insertion index")
+    replica,err:=evmInterchain.LoadVerifiedILNReplica(w.ilnReplicaPath(canonical),canonical)
+    if err!=nil{return fmt.Errorf("unverified local Merkle replica: %w",err)}
+    if uint64(payload.Index)>=canonical.Count ||
+        replica.Leaves[payload.Index]!=payload.AuthorizedMessageID {
+        return fmt.Errorf("ILN vote message not at canonical insertion index")
     }
     operation,err:=getILNOperationAtBlock(source,snapshot.Route.Gateway,
         payload.RouteID,destination.Domain,payload.AuthorizedMessageID,
@@ -248,7 +249,7 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
         return fmt.Errorf("ILN receipt insertion does not match signed checkpoint")
     }
     _,prefix,err:=evmInterchain.VerifiedILNMessagePrefix(
-        current.replica,current.canonical,payload.Index,payload.SourceBlockNumber)
+        replica,canonical,payload.Index,payload.SourceBlockNumber)
     if err!=nil{return err}
     if prefix.Root!=payload.Root || prefix.Count!=uint64(payload.Index)+1 {
         return fmt.Errorf("ILN signed insertion root differs from confirmed receipt-bound Merkle prefix")
@@ -258,7 +259,7 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
         return fmt.Errorf("ILN signed source fee policy differs from canonical current route")
     }
     if err:=verifyILNFeeAllocation(source,snapshot,payload.AuthorizedMessageID,
-        current.canonical.BlockNumber);err!=nil {
+        canonical.BlockNumber);err!=nil {
         return fmt.Errorf("ILN vote lacks source FeeVault eligibility: %w",err)
     }
     delivered,err:=getILNMessageDelivered(destination,snapshot.Route.DestinationRouter,payload.AuthorizedMessageID)
