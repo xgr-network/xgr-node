@@ -218,15 +218,16 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 		return fmt.Errorf("ILN checkpoint canonical route mismatch")
 	}
 
-    // v3.2.0: never ask the Gateway log indexer to authorize a BLS vote.
-    // The factory-bound route and FeeVault allocatedOperation are checked
-    // on the source chain at the EXACT signed confirmed checkpoint epoch.
-    // A local or remote index cannot substitute for Merkle inclusion proof.
+    // The independently confirmed canonical Hook root/count are the Merkle
+    // content authority. The SOURCE epoch is an observation timestamp, not
+    // content identity; a peer may be reading a later confirmed RPC head.
+    // Never accept a future checkpoint or a different root/count. No
+    // historical eth_call is used to assert an unverified old state.
     checkpoint, err := getConfirmedILNCheckpoint(source, snapshot)
     if err != nil { return err }
-    if checkpoint.Root != payload.Root || checkpoint.Index != payload.Index ||
-        checkpoint.BlockNumber != payload.SourceBlockNumber {
-        return fmt.Errorf("ILN confirmed Hook root/index/epoch differs from signed vote")
+    if checkpoint.BlockNumber < payload.SourceBlockNumber ||
+        checkpoint.Root != payload.Root || checkpoint.Index != payload.Index {
+        return fmt.Errorf("ILN signed Merkle root/index not independently corroborated at confirmed source head")
     }
     if snapshot.Route.ValidatorFeeWei==nil ||
         payload.ValidatorFeeWei.Cmp(snapshot.Route.ValidatorFeeWei)!=0 {
@@ -500,15 +501,15 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
           w.removeILNLocalVote(pending[i].hash)
           continue
         }
-        // A new destination set or confirmed Hook epoch changes the signed
-        // payload. Re-prove from the source-anchored Merkle replica and
-        // immutable FeeVault instead of replaying old Gateway receipts.
+        // The immutable signed vote is still usable across later epochs
+        // while the independently confirmed source content stays identical.
+        // Do not re-sign merely because another RPC node is 32 blocks ahead.
+        // Rotate only on actual content or destination validator-set changes.
         needsRefresh:=set.SetID!=payload.SetID
         if !needsRefresh {
             if current,verifyErr:=w.verifiedILNReplicaRoute(route);verifyErr==nil {
                 needsRefresh=payload.Root!=current.canonical.Root ||
-                    payload.Index!=current.checkpoint.Index ||
-                    payload.SourceBlockNumber!=current.canonical.BlockNumber
+                    payload.Index!=current.checkpoint.Index
             }
         }
         if needsRefresh {
