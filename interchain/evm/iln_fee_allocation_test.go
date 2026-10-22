@@ -89,7 +89,7 @@ func TestILNFeeVaultAllocationIsOnChainAndIndependentFromHistoricLogs(t *testing
                 }
                 if allocated {result=wordInt(1)}else{result=wordInt(0)}
             case sel("allocatedSetId(bytes32)"):
-                require.Equal(t,"0x80",at)
+                require.Equal(t,"latest",at)
                 if allocated {result=wordInt(3)}else{result=wordInt(0)}
             default:
                 t.Errorf("unexpected contract selector %s",selector)
