@@ -184,3 +184,42 @@ func TestV322ReplicaPeerSlotsRotateWithoutRelaxingCanonicalRoot(t *testing.T) {
     require.Equal(t,canonical.BlockNumber,request.CheckpointBlock)
     require.Len(t,w.ilnReplicaSync[key].attempts,ilnReplicaMaxPeers)
 }
+
+func TestV322ReplicaContentIdentitySurvivesIndependentEpochAdvancement(t *testing.T) {
+    root:=crypto.Keccak256Hash([]byte("source-root"))
+    original:=evmInterchain.ILNReplicaCheckpoint{
+        ChainID:42161,
+        Hook:types.StringToAddress("0x1111111111111111111111111111111111111111"),
+        Root:root,Count:257,BlockNumber:128,
+    }
+    newer:=original
+    newer.BlockNumber=16384
+    require.True(t,sameILNReplicaContent(original,newer))
+    newer.Root=crypto.Keccak256Hash([]byte("different-root"))
+    require.False(t,sameILNReplicaContent(original,newer))
+    newer=original
+    newer.Count++
+    require.False(t,sameILNReplicaContent(original,newer))
+    newer=original
+    newer.ChainID=8453
+    require.False(t,sameILNReplicaContent(original,newer))
+    newer=original
+    newer.Hook=types.StringToAddress("0x2222222222222222222222222222222222222222")
+    require.False(t,sameILNReplicaContent(original,newer))
+}
+
+func TestV322ReplicaPeerSelectionTraversesEntirePeerSet(t *testing.T) {
+    canonical:=evmInterchain.ILNReplicaCheckpoint{
+        ChainID:42161,Hook:types.StringToAddress("0x1111111111111111111111111111111111111111"),
+        Root:crypto.Keccak256Hash([]byte("root")),Count:1,BlockNumber:128,
+    }
+    w:=&Worker{ilnReplicaSync:map[string]*ilnReplicaSyncState{}}
+    key:=ilnReplicaKey(canonical)
+    w.ilnReplicaSync[key]=&ilnReplicaSyncState{canonical:canonical}
+    visited:=map[int]bool{}
+    for i:=0;i<10;i++{
+        start:=w.nextILNReplicaPeerStart(key,5)
+        for j:=0;j<ilnReplicaMaxPeers;j++{visited[(start+j)%5]=true}
+    }
+    require.Len(t,visited,5,"all connected peers must be traversed")
+}
