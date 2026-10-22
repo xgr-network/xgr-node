@@ -24,12 +24,14 @@ Do not merge this candidate as a complete ILN repair, tag v3.2.2, or deploy a no
 
 ## Changes already in this branch
 - Reuse an unchanged local Merkle prefix across newer *independently sourced and confirmed* checkpoint epochs only after strict full-prefix hash reconstruction.
+- Rotate bounded P2P replica peer attempts after retry deadlines, including peers outside the initial three.
+- Query immutable source FeeVault allocation mappings using latest-state calls instead of historical `eth_call` state; message inclusion, destination validation and source finality checks remain mandatory.
 - Regression coverage across arbitrary EVM chain IDs, increasing block heights, tampered leaves and wrong-chain/hook substitution.
 
 ## Missing before release
 - Stable source-verifiable checkpoint proposal/attestation convergence without re-reading another epoch.
 - Generic archive-independent source finality / fee qualification policy and corresponding fail-closed tests.
-- Peer-choice rotation, partial-prefix completion / cold-join recovery.
+- End-to-end multi-peer partial-prefix completion / cold-join recovery verification (basic rotation unit test added).
 - CI pass and independent security diff review.
 - Merge with observational PR #42 and gated release PR #43 only after above checks.
 - Staged validator rollout and live verified 2/3 quorum plus transfer settlement, not simply published binaries.
