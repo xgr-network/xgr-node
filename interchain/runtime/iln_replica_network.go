@@ -124,12 +124,14 @@ func (w *Worker) refreshILNReplicaRoute(route *evmInterchain.CheckpointRoute) er
     // Never use a peer-provided root, or bypass full Merkle reconstruction.
     if prior:=w.ilnReplicaCandidate(canonical);uint64(len(prior.Leaves))==canonical.Count &&
         prior.Root==canonical.Root && prior.CheckpointBlock<=canonical.BlockNumber {
-        updated:=prior
-        updated.CheckpointBlock=canonical.BlockNumber
-        if err:=evmInterchain.StoreVerifiedILNReplica(w.ilnReplicaPath(canonical),updated,canonical);err==nil {
+        // Recheck every Merkle leaf, chain, Hook, root and count before re-anchoring.
+        // The confirmed source RPC, not a peer, supplies this canonical target.
+        if updated,err:=evmInterchain.ExtendILNReplica(canonical,prior,nil);err==nil {
+          if err:=evmInterchain.StoreVerifiedILNReplica(w.ilnReplicaPath(canonical),updated,canonical);err==nil {
             w.mu.Lock();delete(w.ilnReplicaSync,ilnReplicaKey(canonical));w.mu.Unlock()
             w.recordILNReplicaVerified(route,canonical,head)
             return nil
+          }
         }
     }
 
