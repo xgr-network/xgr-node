@@ -130,13 +130,7 @@ func newILNRPCFixture(
 			fixture.mu.Lock()
 			fixture.lastBlockTags = append(fixture.lastBlockTags, blockTag)
 			fixture.mu.Unlock()
-            expectedTag := "latest"
-            if strings.EqualFold(call.To, fixture.hook) {
-                checkpoint := (fixture.head - fixture.confirmations) / 32 * 32
-                expectedTag = fmt.Sprintf("0x%x", checkpoint)
-            }
-            require.Equal(t, expectedTag, blockTag,
-                "only recent confirmed hook state may use a numeric block; all route reads use latest")
+            require.Equal(t, "latest", blockTag, "never require archived state")
 
 			to := strings.ToLower(call.To)
 			data := strings.ToLower(call.Data)
@@ -376,10 +370,10 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
     baseOperationSnapshot.BlockNumber = 95 // operation is older than the confirmed epoch 96
     baseCheckpoint, err := evmInterchain.GetConfirmedILNCheckpoint(base, &baseOperationSnapshot)
 	require.NoError(t, err)
-	require.Equal(t, uint64(96), baseCheckpoint.BlockNumber)
+	require.Equal(t, uint64(100), baseCheckpoint.BlockNumber)
 	require.Equal(t, uint32(3), baseCheckpoint.Index)
 	require.Equal(t, types.StringToHash(baseRPC.root), baseCheckpoint.Root)
-	require.Contains(t, baseRPC.blockTags(), "0x60")
+	require.Contains(t, baseRPC.blockTags(), "latest")
     require.Zero(t, baseRPC.getLogsCalls)
 
 	arbitrumRoute := byName["arbitrum_to_xgr"]
@@ -402,10 +396,10 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
     arbitrumOperationSnapshot.BlockNumber = 150 // operation is older than epoch 160
     arbitrumCheckpoint, err := evmInterchain.GetConfirmedILNCheckpoint(arbitrum, &arbitrumOperationSnapshot)
 	require.NoError(t, err)
-	require.Equal(t, uint64(160), arbitrumCheckpoint.BlockNumber)
+	require.Equal(t, uint64(200), arbitrumCheckpoint.BlockNumber)
 	require.Equal(t, uint32(8), arbitrumCheckpoint.Index)
 	require.Equal(t, types.StringToHash(arbitrumRPC.root), arbitrumCheckpoint.Root)
-	require.Contains(t, arbitrumRPC.blockTags(), "0xa0")
+	require.Contains(t, arbitrumRPC.blockTags(), "latest")
     require.Zero(t, arbitrumRPC.getLogsCalls)
 
 	require.NotEqual(t, baseCheckpoint.Root, arbitrumCheckpoint.Root)
@@ -417,6 +411,6 @@ func TestInterchainILNRoutesE2E(t *testing.T) {
     baseRPC.invalidHookRoot = true
     baseRPC.mu.Unlock()
     _, err = evmInterchain.GetConfirmedILNCheckpoint(base, &baseOperationSnapshot)
-    require.ErrorContains(t, err, "noncanonical ILN hook root")
+    require.ErrorContains(t, err, "invalid latest Hook root")
     require.Zero(t, baseRPC.getLogsCalls)
 }
