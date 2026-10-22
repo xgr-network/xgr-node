@@ -223,3 +223,53 @@ func TestV322ReplicaPeerSelectionTraversesEntirePeerSet(t *testing.T) {
     }
     require.Len(t,visited,5,"all connected peers must be traversed")
 }
+
+func TestV322ReplicaProviderServesVerifiableEarlierPrefix(t *testing.T) {
+    chain:=uint64(42161)
+    hook:=types.StringToAddress("0x1111111111111111111111111111111111111111")
+    leaves:=[]types.Hash{
+        crypto.Keccak256Hash([]byte("first")),
+        crypto.Keccak256Hash([]byte("second")),
+    }
+    mkRoot:=func(ids []types.Hash)types.Hash{
+        // A known confirmed single-leaf 32-level root is reconstructed
+        // independently of the candidate supplied by the P2P provider.
+        current:=ids[0]
+        zero:=types.ZeroHash
+        for i:=0;i<32;i++{
+            if i==0 && len(ids)>1{
+                current=crypto.Keccak256Hash(append(append([]byte{},current.Bytes()...),ids[1].Bytes()...))
+            }else{
+                current=crypto.Keccak256Hash(append(append([]byte{},current.Bytes()...),zero.Bytes()...))
+            }
+            zero=crypto.Keccak256Hash(append(append([]byte{},zero.Bytes()...),zero.Bytes()...))
+        }
+        return current
+    }
+    provider:=evmInterchain.ILNReplica{
+        ChainID:chain,Hook:hook,CheckpointBlock:640,
+        Root:mkRoot(leaves),Leaves:leaves,
+    }
+    old:=evmInterchain.ILNReplicaCheckpoint{
+        ChainID:chain,Hook:hook,BlockNumber:128,
+        Root:mkRoot(leaves[:1]),Count:1,
+    }
+    prefix,err:=verifiedILNReplicaPrefixForRequest(provider,old)
+    require.NoError(t,err)
+    require.Equal(t,leaves[:1],prefix.Leaves)
+    require.NoError(t,evmInterchain.VerifyILNReplica(prefix,old))
+    bad:=old;bad.Root=provider.Root
+    _,err=verifiedILNReplicaPrefixForRequest(provider,bad)
+    require.Error(t,err)
+    bad=old;bad.ChainID=8453
+    _,err=verifiedILNReplicaPrefixForRequest(provider,bad)
+    require.Error(t,err)
+    bad=old;bad.Count=3
+    _,err=verifiedILNReplicaPrefixForRequest(provider,bad)
+    require.Error(t,err)
+    corrupted:=provider
+    corrupted.Leaves=append([]types.Hash(nil),provider.Leaves...)
+    corrupted.Leaves[1]=crypto.Keccak256Hash([]byte("tampered"))
+    _,err=verifiedILNReplicaPrefixForRequest(corrupted,old)
+    require.Error(t,err)
+}
