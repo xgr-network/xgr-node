@@ -89,7 +89,7 @@ func VerifyConfirmedILNFeeAllocation(
     }
     selector = crypto.Keccak256Hash([]byte("allocatedSetId(bytes32)"))
     copy(data[:4],selector[:4])
-    set, err := callILNView(client, vault, data, block)
+    set, err := callILNView(client, vault, data, ethgo.Latest)
     if err != nil || len(set) != 32 {
         return fmt.Errorf("ILN allocated validator set at checkpoint unavailable: %v", err)
     }
