@@ -2,6 +2,7 @@ package runtime
 
 import (
  "math/big"
+ "fmt"
  "os"
  "path/filepath"
  "testing"
@@ -101,7 +102,14 @@ func TestV322ThreeValidatorsAggregateSamePayloadAcrossDivergentConfirmedEpochs(t
 		ilnLocalVotes: make(map[types.Hash]*ilnLocalVoteState),
 	}
     installILNCheckpointTestReplica(t,w,hook,messageID,132)
-    mockConfirmedILNFeeAllocation(t,messageID)
+    previousFeeVerifier := verifyILNFeeAllocation
+    t.Cleanup(func(){ verifyILNFeeAllocation=previousFeeVerifier })
+    verifyILNFeeAllocation=func(source *evm.Destination,_ *evm.ILNRouteSnapshot,id types.Hash,block uint64)error{
+        if source.ChainID!=8453 || id!=messageID || block!=132 {
+            return fmt.Errorf("unexpected source fee eligibility identity")
+        }
+        return nil
+    }
 
 	payload := protocol.ILNCheckpointPayload{
 		SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643, RouteID: testCheckpointRouteID,
