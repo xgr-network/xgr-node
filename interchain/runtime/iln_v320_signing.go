@@ -100,11 +100,12 @@ func (w *Worker) writeILNLeafCursor(route string,setID,index uint64)error{
     return os.Rename(tmp.Name(),path)
 }
 
-// signVerifiedILNReplicaBatch uses the canonical append-only Hyperlane
-// insertion order, not a historical Gateway eth_getLogs transaction scan.
-// A cursor advances only after conclusive fee-absence, already delivered,
-// or durably saved vote. A temporary source-RPC outage leaves it unchanged.
-func (w *Worker) signVerifiedILNReplicaBatch(route *evmInterchain.CheckpointRoute)error{
+// The automatic scanner uses only recent, confirmed Gateway events. It never
+// assumes that a Merkle leaf's insertion block can be inferred from the
+// current Hook epoch, and never requests historical contract state. Older
+// messages remain recoverable through the public quorum request's source
+// operation-block hint, which is independently checked against the receipt.
+func (w *Worker) signVerifiedILNReplicaBatch(route *evmInterchain.CheckpointRoute) error {
     ctx,err:=w.verifiedILNReplicaRoute(route)
     if err!=nil{return err}
     set,err:=getILNValidatorSet(ctx.destination)
@@ -115,36 +116,62 @@ func (w *Worker) signVerifiedILNReplicaBatch(route *evmInterchain.CheckpointRout
     cursor,err:=w.readILNLeafCursor(route.Name,set.SetID)
     if err!=nil{return err}
     if cursor>ctx.canonical.Count{return fmt.Errorf("ILN leaf cursor larger than canonical hook count")}
+    // A fixed, RECENT log window is only a discovery hint, not signing
+    // authority. The matching confirmed transaction receipt independently
+    // proves the Gateway, Mailbox and Hook event in one successful tx.
+    to:=ctx.canonical.BlockNumber
+    from:=uint64(1)
+    if to>127{from=to-127}
+    ops,err:=getConfirmedILNOperations(ctx.source,ctx.snapshot.Route.Gateway,
+        ctx.snapshot.Route.Key.RouteID,ctx.destination.Domain,from,to)
+    if err!=nil{return fmt.Errorf("recent source operation discovery unavailable: %w",err)}
+    byMessage:=make(map[types.Hash]uint64,len(ops))
+    for _,op:=range ops {
+        if op.BlockNumber<from||op.BlockNumber>to||op.MessageID==types.ZeroHash{
+            return fmt.Errorf("invalid recent source operation identity")
+        }
+        if _,exists:=byMessage[op.MessageID];exists{
+            return fmt.Errorf("duplicate recent source operation message")
+        }
+        byMessage[op.MessageID]=op.BlockNumber
+    }
     end:=cursor+maxILNReplicaLeavesPerTick
     if end>ctx.canonical.Count{end=ctx.canonical.Count}
-    for i:=cursor;i<end;i++ {
-        messageID:=ctx.replica.Leaves[i]
-        err=w.signVerifiedILNReplicaLeaf(ctx,set,messageID,uint32(i),true)
-        if err!=nil{return err}
+    for i:=cursor;i<end;i++{
+        id:=ctx.replica.Leaves[i]
+        if block,ok:=byMessage[id];ok{
+            if err:=w.signVerifiedILNReplicaLeaf(ctx,set,id,uint32(i),true,block);err!=nil{return err}
+        }
+        // A valid leaf without a recent Gateway locator is NOT automatically
+        // authorized. Its separately supplied original source block must be
+        // verified through the public recovery path instead.
         if err:=w.writeILNLeafCursor(route.Name,set.SetID,i+1);err!=nil{return err}
     }
     return nil
 }
 
-func (w *Worker) signVerifiedILNReplicaMessage(route *evmInterchain.CheckpointRoute,messageID types.Hash)error{
+func (w *Worker) signVerifiedILNReplicaMessage(
+    route *evmInterchain.CheckpointRoute,messageID types.Hash,sourceBlock uint64,
+) error {
+    if sourceBlock==0{return fmt.Errorf("missing original confirmed ILN operation block")}
     ctx,err:=w.verifiedILNReplicaRoute(route)
     if err!=nil{return err}
     set,err:=getILNValidatorSet(ctx.destination)
     if err!=nil{return err}
     index:=-1
-    for i,id:=range ctx.replica.Leaves {
-        if id==messageID {
+    for i,id:=range ctx.replica.Leaves{
+        if id==messageID{
             if index>=0{return fmt.Errorf("ambiguous ILN message insertion")}
             index=i
         }
     }
     if index<0{return fmt.Errorf("ILN message is not in confirmed Hook prefix")}
-    return w.signVerifiedILNReplicaLeaf(ctx,set,messageID,uint32(index),false)
+    return w.signVerifiedILNReplicaLeaf(ctx,set,messageID,uint32(index),false,sourceBlock)
 }
 
 func (w *Worker) signVerifiedILNReplicaLeaf(
     ctx *ilnVerifiedReplicaContext,set *evmInterchain.ValidatorSet,
-    messageID types.Hash,messageIndex uint32,scan bool,
+    messageID types.Hash,messageIndex uint32,scan bool,sourceBlock uint64,
 )error{
     if ctx==nil||set==nil||uint64(messageIndex)>=uint64(len(ctx.replica.Leaves)) ||
         ctx.replica.Leaves[messageIndex]!=messageID{return fmt.Errorf("invalid message inclusion identity")}
@@ -155,6 +182,18 @@ func (w *Worker) signVerifiedILNReplicaLeaf(
     err=verifyILNFeeAllocation(ctx.source,ctx.snapshot,messageID,ctx.canonical.BlockNumber)
     if scan&&errors.Is(err,evmInterchain.ErrILNFeeNotAllocated){return nil}
     if err!=nil{return err}
+    // On-chain operation and same-transaction Gateway/Dispatch/Hook receipt
+    // resolve the original insertion position without historical eth_call.
+    operation,err:=getILNOperationAtBlock(ctx.source,ctx.snapshot.Route.Gateway,
+        ctx.snapshot.Route.Key.RouteID,ctx.destination.Domain,messageID,sourceBlock)
+    if err!=nil{return fmt.Errorf("confirmed source receipt required for ILN BLS: %w",err)}
+    if operation==nil||operation.BlockNumber!=sourceBlock||
+        operation.MessageID!=messageID||operation.InsertionIndex!=messageIndex{
+        return fmt.Errorf("ILN source receipt insertion index/block mismatch")
+    }
+    _,fixed,err:=evmInterchain.VerifiedILNMessagePrefix(
+        ctx.replica,ctx.canonical,messageIndex,operation.BlockNumber)
+    if err!=nil{return fmt.Errorf("unverified immutable source insertion root: %w",err)}
     delivered,err:=getILNMessageDelivered(ctx.destination,ctx.snapshot.Route.DestinationRouter,messageID)
     if err!=nil{return fmt.Errorf("destination state unavailable: %w",err)}
     if delivered {
@@ -172,7 +211,7 @@ func (w *Worker) signVerifiedILNReplicaLeaf(
         DestinationDomain:ctx.snapshot.Route.Key.DestinationDomain,
         RouteID:ctx.snapshot.Route.Key.RouteID,
         SetID:set.SetID,
-        SourceBlockNumber:ctx.canonical.BlockNumber,
+        SourceBlockNumber:fixed.BlockNumber,
         Registry:ctx.snapshot.Registry,
         Gateway:ctx.snapshot.Route.Gateway,
         SourceRouter:ctx.snapshot.Route.SourceRouter,
@@ -181,7 +220,7 @@ func (w *Worker) signVerifiedILNReplicaLeaf(
         DestinationRouter:ctx.snapshot.Route.DestinationRouter,
         ValidatorFeeWei:new(big.Int).Set(ctx.snapshot.Route.ValidatorFeeWei),
         AuthorizedMessageID:messageID,
-        Root:ctx.canonical.Root,Index:ctx.checkpoint.Index,
+        Root:fixed.Root,Index:messageIndex,
     }
     raw,err:=payload.MarshalBinary()
     if err!=nil{return err}
