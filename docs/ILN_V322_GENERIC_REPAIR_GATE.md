@@ -39,3 +39,10 @@ Do not merge this candidate as a complete ILN repair, tag v3.2.2, or deploy a no
 - Staged validator rollout and live verified 2/3 quorum plus transfer settlement, not simply published binaries.
 
 Do not downgrade or remove canonical, cryptographic or fee assertions to force a green test.
+
+## Release review on 2026-10-22
+- PR CI previously passed for the P2P fix and simulated quorum acceptance. This does **not** certify historical source checkpoint correctness.
+- A later identical Hook root/count does not prove the claimed earlier block's root/count when insertion ordering or finality differs. The relaxed receive-side epoch comparison was removed (fail-closed restored).
+- An immutable per-insertion Merkle prefix constructor and strict unit tests have been added, but **the production signing and receiving paths do not yet bind that prefix to the ORIGINAL successful Gateway/Dispatch/Hook receipt and its canonical block hash**. A block taken from a moving checkpoint is not an operation locator.
+- The divergent-epoch BLS regression is currently a RED RELEASE GATE until correct source receipt lookup, independent source finality, validator-set rotation, quorum convergence and actual two-hop settlement are demonstrated.
+- Do not merge PR #44 or #43, do not start workflow_dispatch, and do not tag v3.2.2 while these prerequisites are open. Existing deployed code must not be replaced by this branch.
