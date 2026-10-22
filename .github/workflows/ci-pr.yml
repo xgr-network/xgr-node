@@ -29,7 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           go test -count=1 ./interchain/runtime \
-            -run '^(TestILNReplicaThreeAuthenticatedLibp2pValidatorsE2E|TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs|TestILNValidatorRestartRetainsVerifiedReplicaAndPerSetCursor)$' \
+            -run '^(TestV322ThreeValidatorDivergentHeadMerkleP2PE2E|TestILNReplicaThreeAuthenticatedLibp2pValidatorsE2E|TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs|TestILNValidatorRestartRetainsVerifiedReplicaAndPerSetCursor)$' \
             -v -timeout 180s
 
       - name: Go build
