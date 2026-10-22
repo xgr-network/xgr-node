@@ -8,11 +8,8 @@ import (
     "github.com/xgr-network/xgr-node/types"
 )
 
-// GetConfirmedILNHookCheckpoint is the non-archive Hyperlane checkpoint reader.
-// It mirrors the confirmed root/count lookup used in xgr-node v3.1.1.
-// IMPORTANT: this does NOT prove that an arbitrary message belongs to the root.
-// Callers must independently verify a message-specific inclusion proof and the
-// fee-qualified Gateway operation before requesting a validator signature.
+// GetConfirmedILNHookCheckpoint reads only latest Hook state.
+// Finality is established separately by locally maturing the verified prefix.
 func GetConfirmedILNHookCheckpoint(source *Destination, snapshot *ILNRouteSnapshot) (*ConfirmedCheckpoint, error) {
     if snapshot == nil || snapshot.Route.MerkleTreeHook == types.ZeroAddress ||
         snapshot.Route.Mailbox == types.ZeroAddress {
@@ -25,32 +22,32 @@ func GetConfirmedILNHookCheckpoint(source *Destination, snapshot *ILNRouteSnapsh
     if snapshot.BlockNumber == 0 || snapshot.BlockNumber > confirmed {
         return nil, fmt.Errorf("ILN operation block not sufficiently confirmed")
     }
-    if confirmed > uint64(1<<63-1) {
-        return nil, fmt.Errorf("ILN confirmed block exceeds RPC block range")
+    // Latest is a CONTENT observation, not a claim of source finality.
+    // Validators age the observed prefix by source confirmations before BLS.
+    before,err:=client.Eth().BlockNumber()
+    if err!=nil{return nil,err}
+    mailbox,err:=callILNAddressGetter(client,snapshot.Route.MerkleTreeHook,"mailbox()",ethgo.Latest)
+    if err!=nil{return nil,fmt.Errorf("read latest Hook mailbox: %w",err)}
+    if mailbox!=snapshot.Route.Mailbox{return nil,fmt.Errorf("Hook mailbox differs from canonical route")}
+    count,err:=callILNSignatureView(client,snapshot.Route.MerkleTreeHook,"count()",ethgo.Latest)
+    if err!=nil||len(count)!=32{return nil,fmt.Errorf("invalid latest Hook count: %v",err)}
+    n:=new(big.Int).SetBytes(count)
+    if n.BitLen()>32{return nil,fmt.Errorf("ILN Hook count exceeds uint32")}
+    var root types.Hash
+    if n.Sign()>0 {
+        encoded,readErr:=callILNSignatureView(client,snapshot.Route.MerkleTreeHook,"root()",ethgo.Latest)
+        if readErr!=nil||len(encoded)!=32||types.BytesToHash(encoded)==types.ZeroHash{
+            return nil,fmt.Errorf("invalid latest Hook root: %v",readErr)
+        }
+        root=types.BytesToHash(encoded)
     }
-    // Align all validators to a stable checkpoint epoch instead of the
-    // moving tip, so independent BLS votes can agree during high throughput.
-    const checkpointWindow uint64 = 32
-    checkpointBlock := confirmed - confirmed%checkpointWindow
-    if checkpointBlock < snapshot.BlockNumber {
-        return nil, fmt.Errorf("ILN operation awaits next confirmed hook checkpoint epoch")
+    again,err:=callILNSignatureView(client,snapshot.Route.MerkleTreeHook,"count()",ethgo.Latest)
+    if err!=nil||len(again)!=32{return nil,fmt.Errorf("latest Hook count changed: %v",err)}
+    after,err:=client.Eth().BlockNumber()
+    if err!=nil{return nil,err}
+    if before!=after||new(big.Int).SetBytes(again).Cmp(n)!=0{
+        return nil,fmt.Errorf("Hook head/count advanced during latest observation; retry")
     }
-    at := ethgo.BlockNumber(checkpointBlock)
-    mailbox, err := callILNAddressGetter(client, snapshot.Route.MerkleTreeHook, "mailbox()", at)
-    if err != nil { return nil, fmt.Errorf("read confirmed ILN hook mailbox: %w", err) }
-    if mailbox != snapshot.Route.Mailbox {
-        return nil, fmt.Errorf("confirmed ILN hook mailbox differs from canonical route")
-    }
-    count, err := callILNSignatureView(client, snapshot.Route.MerkleTreeHook, "count()", at)
-    if err != nil { return nil, fmt.Errorf("read confirmed ILN hook count: %w", err) }
-    if len(count) != 32 { return nil, fmt.Errorf("noncanonical ILN hook count response") }
-    n := new(big.Int).SetBytes(count)
-    if n.Sign() == 0 { return &ConfirmedCheckpoint{BlockNumber: checkpointBlock}, nil }
-    if n.BitLen() > 32 { return nil, fmt.Errorf("ILN hook count exceeds uint32") }
-    root, err := callILNSignatureView(client, snapshot.Route.MerkleTreeHook, "root()", at)
-    if err != nil { return nil, fmt.Errorf("read confirmed ILN hook root: %w", err) }
-    if len(root) != 32 || types.BytesToHash(root) == types.ZeroHash {
-        return nil, fmt.Errorf("noncanonical ILN hook root response")
-    }
-    return &ConfirmedCheckpoint{Root: types.BytesToHash(root), Index: uint32(n.Uint64()-1), BlockNumber: checkpointBlock}, nil
+    if n.Sign()==0{return &ConfirmedCheckpoint{BlockNumber:after},nil}
+    return &ConfirmedCheckpoint{Root:root,Index:uint32(n.Uint64()-1),BlockNumber:after},nil
 }
