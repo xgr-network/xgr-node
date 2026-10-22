@@ -508,17 +508,12 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
           w.removeILNLocalVote(pending[i].hash)
           continue
         }
-        // The immutable signed vote is still usable across later epochs
-        // while the independently confirmed source content stays identical.
-        // Do not re-sign merely because another RPC node is 32 blocks ahead.
-        // Rotate only on actual content or destination validator-set changes.
+        // The immutable source insertion checkpoint remains valid even if
+        // unrelated later Hook messages are appended. The receiving side
+        // independently rechecks its original successful receipt, prefix
+        // Merkle root and the current destination validator set.
+        // Only destination-set rotation invalidates the BLS membership.
         needsRefresh:=set.SetID!=payload.SetID
-        if !needsRefresh {
-            if current,verifyErr:=w.verifiedILNReplicaRoute(route);verifyErr==nil {
-                needsRefresh=payload.Root!=current.canonical.Root ||
-                    payload.Index!=current.checkpoint.Index
-            }
-        }
         if needsRefresh {
             w.removeILNLocalVote(pending[i].hash)
             if err:=w.signVerifiedILNReplicaMessage(route,payload.AuthorizedMessageID,payload.SourceBlockNumber);err!=nil {
