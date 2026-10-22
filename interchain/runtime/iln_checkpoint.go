@@ -218,16 +218,14 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 		return fmt.Errorf("ILN checkpoint canonical route mismatch")
 	}
 
-    // The independently confirmed canonical Hook root/count are the Merkle
-    // content authority. The SOURCE epoch is an observation timestamp, not
-    // content identity; a peer may be reading a later confirmed RPC head.
-    // Never accept a future checkpoint or a different root/count. No
-    // historical eth_call is used to assert an unverified old state.
+    // An unchanged later Merkle root does not independently prove the
+    // claimed earlier source block. Until the insertion is receipt-bound,
+    // refuse to validate historical votes against a newly selected epoch.
     checkpoint, err := getConfirmedILNCheckpoint(source, snapshot)
     if err != nil { return err }
-    if checkpoint.BlockNumber < payload.SourceBlockNumber ||
-        checkpoint.Root != payload.Root || checkpoint.Index != payload.Index {
-        return fmt.Errorf("ILN signed Merkle root/index not independently corroborated at confirmed source head")
+    if checkpoint.Root != payload.Root || checkpoint.Index != payload.Index ||
+        checkpoint.BlockNumber != payload.SourceBlockNumber {
+        return fmt.Errorf("ILN confirmed Hook root/index/epoch differs from signed vote")
     }
     if snapshot.Route.ValidatorFeeWei==nil ||
         payload.ValidatorFeeWei.Cmp(snapshot.Route.ValidatorFeeWei)!=0 {
