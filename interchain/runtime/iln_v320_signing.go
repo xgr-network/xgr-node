@@ -59,7 +59,7 @@ func (w *Worker) verifiedILNReplicaRoute(route *evmInterchain.CheckpointRoute)(*
         Root:checkpoint.Root,Count:uint64(checkpoint.Index)+1,
         BlockNumber:checkpoint.BlockNumber,
     }
-    replica,err:=evmInterchain.LoadVerifiedILNReplica(w.ilnReplicaPath(c),c)
+    replica,err:=w.verifiedILNReplicaAt(c)
     if err!=nil{return nil,fmt.Errorf("verified validator-owned ILN Merkle replica not available: %w",err)}
     return &ilnVerifiedReplicaContext{
         route:route,source:source,destination:destination,snapshot:snapshot,
