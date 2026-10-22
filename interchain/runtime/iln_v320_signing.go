@@ -113,39 +113,29 @@ func (w *Worker) signVerifiedILNReplicaBatch(route *evmInterchain.CheckpointRout
     eligible,err:=w.interchainSignerEligible(set,w.localAddr)
     if err!=nil{return err}
     if !eligible{return nil}
-    cursor,err:=w.readILNLeafCursor(route.Name,set.SetID)
-    if err!=nil{return err}
-    if cursor>ctx.canonical.Count{return fmt.Errorf("ILN leaf cursor larger than canonical hook count")}
-    // A fixed, RECENT log window is only a discovery hint, not signing
-    // authority. The matching confirmed transaction receipt independently
-    // proves the Gateway, Mailbox and Hook event in one successful tx.
+    // Scan a bounded window of confirmed Gateway events; this is discovery
+    // only. Each candidate is separately authorized by its successful
+    // receipt, full Merkle inclusion, FeeVault, and destination set.
     to:=ctx.canonical.BlockNumber
     from:=uint64(1)
     if to>127{from=to-127}
     ops,err:=getConfirmedILNOperations(ctx.source,ctx.snapshot.Route.Gateway,
         ctx.snapshot.Route.Key.RouteID,ctx.destination.Domain,from,to)
     if err!=nil{return fmt.Errorf("recent source operation discovery unavailable: %w",err)}
-    byMessage:=make(map[types.Hash]uint64,len(ops))
     for _,op:=range ops {
-        if op.BlockNumber<from||op.BlockNumber>to||op.MessageID==types.ZeroHash{
-            return fmt.Errorf("invalid recent source operation identity")
+        if op.MessageID==types.ZeroHash||op.BlockNumber<from||op.BlockNumber>to{
+            return fmt.Errorf("invalid confirmed source operation locator")
         }
-        if _,exists:=byMessage[op.MessageID];exists{
-            return fmt.Errorf("duplicate recent source operation message")
+        index:=-1
+        for i,id:=range ctx.replica.Leaves{
+            if id==op.MessageID{
+                if index>=0{return fmt.Errorf("ambiguous source Merkle insertion")}
+                index=i
+            }
         }
-        byMessage[op.MessageID]=op.BlockNumber
-    }
-    end:=cursor+maxILNReplicaLeavesPerTick
-    if end>ctx.canonical.Count{end=ctx.canonical.Count}
-    for i:=cursor;i<end;i++{
-        id:=ctx.replica.Leaves[i]
-        if block,ok:=byMessage[id];ok{
-            if err:=w.signVerifiedILNReplicaLeaf(ctx,set,id,uint32(i),true,block);err!=nil{return err}
-        }
-        // A valid leaf without a recent Gateway locator is NOT automatically
-        // authorized. Its separately supplied original source block must be
-        // verified through the public recovery path instead.
-        if err:=w.writeILNLeafCursor(route.Name,set.SetID,i+1);err!=nil{return err}
+        if index<0{continue} // not included in the confirmed Hook root
+        if err:=w.signVerifiedILNReplicaLeaf(ctx,set,op.MessageID,
+            uint32(index),true,op.BlockNumber);err!=nil{return err}
     }
     return nil
 }
