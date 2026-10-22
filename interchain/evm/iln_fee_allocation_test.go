@@ -127,8 +127,8 @@ func TestILNFeeVaultAllocationIsOnChainAndIndependentFromHistoricLogs(t *testing
     mu.Lock();wrongGovernance=false;missingState=true;mu.Unlock()
     require.ErrorContains(t,VerifyConfirmedILNFeeAllocation(source,snapshot,message,128),
         "allocatedOperation at confirmed checkpoint unavailable")
-    require.ErrorContains(t,VerifyConfirmedILNFeeAllocation(source,snapshot,message,140),
-        "not source confirmed")
+    require.ErrorContains(t,VerifyConfirmedILNFeeAllocation(source,snapshot,message,151),
+        "source observation exceeds current head")
     mu.Lock()
     require.Zero(t,logCalls)
     require.Zero(t,receiptCalls)
