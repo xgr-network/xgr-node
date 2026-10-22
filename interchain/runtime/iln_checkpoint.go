@@ -199,7 +199,9 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 	if payload.RouteID != route.RouteID {
 		return fmt.Errorf("ILN checkpoint route id mismatch")
 	}
-	snapshot, err := getConfirmedILNRoute(source, destination.Domain, payload.RouteID)
+	head,err:=getConfirmedILNHead(source)
+	if err!=nil{return err}
+	snapshot, err := getILNRouteAtBlock(source, destination.Domain, payload.RouteID, head)
 	if err != nil {
 		return err
 	}
