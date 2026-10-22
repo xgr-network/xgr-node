@@ -848,6 +848,10 @@ func (w *Worker) handleWireFrom(raw []byte, from peer.ID) error {
     case "iln_replica_request":
         if envelope.ILNReplicaRequest==nil {return fmt.Errorf("missing ILN replica request")}
         if from=="" {return fmt.Errorf("ILN replica request requires authenticated transport peer")}
+        // GossipSub delivers the request to all peers. Only the targeted
+        // recipient should process it; other peers ignore it silently.
+        if w.network==nil{return fmt.Errorf("ILN replica network unavailable")}
+        if envelope.ILNReplicaRequest.Recipient!=w.network.AddrInfo().ID.String(){return nil}
         return w.respondILNReplicaRequest(from,*envelope.ILNReplicaRequest)
     case "iln_replica_chunk":
         if envelope.ILNReplicaChunk==nil {return fmt.Errorf("missing ILN replica chunk")}
