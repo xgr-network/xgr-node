@@ -230,7 +230,7 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
         Root:checkpoint.Root,Count:uint64(checkpoint.Index)+1,
         BlockNumber:checkpoint.BlockNumber,
     }
-    replica,err:=evmInterchain.LoadVerifiedILNReplica(w.ilnReplicaPath(canonical),canonical)
+    replica,err:=w.verifiedILNReplicaAt(canonical)
     if err!=nil{return fmt.Errorf("unverified local source Merkle replica: %w",err)}
     if payload.Index==^uint32(0)||uint64(payload.Index)>=canonical.Count||
         replica.Leaves[payload.Index]!=payload.AuthorizedMessageID {
