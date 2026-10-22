@@ -240,6 +240,11 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
         replica.Leaves[payload.Index]!=payload.AuthorizedMessageID {
         return fmt.Errorf("ILN vote message not at canonical insertion index")
     }
+    matured,err:=w.observedILNFinalizedCount(source,canonical,replica)
+    if err!=nil{return fmt.Errorf("independent source Merkle finality unavailable: %w",err)}
+    if uint64(payload.Index)>=matured {
+        return fmt.Errorf("ILN received BLS vote references immature source Merkle insertion")
+    }
     operation,err:=getILNOperationAtBlock(source,snapshot.Route.Gateway,
         payload.RouteID,destination.Domain,payload.AuthorizedMessageID,
         payload.SourceBlockNumber)
