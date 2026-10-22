@@ -48,6 +48,10 @@ type ilnReplicaSyncState struct {
     prefix evmInterchain.ILNReplica
     attempts map[peer.ID]*ilnReplicaPeerAttempt
     lastRecentTry time.Time
+    nextPeer uint64
+}
+func sameILNReplicaContent(a,b evmInterchain.ILNReplicaCheckpoint)bool{
+    return a.ChainID==b.ChainID&&a.Hook==b.Hook&&a.Root==b.Root&&a.Count==b.Count
 }
 func ilnReplicaKey(c evmInterchain.ILNReplicaCheckpoint) string {
     return strconv.FormatUint(c.ChainID,10)+"-"+strings.ToLower(c.Hook.String())
@@ -94,13 +98,9 @@ func (w *Worker) refreshILNReplicaRoute(route *evmInterchain.CheckpointRoute) er
     if source==nil||dest==nil{return fmt.Errorf("unconfigured ILN source/destination")}
     head,err:=getConfirmedILNHead(source)
     if err!=nil{return err}
-    epoch:=head/32*32
-    if epoch==0{return fmt.Errorf("confirmed Hyperlane epoch not yet available")}
-    snapshot,err:=getILNRouteAtBlock(source,dest.Domain,route.RouteID,epoch)
+    if head==0{return fmt.Errorf("confirmed source head unavailable")}
+    snapshot,err:=getILNRouteAtBlock(source,dest.Domain,route.RouteID,head)
     if err!=nil{return err}
-    // The Hook state is an independent confirmed checkpoint epoch, not the
-    // older transaction's operation block. Read it only at the recent epoch.
-    snapshot.BlockNumber=epoch
     checkpoint,err:=getConfirmedILNCheckpoint(source,snapshot)
     if err!=nil{return err}
     if checkpoint.Index==^uint32(0) || checkpoint.Root==types.ZeroHash {
@@ -122,7 +122,7 @@ func (w *Worker) refreshILNReplicaRoute(route *evmInterchain.CheckpointRoute) er
     w.mu.Lock()
     if w.ilnReplicaSync==nil {w.ilnReplicaSync=make(map[string]*ilnReplicaSyncState)}
     state:=w.ilnReplicaSync[key]
-    if state==nil || state.canonical!=canonical {
+    if state==nil || !sameILNReplicaContent(state.canonical,canonical) {
         state=&ilnReplicaSyncState{
             canonical:canonical,
             prefix:w.ilnReplicaCandidate(canonical),
@@ -130,6 +130,7 @@ func (w *Worker) refreshILNReplicaRoute(route *evmInterchain.CheckpointRoute) er
         }
         w.ilnReplicaSync[key]=state
     }
+    state.canonical=canonical
     recent:=!state.lastRecentTry.After(time.Now().Add(-30*time.Second))
     if recent {state.lastRecentTry=time.Now()}
     prefix:=state.prefix
@@ -148,9 +149,14 @@ func (w *Worker) refreshILNReplicaRoute(route *evmInterchain.CheckpointRoute) er
 
     peers:=w.network.Peers()
     sort.Slice(peers,func(i,j int)bool{return peers[i].Info.ID.String()<peers[j].Info.ID.String()})
+    w.mu.Lock()
+    start:=int(state.nextPeer%uint64(max(1,len(peers))))
+    state.nextPeer+=ilnReplicaMaxPeers
+    w.mu.Unlock()
     sent:=0
-    for _,p:=range peers {
+    for i:=0;i<len(peers);i++ {
         if sent>=ilnReplicaMaxPeers {break}
+        p:=peers[(start+i)%len(peers)]
         if p==nil || p.Info.ID==w.network.AddrInfo().ID || !w.network.IsConnected(p.Info.ID) {continue}
         request,send:=w.nextILNReplicaPeerRequest(key,p.Info.ID)
         if !send {continue}
@@ -170,7 +176,10 @@ func (w *Worker) nextILNReplicaPeerRequest(key string, id peer.ID)(ilnReplicaReq
     if state==nil{return ilnReplicaRequestWire{},false}
     attempt:=state.attempts[id]
     if attempt==nil {
-        if len(state.attempts)>=ilnReplicaMaxPeers{return ilnReplicaRequestWire{},false}
+        if len(state.attempts)>=ilnReplicaMaxPeers {
+            for p,a:=range state.attempts {if time.Since(a.lastRequested)>15*time.Second {delete(state.attempts,p);break}}
+            if len(state.attempts)>=ilnReplicaMaxPeers{return ilnReplicaRequestWire{},false}
+        }
         attempt=&ilnReplicaPeerAttempt{leaves:append([]types.Hash(nil),state.prefix.Leaves...)}
         state.attempts[id]=attempt
     }
@@ -233,7 +242,7 @@ func (w *Worker) acceptILNReplicaChunk(from peer.ID, chunk ilnReplicaChunkWire) 
     key:=ilnReplicaKey(c)
     w.mu.Lock()
     state:=w.ilnReplicaSync[key]
-    if state==nil || state.canonical!=c {
+    if state==nil || !sameILNReplicaContent(state.canonical,c) {
         w.mu.Unlock()
         return fmt.Errorf("unsolicited or stale ILN replica data")
     }
@@ -253,13 +262,14 @@ func (w *Worker) acceptILNReplicaChunk(from peer.ID, chunk ilnReplicaChunkWire) 
         w.mu.Unlock()
         return nil
     }
+    anchor:=state.canonical
     replica:=evmInterchain.ILNReplica{
-        ChainID:c.ChainID,Hook:c.Hook,Root:c.Root,
-        CheckpointBlock:c.BlockNumber,
+        ChainID:anchor.ChainID,Hook:anchor.Hook,Root:anchor.Root,
+        CheckpointBlock:anchor.BlockNumber,
         Leaves:append([]types.Hash(nil),attempt.leaves...),
     }
     w.mu.Unlock()
-    if err:=evmInterchain.StoreVerifiedILNReplica(w.ilnReplicaPath(c),replica,c);err!=nil {
+    if err:=evmInterchain.StoreVerifiedILNReplica(w.ilnReplicaPath(anchor),replica,anchor);err!=nil {
         w.mu.Lock()
         if current:=w.ilnReplicaSync[key];current!=nil {
             if attempt:=current.attempts[from];attempt!=nil {
@@ -271,7 +281,7 @@ func (w *Worker) acceptILNReplicaChunk(from peer.ID, chunk ilnReplicaChunkWire) 
         return fmt.Errorf("malicious or inconsistent ILN replica from peer %s: %w",from,err)
     }
     w.mu.Lock()
-    if current:=w.ilnReplicaSync[key];current!=nil&&current.canonical==c {
+    if current:=w.ilnReplicaSync[key];current!=nil&&sameILNReplicaContent(current.canonical,anchor) {
         delete(w.ilnReplicaSync,key)
     }
     w.mu.Unlock()
