@@ -44,8 +44,8 @@ func VerifyConfirmedILNFeeAllocation(
     if err != nil { return err }
     confirmed, err := confirmedILNHead(client, source)
     if err != nil { return err }
-    if checkpointBlock > confirmed || checkpointBlock > uint64(1<<63-1) {
-        return fmt.Errorf("ILN allocation checkpoint is not source confirmed")
+    if checkpointBlock > uint64(1<<63-1) || (checkpointBlock>confirmed && checkpointBlock-confirmed>source.Confirmations) {
+        return fmt.Errorf("ILN allocation source observation exceeds current head")
     }
 
     // These addresses are immutable in the verified source contracts; reading
