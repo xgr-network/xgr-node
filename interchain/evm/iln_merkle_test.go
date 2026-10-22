@@ -97,52 +97,50 @@ func TestILNCheckpointUsesConfirmedHookStateWithoutHistoricalLogs(t *testing.T) 
  tree:=&ilnMerkleAccumulator{}
  require.NoError(t,tree.insert(0,message))
  selector:=func(name string)string{return crypto.Keccak256Hash([]byte(name)).String()[:10]}
- var logs,badCalls atomic.Int32
+ var historical,logs atomic.Int32
  srv:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
   var req struct{ID json.RawMessage `json:"id"`;Method string `json:"method"`;Params []json.RawMessage `json:"params"`}
   _=json.NewDecoder(r.Body).Decode(&req)
   var output interface{}
-  switch req.Method {
+  switch req.Method{
   case "eth_chainId":output="0x2105"
-  case "eth_blockNumber":output="0x8e" // 142 - 12 confirmations = 130; epoch checkpoint = 128.
+  case "eth_blockNumber":output="0x8e"
   case "eth_getLogs":
    logs.Add(1)
    _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"error":{"code":-32005,"message":"historical logs unavailable"}}`,req.ID)
    return
   case "eth_call":
-   if len(req.Params)!=2 || string(req.Params[1])!=`"0x80"` {
-    badCalls.Add(1)
-    _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"unavailable historical state"}}`,req.ID)
+   if len(req.Params)!=2||string(req.Params[1])!=`"latest"` {
+    historical.Add(1)
+    _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"historical state unavailable"}}`,req.ID)
     return
    }
    var call struct{Data string `json:"data"`}
    _=json.Unmarshal(req.Params[0],&call)
-   if len(call.Data)<10 {t.Errorf("short eth_call");return}
-   switch strings.ToLower(call.Data[:10]) {
+   switch strings.ToLower(call.Data[:10]){
    case selector("mailbox()"):output=fmt.Sprintf("0x%064x",mailbox.Bytes())
    case selector("count()"):output=fmt.Sprintf("0x%064x",1)
    case selector("root()"):output=tree.root().String()
-   default:t.Errorf("unexpected getter: %s",call.Data);return
+   default:t.Errorf("unexpected latest getter: %s",call.Data);return
    }
-  default:t.Errorf("unexpected rpc: %s",req.Method);return
+  default:t.Errorf("unexpected RPC: %s",req.Method);return
   }
   encoded,_:=json.Marshal(output)
-  w.Header().Set("Content-Type","application/json")
   _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"result":%s}`,req.ID,encoded)
  }))
  defer srv.Close()
- source:=&Destination{Name:"base",ChainID:8453,Domain:8453,RPCURL:srv.URL,ILNRegistryAddress:registry.String(),Confirmations:12}
+ source:=&Destination{Name:"generic",ChainID:8453,Domain:8453,RPCURL:srv.URL,ILNRegistryAddress:registry.String(),Confirmations:12}
  snapshot:=&ILNRouteSnapshot{Registry:registry,Route:protocol.ILNRoute{Mailbox:mailbox,MerkleTreeHook:hook},BlockNumber:110}
  got,err:=GetConfirmedILNCheckpoint(source,snapshot)
  require.NoError(t,err)
  require.Equal(t,tree.root(),got.Root)
  require.Equal(t,uint32(0),got.Index)
- require.Equal(t,uint64(128),got.BlockNumber)
+ require.Equal(t,uint64(142),got.BlockNumber)
+ require.Zero(t,historical.Load())
  require.Zero(t,logs.Load())
- require.Zero(t,badCalls.Load())
- snapshot.BlockNumber=129
+ snapshot.BlockNumber=131
  _,err=GetConfirmedILNCheckpoint(source,snapshot)
- require.ErrorContains(t,err,"awaits next confirmed")
+ require.ErrorContains(t,err,"not confirmed")
 }
 
 func TestILNRouteSnapshotUsesAppendOnlyCurrentBindings(t *testing.T) {
