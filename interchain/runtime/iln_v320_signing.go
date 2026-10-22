@@ -170,6 +170,11 @@ func (w *Worker) signVerifiedILNReplicaLeaf(
     err=verifyILNFeeAllocation(ctx.source,ctx.snapshot,messageID,ctx.canonical.BlockNumber)
     if scan&&errors.Is(err,evmInterchain.ErrILNFeeNotAllocated){return nil}
     if err!=nil{return err}
+    matured,err:=w.observedILNFinalizedCount(ctx.source,ctx.canonical,ctx.replica)
+    if err!=nil{return fmt.Errorf("source Merkle finality observation: %w",err)}
+    if uint64(messageIndex)>=matured {
+        return fmt.Errorf("ILN Merkle insertion awaits independently confirmed observation")
+    }
     // On-chain operation and same-transaction Gateway/Dispatch/Hook receipt
     // resolve the original insertion position without historical eth_call.
     operation,err:=getILNOperationAtBlock(ctx.source,ctx.snapshot.Route.Gateway,
