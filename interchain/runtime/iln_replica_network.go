@@ -81,6 +81,7 @@ func (w *Worker) refreshILNReplicas() {
     w.mu.Unlock()
     for _,route:=range routes {
         if err:=w.refreshILNReplicaRoute(route);err!=nil {
+            w.recordILNReplicaFailure(route,err)
             w.logger.Debug("ILN replica waiting for canonical source or peer",
                 "route",route.Name,"err",err)
         }
