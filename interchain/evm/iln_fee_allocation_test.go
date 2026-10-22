@@ -81,7 +81,7 @@ func TestILNFeeVaultAllocationIsOnChainAndIndependentFromHistoricLogs(t *testing
                 require.Equal(t,"latest",at)
                 if wrongGovernance {result=wordAddress(gateway)}else{result=wordAddress(governance)}
             case sel("allocatedOperation(bytes32)"):
-                require.Equal(t,"0x80",at)
+                require.Equal(t,"latest",at)
                 require.Equal(t,message.String()[2:],strings.ToLower(call.Data[10:]))
                 if missingState {
                     _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"pruned checkpoint state"}}`,req.ID)
@@ -126,7 +126,7 @@ func TestILNFeeVaultAllocationIsOnChainAndIndependentFromHistoricLogs(t *testing
         "governance authority mismatch")
     mu.Lock();wrongGovernance=false;missingState=true;mu.Unlock()
     require.ErrorContains(t,VerifyConfirmedILNFeeAllocation(source,snapshot,message,128),
-        "allocatedOperation at confirmed checkpoint unavailable")
+        "allocatedOperation immutable getter unavailable")
     require.ErrorContains(t,VerifyConfirmedILNFeeAllocation(source,snapshot,message,140),
         "not source confirmed")
     mu.Lock()
