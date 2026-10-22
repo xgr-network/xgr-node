@@ -108,13 +108,9 @@ func (w *Worker) refreshILNReplicaRoute(route *evmInterchain.CheckpointRoute) er
     if source==nil||dest==nil{return fmt.Errorf("unconfigured ILN source/destination")}
     head,err:=getConfirmedILNHead(source)
     if err!=nil{return err}
-    epoch:=head/32*32
-    if epoch==0{return fmt.Errorf("confirmed Hyperlane epoch not yet available")}
-    snapshot,err:=getILNRouteAtBlock(source,dest.Domain,route.RouteID,epoch)
+    if head==0{return fmt.Errorf("confirmed source head unavailable")}
+    snapshot,err:=getILNRouteAtBlock(source,dest.Domain,route.RouteID,head)
     if err!=nil{return err}
-    // The Hook state is an independent confirmed checkpoint epoch, not the
-    // older transaction's operation block. Read it only at the recent epoch.
-    snapshot.BlockNumber=epoch
     checkpoint,err:=getConfirmedILNCheckpoint(source,snapshot)
     if err!=nil{return err}
     if checkpoint.Index==^uint32(0) || checkpoint.Root==types.ZeroHash {
