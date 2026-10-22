@@ -253,6 +253,34 @@ func (w *Worker) nextILNReplicaPeerRequest(key string, id peer.ID)(ilnReplicaReq
     },true
 }
 
+// verifiedILNReplicaPrefixForRequest turns a verified, possibly newer
+// append-only replica into the requested content prefix. A provider never
+// claims the requested historical block is canonical: the RECEIVER must
+// independently corroborate its source checkpoint before accepting bytes.
+func verifiedILNReplicaPrefixForRequest(stored evmInterchain.ILNReplica,
+    requested evmInterchain.ILNReplicaCheckpoint)(evmInterchain.ILNReplica,error){
+    own:=evmInterchain.ILNReplicaCheckpoint{
+        ChainID:stored.ChainID,Hook:stored.Hook,Root:stored.Root,
+        Count:uint64(len(stored.Leaves)),BlockNumber:stored.CheckpointBlock,
+    }
+    if err:=evmInterchain.VerifyILNReplica(stored,own);err!=nil{
+        return evmInterchain.ILNReplica{},fmt.Errorf("provider has no verified Merkle replica: %w",err)
+    }
+    if stored.ChainID!=requested.ChainID || stored.Hook!=requested.Hook ||
+        requested.Count==0 || requested.Count>uint64(len(stored.Leaves)) {
+        return evmInterchain.ILNReplica{},evmInterchain.ErrILNReplicaUnverified
+    }
+    prefix:=evmInterchain.ILNReplica{
+        ChainID:requested.ChainID,Hook:requested.Hook,Root:requested.Root,
+        CheckpointBlock:requested.BlockNumber,
+        Leaves:append([]types.Hash(nil),stored.Leaves[:int(requested.Count)]...),
+    }
+    if err:=evmInterchain.VerifyILNReplica(prefix,requested);err!=nil{
+        return evmInterchain.ILNReplica{},err
+    }
+    return prefix,nil
+}
+
 func (w *Worker) respondILNReplicaRequest(from peer.ID, req ilnReplicaRequestWire) error {
     if w.network==nil || from=="" || req.Recipient!=w.network.AddrInfo().ID.String() ||
         req.ChainID==0 || req.Hook==types.ZeroAddress || req.Root==types.ZeroHash ||
@@ -272,18 +300,21 @@ func (w *Worker) respondILNReplicaRequest(from peer.ID, req ilnReplicaRequestWir
     }
     // The sender may supply a poisoned target root. It will NEVER cause a
     // reply from an unverified local file, nor can it promote stored data.
-    // Serve identical Merkle content even when the provider observed a
-    // different epoch. The requester independently verifies its own source
-    // checkpoint; a peer-supplied epoch cannot authorize a vote.
-    stored:=w.ilnReplicaCandidate(c)
-    stored.CheckpointBlock=c.BlockNumber
-    stored.Root=c.Root
-    if err:=evmInterchain.VerifyILNReplica(stored,c);err!=nil{return err}
+    // The provider may be ahead of this requester. Verify the complete
+    // stored Merkle content first; then derive the requested older prefix.
+    // Responding with untrusted leaf bytes is NOT checkpoint attestation.
+    raw,err:=os.ReadFile(w.ilnReplicaPath(c))
+    if err!=nil{return err}
+    if len(raw)>ilnReplicaMaxFileBytes{return evmInterchain.ErrILNReplicaUnverified}
+    var stored evmInterchain.ILNReplica
+    if err:=json.Unmarshal(raw,&stored);err!=nil{return err}
+    prefix,err:=verifiedILNReplicaPrefixForRequest(stored,c)
+    if err!=nil{return err}
     to:=req.Offset+ilnReplicaWireLeaves
     if to>req.Count {to=req.Count}
     response:=ilnReplicaChunkWire{
         ilnReplicaRequestWire:req,Target:from.String(),
-        Leaves:append([]types.Hash(nil),stored.Leaves[int(req.Offset):int(to)]...),
+        Leaves:append([]types.Hash(nil),prefix.Leaves[int(req.Offset):int(to)]...),
     }
     return w.publish(wireEnvelope{Type:"iln_replica_chunk",ILNReplicaChunk:&response})
 }
