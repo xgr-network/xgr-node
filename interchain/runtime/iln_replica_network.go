@@ -236,8 +236,15 @@ func (w *Worker) respondILNReplicaRequest(from peer.ID, req ilnReplicaRequestWir
     // The provider's verified local root/count may have been observed at
     // a different confirmed height. Check the stored content independently;
     // a P2P response cannot establish its recipient's source state.
-    stored:=w.ilnReplicaCandidate(c)
-    if stored.CheckpointBlock==0{return evmInterchain.ErrILNReplicaUnverified}
+    // Provider and recipient may independently observe the same Merkle
+    // CONTENT at different RPC heights. Verify the provider's actual stored
+    // observation; never impose the recipient's block number on its file.
+    raw,err:=os.ReadFile(w.ilnReplicaPath(c))
+    if err!=nil||len(raw)>ilnReplicaMaxFileBytes{return evmInterchain.ErrILNReplicaUnverified}
+    var stored evmInterchain.ILNReplica
+    if json.Unmarshal(raw,&stored)!=nil||stored.CheckpointBlock==0{
+        return evmInterchain.ErrILNReplicaUnverified
+    }
     own:=evmInterchain.ILNReplicaCheckpoint{
         ChainID:stored.ChainID,Hook:stored.Hook,Root:stored.Root,
         Count:uint64(len(stored.Leaves)),BlockNumber:stored.CheckpointBlock,
