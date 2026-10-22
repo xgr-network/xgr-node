@@ -187,7 +187,21 @@ func (w *Worker) nextILNReplicaPeerRequest(key string, id peer.ID)(ilnReplicaReq
     if state==nil{return ilnReplicaRequestWire{},false}
     attempt:=state.attempts[id]
     if attempt==nil {
-        if len(state.attempts)>=ilnReplicaMaxPeers{return ilnReplicaRequestWire{},false}
+        // Rotate across connected peers instead of permanently reserving the
+        // first three slots. Each attempt is bounded and the full Merkle root
+        // must still match the independently confirmed source checkpoint.
+        if len(state.attempts)>=ilnReplicaMaxPeers{
+            var oldest peer.ID
+            var at time.Time
+            for candidate,entry:=range state.attempts{
+                if oldest=="" || entry.lastRequested.Before(at) {
+                    oldest=candidate;at=entry.lastRequested
+                }
+            }
+            if oldest!="" && time.Since(at)>=30*time.Second {
+                delete(state.attempts,oldest)
+            } else {return ilnReplicaRequestWire{},false}
+        }
         attempt=&ilnReplicaPeerAttempt{leaves:append([]types.Hash(nil),state.prefix.Leaves...)}
         state.attempts[id]=attempt
     }
