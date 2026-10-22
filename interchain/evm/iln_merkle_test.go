@@ -110,7 +110,7 @@ func TestILNCheckpointUsesConfirmedHookStateWithoutHistoricalLogs(t *testing.T) 
    _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"error":{"code":-32005,"message":"historical logs unavailable"}}`,req.ID)
    return
   case "eth_call":
-   if len(req.Params)!=2 || string(req.Params[1])!=`"0x80"` {
+   if len(req.Params)!=2 || string(req.Params[1])!=`"latest"` {
     badCalls.Add(1)
     _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"unavailable historical state"}}`,req.ID)
     return
@@ -137,12 +137,12 @@ func TestILNCheckpointUsesConfirmedHookStateWithoutHistoricalLogs(t *testing.T) 
  require.NoError(t,err)
  require.Equal(t,tree.root(),got.Root)
  require.Equal(t,uint32(0),got.Index)
- require.Equal(t,uint64(128),got.BlockNumber)
+ require.Equal(t,uint64(142),got.BlockNumber)
  require.Zero(t,logs.Load())
  require.Zero(t,badCalls.Load())
- snapshot.BlockNumber=129
+ snapshot.BlockNumber=131
  _,err=GetConfirmedILNCheckpoint(source,snapshot)
- require.ErrorContains(t,err,"awaits next confirmed")
+ require.ErrorContains(t,err,"not sufficiently confirmed")
 }
 
 func TestILNRouteSnapshotUsesAppendOnlyCurrentBindings(t *testing.T) {
