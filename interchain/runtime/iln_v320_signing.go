@@ -98,11 +98,9 @@ func (w *Worker) writeILNLeafCursor(route string,setID,index uint64)error{
     return os.Rename(tmp.Name(),path)
 }
 
-// The automatic scanner uses only recent, confirmed Gateway events. It never
-// assumes that a Merkle leaf's insertion block can be inferred from the
-// current Hook epoch, and never requests historical contract state. Older
-// messages remain recoverable through the public quorum request's source
-// operation-block hint, which is independently checked against the receipt.
+// signVerifiedILNReplicaBatch scans a bounded range of independently
+// reconstructed Hook leaves. The immutable route FeeVault mapping authorizes
+// each bridge message; no Gateway logs or historical receipts are required.
 func (w *Worker) signVerifiedILNReplicaBatch(route *evmInterchain.CheckpointRoute) error {
     ctx,err:=w.verifiedILNReplicaRoute(route)
     if err!=nil{return err}
@@ -111,29 +109,21 @@ func (w *Worker) signVerifiedILNReplicaBatch(route *evmInterchain.CheckpointRout
     eligible,err:=w.interchainSignerEligible(set,w.localAddr)
     if err!=nil{return err}
     if !eligible{return nil}
-    // Scan a bounded window of confirmed Gateway events; this is discovery
-    // only. Each candidate is separately authorized by its successful
-    // receipt, full Merkle inclusion, FeeVault, and destination set.
-    to:=ctx.canonical.BlockNumber
-    from:=uint64(1)
-    if to>127{from=to-127}
-    ops,err:=getConfirmedILNOperations(ctx.source,ctx.snapshot.Route.Gateway,
-        ctx.snapshot.Route.Key.RouteID,ctx.destination.Domain,from,to)
-    if err!=nil{return fmt.Errorf("recent source operation discovery unavailable: %w",err)}
-    for _,op:=range ops {
-        if op.MessageID==types.ZeroHash||op.BlockNumber<from||op.BlockNumber>to{
-            return fmt.Errorf("invalid confirmed source operation locator")
-        }
-        index:=-1
-        for i,id:=range ctx.replica.Leaves{
-            if id==op.MessageID{
-                if index>=0{return fmt.Errorf("ambiguous source Merkle insertion")}
-                index=i
-            }
-        }
-        if index<0{continue} // not included in the confirmed Hook root
-        if err:=w.signVerifiedILNReplicaLeaf(ctx,set,op.MessageID,
-            uint32(index),true,op.BlockNumber);err!=nil{return err}
+    matured,err:=w.observedILNFinalizedCount(ctx.source,ctx.canonical,ctx.replica)
+    if err!=nil{return err}
+    if matured==0{return nil}
+    cursor,err:=w.readILNLeafCursor(route.Name,set.SetID)
+    if err!=nil{return err}
+    if cursor>matured {cursor=0} // safe restart after a source reorganization
+    confirmed,err:=getConfirmedILNHead(ctx.source)
+    if err!=nil{return err}
+    if confirmed==0{return fmt.Errorf("confirmed ILN source head unavailable")}
+    end:=cursor+maxILNReplicaLeavesPerTick
+    if end>matured{end=matured}
+    for i:=cursor;i<end;i++{
+        if err:=w.signVerifiedILNReplicaLeaf(ctx,set,
+            ctx.replica.Leaves[i],uint32(i),true,confirmed);err!=nil{return err}
+        if err:=w.writeILNLeafCursor(route.Name,set.SetID,i+1);err!=nil{return err}
     }
     return nil
 }
@@ -175,17 +165,17 @@ func (w *Worker) signVerifiedILNReplicaLeaf(
     if uint64(messageIndex)>=matured {
         return fmt.Errorf("ILN Merkle insertion awaits independently confirmed observation")
     }
-    // On-chain operation and same-transaction Gateway/Dispatch/Hook receipt
-    // resolve the original insertion position without historical eth_call.
-    operation,err:=getILNOperationAtBlock(ctx.source,ctx.snapshot.Route.Gateway,
-        ctx.snapshot.Route.Key.RouteID,ctx.destination.Domain,messageID,sourceBlock)
-    if err!=nil{return fmt.Errorf("confirmed source receipt required for ILN BLS: %w",err)}
-    if operation==nil||operation.BlockNumber!=sourceBlock||
-        operation.MessageID!=messageID||operation.InsertionIndex!=messageIndex{
-        return fmt.Errorf("ILN source receipt insertion index/block mismatch")
+    // SourceBlockNumber is a checkpoint observation label in the deployed
+    // ISM payload, NOT an authority for a historical source operation.
+    // Membership is independently proved by the reconstructed Hook prefix,
+    // confirmation-aged locally and the immutable route FeeVault allocation.
+    confirmed,err:=getConfirmedILNHead(ctx.source)
+    if err!=nil{return err}
+    if sourceBlock==0||sourceBlock>confirmed {
+        return fmt.Errorf("ILN source checkpoint label is not confirmed")
     }
     _,fixed,err:=evmInterchain.VerifiedILNMessagePrefix(
-        ctx.replica,ctx.canonical,messageIndex,operation.BlockNumber)
+        ctx.replica,ctx.canonical,messageIndex,sourceBlock)
     if err!=nil{return fmt.Errorf("unverified immutable source insertion root: %w",err)}
     delivered,err:=getILNMessageDelivered(ctx.destination,ctx.snapshot.Route.DestinationRouter,messageID)
     if err!=nil{return fmt.Errorf("destination state unavailable: %w",err)}
@@ -194,10 +184,8 @@ func (w *Worker) signVerifiedILNReplicaLeaf(
         return fmt.Errorf("ILN message already delivered")
     }
 
-    // This is the CURRENT confirmed source fee policy. The original amount
-    // was atomically charged by Gateway/FeeVault at dispatch; V315 does NOT
-    // preserve a per-message historical fee amount. Never misrepresent this
-    // signed nonzero value as the original charge.
+    // V315 stores immutable allocation, not the original per-message fee.
+    // This nonzero field is the current route policy, not a historical charge.
     payload:=protocol.ILNCheckpointPayload{
         SourceChainID:ctx.snapshot.Route.Key.SourceChainID,
         SourceDomain:ctx.snapshot.Route.Key.SourceDomain,
