@@ -215,10 +215,17 @@ func (w *Worker) respondILNReplicaRequest(from peer.ID, req ilnReplicaRequestWir
     }
     // The sender may supply a poisoned target root. It will NEVER cause a
     // reply from an unverified local file, nor can it promote stored data.
+    // The provider's verified local root/count may have been observed at
+    // a different confirmed height. Check the stored content independently;
+    // a P2P response cannot establish its recipient's source state.
     stored:=w.ilnReplicaCandidate(c)
-    stored.CheckpointBlock=c.BlockNumber
-    stored.Root=c.Root
-    if err:=evmInterchain.VerifyILNReplica(stored,c);err!=nil{return err}
+    if stored.CheckpointBlock==0{return evmInterchain.ErrILNReplicaUnverified}
+    own:=evmInterchain.ILNReplicaCheckpoint{
+        ChainID:stored.ChainID,Hook:stored.Hook,Root:stored.Root,
+        Count:uint64(len(stored.Leaves)),BlockNumber:stored.CheckpointBlock,
+    }
+    if err:=evmInterchain.VerifyILNReplica(stored,own);err!=nil{return err}
+    if !sameILNReplicaContent(own,c){return evmInterchain.ErrILNReplicaUnverified}
     to:=req.Offset+ilnReplicaWireLeaves
     if to>req.Count {to=req.Count}
     response:=ilnReplicaChunkWire{
