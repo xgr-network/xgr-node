@@ -73,6 +73,24 @@ func (w *Worker) ilnReplicaCandidate(c evmInterchain.ILNReplicaCheckpoint) evmIn
     return out
 }
 
+
+func (w *Worker) verifiedILNReplicaAt(c evmInterchain.ILNReplicaCheckpoint)(evmInterchain.ILNReplica,error){
+ path:=w.ilnReplicaPath(c)
+ if verified,err:=evmInterchain.LoadVerifiedILNReplica(path,c);err==nil{return verified,nil}
+ prior:=w.ilnReplicaCandidate(c)
+ if uint64(len(prior.Leaves))!=c.Count||prior.Root!=c.Root {
+   return evmInterchain.ILNReplica{},evmInterchain.ErrILNReplicaUnverified
+ }
+ // Same content, later independent source head: re-anchor the complete
+ // previously verified leaves after recomputing EVERY Merkle hash.
+ reanchored,err:=evmInterchain.ExtendILNReplica(c,prior,nil)
+ if err!=nil{return evmInterchain.ILNReplica{},err}
+ if err:=evmInterchain.StoreVerifiedILNReplica(path,reanchored,c);err!=nil{
+    return evmInterchain.ILNReplica{},err
+ }
+ return reanchored,nil
+}
+
 // refreshILNReplicas is called by the independent interchain worker. It
 // never participates in IBFT consensus, cannot mint, and fails closed on
 // missing canonical source reads. A restarted validator can cold-join from a
@@ -112,7 +130,7 @@ func (w *Worker) refreshILNReplicaRoute(route *evmInterchain.CheckpointRoute) er
         BlockNumber:checkpoint.BlockNumber,
     }
     if canonical.Count>1<<20{return fmt.Errorf("ILN replica over bounded snapshot capacity")}
-    if _,err:=evmInterchain.LoadVerifiedILNReplica(w.ilnReplicaPath(canonical),canonical);err==nil {
+    if _,err:=w.verifiedILNReplicaAt(canonical);err==nil {
         w.mu.Lock();delete(w.ilnReplicaSync,ilnReplicaKey(canonical));w.mu.Unlock()
         w.recordILNReplicaVerified(route,canonical,head)
         return nil
