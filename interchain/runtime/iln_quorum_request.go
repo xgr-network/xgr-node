@@ -204,7 +204,7 @@ func (w *Worker) processRequestedILNQuorum(route *evmInterchain.CheckpointRoute,
     confirmed,err:=getConfirmedILNHead(source)
     if err!=nil{return err}
     if sourceBlock>confirmed{return fmt.Errorf("hint source transaction is not confirmed")}
-    return w.signVerifiedILNReplicaMessage(route,messageID)
+    return w.signVerifiedILNReplicaMessage(route,messageID,sourceBlock)
 }
 
 func (w *Worker) acceptRequestedILNQuorum(request requestedILNQuorum) error {
