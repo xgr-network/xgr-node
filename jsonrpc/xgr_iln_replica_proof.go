@@ -48,40 +48,38 @@ func (x *xgrEndpoint) GetILNReplicaProof(route,messageID string)(*ilnReplicaProo
     }
     hook:=types.StringToAddress(attestation.MerkleTreeHook)
     root:=types.StringToHash(attestation.Root)
-    c:=evmInterchain.ILNReplicaCheckpoint{
-        ChainID:attestation.OriginChainID,Hook:hook,Root:root,
-        Count:uint64(attestation.Index)+1,
-    }
     path:=filepath.Join(x.dataDir,"interchain","iln","replicas",
-        strconv.FormatUint(c.ChainID,10),strings.ToLower(hook.String())+".json")
+        strconv.FormatUint(attestation.OriginChainID,10),strings.ToLower(hook.String())+".json")
     info,err:=os.Stat(path)
-    if err!=nil{return nil,fmt.Errorf("ILN verified replica not yet available: %w",err)}
-    if !info.Mode().IsRegular() || info.Size()>40<<20 || info.Size()<=0 {
+    if err!=nil{return nil,fmt.Errorf("ILN replica unavailable: %w",err)}
+    if !info.Mode().IsRegular()||info.Size()>40<<20||info.Size()<=0{
         return nil,fmt.Errorf("invalid bounded ILN replica file")
     }
     raw,err:=os.ReadFile(path);if err!=nil{return nil,err}
     var stored evmInterchain.ILNReplica
-    if err:=json.Unmarshal(raw,&stored);err!=nil{return nil,fmt.Errorf("corrupt ILN replica: %w",err)}
-    if stored.CheckpointBlock==0{return nil,fmt.Errorf("ILN replica has no confirmed source block")}
-    c.BlockNumber=stored.CheckpointBlock
-    replica,err:=evmInterchain.LoadVerifiedILNReplica(path,c)
-    if err!=nil{return nil,fmt.Errorf("ILN replica does not match signed checkpoint: %w",err)}
-    target:=types.StringToHash(messageID)
-    index:=-1
-    for i,id:=range replica.Leaves {
-        if id==target {
-            if index>=0{return nil,fmt.Errorf("ambiguous Merkle message insertion")}
-            index=i
-        }
+    if err:=json.Unmarshal(raw,&stored);err!=nil{return nil,err}
+    full:=evmInterchain.ILNReplicaCheckpoint{
+        ChainID:attestation.OriginChainID,Hook:hook,Root:stored.Root,
+        Count:uint64(len(stored.Leaves)),BlockNumber:stored.CheckpointBlock,
     }
-    if index<0{return nil,fmt.Errorf("message ID not in verified Hook prefix")}
-    proof,err:=evmInterchain.BuildILNReplicaProof(replica,c,uint32(index))
+    replica,err:=evmInterchain.LoadVerifiedILNReplica(path,full)
+    if err!=nil{return nil,fmt.Errorf("unverified full source Merkle replica: %w",err)}
+    target:=types.StringToHash(messageID)
+    if uint64(attestation.Index)>=full.Count||replica.Leaves[attestation.Index]!=target{
+        return nil,fmt.Errorf("message not at signed immutable insertion position")
+    }
+    material,c,err:=evmInterchain.VerifiedILNMessagePrefix(replica,full,attestation.Index)
+    if err!=nil{return nil,err}
+    if c.Root!=root||c.BlockNumber!=attestation.SourceBlockNumber{
+        return nil,fmt.Errorf("signed prefix does not match independently reconstructed Hook tree")
+    }
+    proof,err:=evmInterchain.BuildILNReplicaProof(material,c,attestation.Index)
     if err!=nil{return nil,err}
     result:=&ilnReplicaProofRPC{
         Route:route,MessageID:messageID,OriginChainID:c.ChainID,
         Hook:hook.String(),Root:root.String(),
-        CheckpointBlock:c.BlockNumber,
-        CheckpointIndex:attestation.Index,MessageIndex:uint32(index),
+        CheckpointBlock:full.BlockNumber,
+        CheckpointIndex:attestation.Index,MessageIndex:attestation.Index,
         Quorum:attestation,
     }
     for i,sibling:=range proof {result.MerkleProof[i]=sibling.String()}
