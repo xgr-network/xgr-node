@@ -162,26 +162,6 @@ func (w *Worker) signVerifiedILNReplicaLeaf(
         return fmt.Errorf("ILN message already delivered")
     }
 
-    // Bind the BLS proposal to the FIRST canonical insertion of this message,
-    // not to a moving source-RPC epoch. The source receipt independently
-    // attests the Gateway operation, Mailbox.Dispatch and Hook leaf/index.
-    // Root reconstruction from the locally verified FULL source Merkle tree
-    // makes the per-insertion prefix identical on all validators, regardless
-    // of later unrelated insertions or source head views.
-    operation,err:=getILNOperationAtBlock(ctx.source,ctx.snapshot.Route.Gateway,
-        ctx.snapshot.Route.Key.RouteID,ctx.destination.Domain,messageID,
-        ctx.canonical.BlockNumber)
-    if err!=nil{return fmt.Errorf("ILN confirmed insertion receipt unavailable: %w",err)}
-    if operation==nil || operation.MessageID!=messageID ||
-        operation.InsertionIndex!=messageIndex || operation.BlockNumber==0 {
-        return fmt.Errorf("ILN message insertion identity differs from confirmed source receipt")
-    }
-    _,fixed,err:=evmInterchain.VerifiedILNMessagePrefix(ctx.replica,ctx.canonical,
-        messageIndex,operation.BlockNumber)
-    if err!=nil{return fmt.Errorf("ILN immutable insertion checkpoint: %w",err)}
-    if err:=verifyILNFeeAllocation(ctx.source,ctx.snapshot,messageID,
-        ctx.canonical.BlockNumber);err!=nil{return err}
-
     // This is the CURRENT confirmed source fee policy. The original amount
     // was atomically charged by Gateway/FeeVault at dispatch; V315 does NOT
     // preserve a per-message historical fee amount. Never misrepresent this
@@ -192,7 +172,7 @@ func (w *Worker) signVerifiedILNReplicaLeaf(
         DestinationDomain:ctx.snapshot.Route.Key.DestinationDomain,
         RouteID:ctx.snapshot.Route.Key.RouteID,
         SetID:set.SetID,
-        SourceBlockNumber:fixed.BlockNumber,
+        SourceBlockNumber:ctx.canonical.BlockNumber,
         Registry:ctx.snapshot.Registry,
         Gateway:ctx.snapshot.Route.Gateway,
         SourceRouter:ctx.snapshot.Route.SourceRouter,
@@ -201,7 +181,7 @@ func (w *Worker) signVerifiedILNReplicaLeaf(
         DestinationRouter:ctx.snapshot.Route.DestinationRouter,
         ValidatorFeeWei:new(big.Int).Set(ctx.snapshot.Route.ValidatorFeeWei),
         AuthorizedMessageID:messageID,
-        Root:fixed.Root,Index:messageIndex,
+        Root:ctx.canonical.Root,Index:ctx.checkpoint.Index,
     }
     raw,err:=payload.MarshalBinary()
     if err!=nil{return err}
