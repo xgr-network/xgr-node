@@ -47,7 +47,6 @@ func VerifyConfirmedILNFeeAllocation(
     if checkpointBlock > confirmed || checkpointBlock > uint64(1<<63-1) {
         return fmt.Errorf("ILN allocation checkpoint is not source confirmed")
     }
-    block := ethgo.BlockNumber(checkpointBlock)
 
     // These addresses are immutable in the verified source contracts; reading
     // their most recent value does not require historical RPC state.
@@ -81,18 +80,22 @@ func VerifyConfirmedILNFeeAllocation(
     data := make([]byte, 4+32)
     copy(data[:4],selector[:4])
     copy(data[4:],messageID.Bytes())
-    allocated, err := callILNView(client, vault, data, block)
+    // Allocation mappings are write-once in the factory-bound V3.1.5 FeeVault.
+    // Latest state is monotonic: a message absent at the signed block cannot
+    // be made canonical merely by observing latest here; full Merkle proof and
+    // confirmed source operation remain independent mandatory checks.
+    allocated, err := callILNView(client, vault, data, ethgo.Latest)
     if err != nil || len(allocated) != 32 {
-        return fmt.Errorf("ILN allocatedOperation at confirmed checkpoint unavailable: %v", err)
+        return fmt.Errorf("ILN allocatedOperation immutable getter unavailable: %v", err)
     }
     if new(big.Int).SetBytes(allocated).Cmp(big.NewInt(1)) != 0 {
         return fmt.Errorf("%w at confirmed checkpoint",ErrILNFeeNotAllocated)
     }
     selector = crypto.Keccak256Hash([]byte("allocatedSetId(bytes32)"))
     copy(data[:4],selector[:4])
-    set, err := callILNView(client, vault, data, block)
+    set, err := callILNView(client, vault, data, ethgo.Latest)
     if err != nil || len(set) != 32 {
-        return fmt.Errorf("ILN allocated validator set at checkpoint unavailable: %v", err)
+        return fmt.Errorf("ILN immutable allocated validator set unavailable: %v", err)
     }
     setID := new(big.Int).SetBytes(set)
     if !setID.IsUint64() || setID.Sign() <= 0 {

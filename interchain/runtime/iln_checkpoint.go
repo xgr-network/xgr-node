@@ -68,6 +68,7 @@ var (
 	getILNValidatorSet            = evmInterchain.GetValidatorSet
 	getConfirmedILNHead           = evmInterchain.GetConfirmedILNHead
 	getILNOperationAtBlock        = evmInterchain.GetILNOperationAtBlock
+    getConfirmedILNOperations    = evmInterchain.GetConfirmedILNOperations
 	getILNMessageDelivered       = evmInterchain.GetILNMessageDelivered
 )
 
@@ -218,39 +219,52 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 		return fmt.Errorf("ILN checkpoint canonical route mismatch")
 	}
 
-    // v3.2.0: never ask the Gateway log indexer to authorize a BLS vote.
-    // The factory-bound route and FeeVault allocatedOperation are checked
-    // on the source chain at the EXACT signed confirmed checkpoint epoch.
-    // A local or remote index cannot substitute for Merkle inclusion proof.
-    checkpoint, err := getConfirmedILNCheckpoint(source, snapshot)
-    if err != nil { return err }
-    if checkpoint.Root != payload.Root || checkpoint.Index != payload.Index ||
-        checkpoint.BlockNumber != payload.SourceBlockNumber {
-        return fmt.Errorf("ILN confirmed Hook root/index/epoch differs from signed vote")
+    // Reconstruct the receiver's independently confirmed current full Hook
+    // tree. The signed root is a deterministic earlier insertion prefix,
+    // authenticated by the original successful Gateway/Dispatch/Hook receipt.
+    checkpoint,err:=getConfirmedILNCheckpoint(source,snapshot)
+    if err!=nil{return fmt.Errorf("independent source Hook observation unavailable: %w",err)}
+    if checkpoint==nil||checkpoint.Root==types.ZeroHash||
+        checkpoint.Index==^uint32(0)||
+        checkpoint.BlockNumber<payload.SourceBlockNumber{
+        return fmt.Errorf("ILN signed source insertion is not confirmed")
+    }
+    canonical:=evmInterchain.ILNReplicaCheckpoint{
+        ChainID:source.ChainID,Hook:snapshot.Route.MerkleTreeHook,
+        Root:checkpoint.Root,Count:uint64(checkpoint.Index)+1,
+        BlockNumber:checkpoint.BlockNumber,
+    }
+    replica,err:=evmInterchain.LoadVerifiedILNReplica(w.ilnReplicaPath(canonical),canonical)
+    if err!=nil{return fmt.Errorf("unverified local Merkle replica: %w",err)}
+    if uint64(payload.Index)>=canonical.Count ||
+        replica.Leaves[payload.Index]!=payload.AuthorizedMessageID {
+        return fmt.Errorf("ILN vote message not at canonical insertion index")
+    }
+    matured,err:=w.observedILNFinalizedCount(source,canonical,replica)
+    if err!=nil{return fmt.Errorf("independent source Merkle finality unavailable: %w",err)}
+    if uint64(payload.Index)>=matured {
+        return fmt.Errorf("ILN received BLS vote references immature source Merkle insertion")
+    }
+    // SourceBlockNumber is a confirmation checkpoint label in the existing
+    // ISM encoding, not independently proven operation history. No peer-
+    // provided block can establish finality: verify source depth locally.
+    confirmed,err:=getConfirmedILNHead(source)
+    if err!=nil{return err}
+    if payload.SourceBlockNumber==0||payload.SourceBlockNumber>confirmed{
+        return fmt.Errorf("ILN checkpoint label exceeds locally confirmed source head")
+    }
+    _,prefix,err:=evmInterchain.VerifiedILNMessagePrefix(
+        replica,canonical,payload.Index,payload.SourceBlockNumber)
+    if err!=nil{return err}
+    if prefix.Root!=payload.Root||prefix.Count!=uint64(payload.Index)+1{
+        return fmt.Errorf("ILN signed insertion root differs from confirmed Hook prefix")
     }
     if snapshot.Route.ValidatorFeeWei==nil ||
         payload.ValidatorFeeWei.Cmp(snapshot.Route.ValidatorFeeWei)!=0 {
         return fmt.Errorf("ILN signed source fee policy differs from canonical current route")
     }
-    canonical := evmInterchain.ILNReplicaCheckpoint{
-        ChainID:source.ChainID,Hook:snapshot.Route.MerkleTreeHook,
-        Root:checkpoint.Root,Count:uint64(checkpoint.Index)+1,
-        BlockNumber:checkpoint.BlockNumber,
-    }
-    replica, err := evmInterchain.LoadVerifiedILNReplica(w.ilnReplicaPath(canonical),canonical)
-    if err!=nil{return fmt.Errorf("ILN vote requires independently verified Merkle replica: %w",err)}
-    messageIndex:=-1
-    for i,id:=range replica.Leaves {
-        if id==payload.AuthorizedMessageID {
-            if messageIndex>=0{return fmt.Errorf("ambiguous ILN message insertion in root")}
-            messageIndex=i
-        }
-    }
-    if messageIndex<0 {return fmt.Errorf("ILN checkpoint does not contain authorized message ID")}
-    if _,err:=evmInterchain.BuildILNReplicaProof(replica,canonical,uint32(messageIndex));err!=nil {
-        return fmt.Errorf("invalid ILN Merkle proof in validator vote: %w",err)
-    }
-    if err:=verifyILNFeeAllocation(source,snapshot,payload.AuthorizedMessageID,checkpoint.BlockNumber);err!=nil {
+    if err:=verifyILNFeeAllocation(source,snapshot,payload.AuthorizedMessageID,
+        canonical.BlockNumber);err!=nil {
         return fmt.Errorf("ILN vote lacks source FeeVault eligibility: %w",err)
     }
     delivered,err:=getILNMessageDelivered(destination,snapshot.Route.DestinationRouter,payload.AuthorizedMessageID)
@@ -500,20 +514,15 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
           w.removeILNLocalVote(pending[i].hash)
           continue
         }
-        // A new destination set or confirmed Hook epoch changes the signed
-        // payload. Re-prove from the source-anchored Merkle replica and
-        // immutable FeeVault instead of replaying old Gateway receipts.
+        // The immutable source insertion checkpoint remains valid even if
+        // unrelated later Hook messages are appended. The receiving side
+        // independently rechecks its original successful receipt, prefix
+        // Merkle root and the current destination validator set.
+        // Only destination-set rotation invalidates the BLS membership.
         needsRefresh:=set.SetID!=payload.SetID
-        if !needsRefresh {
-            if current,verifyErr:=w.verifiedILNReplicaRoute(route);verifyErr==nil {
-                needsRefresh=payload.Root!=current.canonical.Root ||
-                    payload.Index!=current.checkpoint.Index ||
-                    payload.SourceBlockNumber!=current.canonical.BlockNumber
-            }
-        }
         if needsRefresh {
             w.removeILNLocalVote(pending[i].hash)
-            if err:=w.signVerifiedILNReplicaMessage(route,payload.AuthorizedMessageID);err!=nil {
+            if err:=w.signVerifiedILNReplicaMessage(route,payload.AuthorizedMessageID,payload.SourceBlockNumber);err!=nil {
                 w.logger.Debug("ILN local vote awaits fresh confirmed root/set",
                     "route",route.Name,"message",payload.AuthorizedMessageID,"err",err)
             }

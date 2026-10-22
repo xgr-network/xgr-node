@@ -78,9 +78,12 @@ func CatchUpILNReplicaFromRecentHook(
     }
     client,err:=ilnSourceClient(source)
     if err!=nil{return ILNReplica{},err}
-    confirmed,err:=confirmedILNHead(client,source)
+    tip,err:=client.Eth().BlockNumber()
     if err!=nil{return ILNReplica{},err}
-    if canonical.BlockNumber>confirmed {return ILNReplica{},fmt.Errorf("unconfirmed ILN replica extension")}
+    // Merkle leaves are untrusted transport data even if observed at tip.
+    // The full result must match an independently read live Hook root;
+    // signatures additionally require a confirmed source Gateway receipt.
+    if canonical.BlockNumber>tip{return ILNReplica{},fmt.Errorf("unavailable live ILN replica extension")}
     topic:=ethgo.Hash(crypto.Keccak256Hash([]byte("InsertedIntoTree(bytes32,uint32)")))
     filter:=&ethgo.LogFilter{
         Address:[]ethgo.Address{ethgo.Address(canonical.Hook)},
