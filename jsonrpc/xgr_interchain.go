@@ -51,12 +51,11 @@ type interchainAttestationRPC struct {
 	Gateway                      string `json:"gateway"`
 	SourceRouter                 string `json:"sourceRouter"`
 	Mailbox                      string `json:"mailbox"`
-	MerkleTreeHook               string `json:"merkleTreeHook"`
 	DestinationRouter            string `json:"destinationRouter"`
 	ValidatorFeeWei              string `json:"validatorFeeWei"`
 	AuthorizedMessageID          string `json:"authorizedMessageId"`
-	Root                         string `json:"root"`
-	Index                        uint32 `json:"index"`
+	DestinationISM               string `json:"destinationIsm"`
+	DestinationRegistry          string `json:"destinationRegistry"`
 	Payload                      string `json:"payload"`
 	SignerBitmap                 string `json:"signerBitmap"`
 	AggregateSignature           string `json:"aggregateSignature"`
@@ -126,16 +125,46 @@ func (x *xgrEndpoint) readInterchainAttestation(path string) (*interchainAttesta
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("decode interchain attestation: %w", err)
 	}
-	if out.Version != "XGR_ILN_CHECKPOINT_V2" ||
-		out.Chain == "" ||
-		out.RouteID == "" ||
-		out.AuthorizedMessageID == "" ||
-		out.SourceRouter == "" ||
-		out.Root == "" ||
-		out.Payload == "" ||
-		out.AggregateSignature == "" {
-		return nil, fmt.Errorf("interchain attestation is incomplete")
-	}
+    if out.Version != protocol.XITADirectMessageDomain ||
+        out.Chain==""||out.RouteID==""||out.AuthorizedMessageID==""||
+        out.SourceRouter==""||out.Payload==""||
+        out.DestinationISM==""||out.DestinationRegistry==""||
+        out.AggregateSignature==""||out.AggregateSignatureCompressed==""||
+        out.SignerBitmap=="" {
+        return nil,fmt.Errorf("Direct BLS interchain attestation is incomplete")
+    }
+    rawPayload,err:=hex.DecodeString(strings.TrimPrefix(out.Payload,"0x"))
+    if err!=nil||!strings.HasPrefix(out.Payload,"0x"){
+        return nil,fmt.Errorf("malformed Direct BLS signed payload")
+    }
+    var p protocol.XITADirectMessage
+    if err:=p.UnmarshalBinary(rawPayload);err!=nil{
+        return nil,fmt.Errorf("invalid Direct BLS signing domain/payload: %w",err)
+    }
+    if p.SourceChainID!=out.OriginChainID||p.SourceDomain!=out.OriginDomain||
+       p.DestinationDomain!=out.DestinationDomain||p.SetID!=out.SetID||
+       p.SourceBlockNumber!=out.SourceBlockNumber||
+       !strings.EqualFold(p.RouteID.String(),out.RouteID)||
+       !strings.EqualFold(p.SourceRegistry.String(),out.Registry)||
+       !strings.EqualFold(p.Gateway.String(),out.Gateway)||
+       !strings.EqualFold(p.SourceRouter.String(),out.SourceRouter)||
+       !strings.EqualFold(p.SourceMailbox.String(),out.Mailbox)||
+       !strings.EqualFold(p.DestinationRouter.String(),out.DestinationRouter)||
+       p.ValidatorFeeWei.String()!=out.ValidatorFeeWei||
+       !strings.EqualFold(p.MessageID.String(),out.AuthorizedMessageID)||
+       !strings.EqualFold(p.DestinationISM.String(),out.DestinationISM)||
+       !strings.EqualFold(p.DestinationRegistry.String(),out.DestinationRegistry){
+        return nil,fmt.Errorf("Direct BLS archived fields do not match canonical signed bytes")
+    }
+    if bitmap,e:=hex.DecodeString(strings.TrimPrefix(out.SignerBitmap,"0x"));e!=nil||len(bitmap)==0{
+        return nil,fmt.Errorf("malformed Direct BLS signer bitmap")
+    }
+    if signature,e:=hex.DecodeString(strings.TrimPrefix(out.AggregateSignature,"0x"));e!=nil||len(signature)!=256{
+        return nil,fmt.Errorf("malformed uncompressed Direct BLS aggregate")
+    }
+    if signature,e:=hex.DecodeString(strings.TrimPrefix(out.AggregateSignatureCompressed,"0x"));e!=nil||len(signature)!=96{
+        return nil,fmt.Errorf("malformed compressed Direct BLS aggregate")
+    }
 	return &out, nil
 }
 

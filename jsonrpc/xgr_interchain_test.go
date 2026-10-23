@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+    "strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -15,38 +16,43 @@ import (
 	"github.com/xgr-network/xgr-node/types"
 )
 
-func writeTestILNAttestation(t *testing.T, dataDir, chain, messageID, root string) {
-	t.Helper()
-	dir := filepath.Join(dataDir, "interchain", "attestations", chain)
-	require.NoError(t, os.MkdirAll(dir, 0o770))
-	value := interchainAttestationRPC{
-		Version:             "XGR_ILN_CHECKPOINT_V2",
-		Chain:               chain,
-		Destination:         "xgr",
-		OriginChainID:       8453,
-		OriginDomain:        8453,
-		DestinationDomain:   1643,
-		RouteID:             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		SetID:               7,
-		SourceBlockNumber:   100,
-		Registry:            "0x5555555555555555555555555555555555555555",
-		Gateway:             "0x1111111111111111111111111111111111111111",
-		SourceRouter:        "0x6666666666666666666666666666666666666666",
-		Mailbox:             "0x2222222222222222222222222222222222222222",
-		MerkleTreeHook:      "0x3333333333333333333333333333333333333333",
-		DestinationRouter:   "0x4444444444444444444444444444444444444444",
-		ValidatorFeeWei:     "10",
-		AuthorizedMessageID: messageID,
-		Root:                root,
-		Index:               42,
-		Payload:             "0x01",
-		SignerBitmap:        "0x03",
-		AggregateSignature:  "0x02",
-	}
-	raw, err := json.Marshal(value)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "latest.json"), raw, 0o660))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, messageID+".json"), raw, 0o660))
+func writeTestILNAttestation(t *testing.T,dataDir,chain,messageID,_ string){
+    t.Helper()
+    dir:=filepath.Join(dataDir,"interchain","attestations",chain)
+    require.NoError(t,os.MkdirAll(dir,0o770))
+    p:=protocol.XITADirectMessage{
+        SourceChainID:8453,SourceDomain:8453,DestinationDomain:1643,
+        RouteID:types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        SetID:7,SourceBlockNumber:100,
+        SourceRegistry:types.StringToAddress("0x5555555555555555555555555555555555555555"),
+        Gateway:types.StringToAddress("0x1111111111111111111111111111111111111111"),
+        SourceRouter:types.StringToAddress("0x6666666666666666666666666666666666666666"),
+        SourceMailbox:types.StringToAddress("0x2222222222222222222222222222222222222222"),
+        DestinationRouter:types.StringToAddress("0x4444444444444444444444444444444444444444"),
+        ValidatorFeeWei:big.NewInt(10),MessageID:types.StringToHash(messageID),
+        DestinationISM:types.StringToAddress("0x8888888888888888888888888888888888888888"),
+        DestinationRegistry:types.StringToAddress("0x9999999999999999999999999999999999999999"),
+    }
+    rawPayload,err:=p.MarshalBinary()
+    require.NoError(t,err)
+    value:=interchainAttestationRPC{
+        Version:protocol.XITADirectMessageDomain,
+        Chain:chain,Destination:"xgr",OriginChainID:p.SourceChainID,
+        OriginDomain:p.SourceDomain,DestinationDomain:p.DestinationDomain,
+        RouteID:p.RouteID.String(),SetID:p.SetID,SourceBlockNumber:p.SourceBlockNumber,
+        Registry:p.SourceRegistry.String(),Gateway:p.Gateway.String(),
+        SourceRouter:p.SourceRouter.String(),Mailbox:p.SourceMailbox.String(),
+        DestinationRouter:p.DestinationRouter.String(),ValidatorFeeWei:p.ValidatorFeeWei.String(),
+        AuthorizedMessageID:p.MessageID.String(),DestinationISM:p.DestinationISM.String(),
+        DestinationRegistry:p.DestinationRegistry.String(),
+        Payload:"0x"+hex.EncodeToString(rawPayload),SignerBitmap:"0x03",
+        AggregateSignature:"0x"+strings.Repeat("11",256),
+        AggregateSignatureCompressed:"0x"+strings.Repeat("22",96),
+    }
+    raw,err:=json.Marshal(value)
+    require.NoError(t,err)
+    require.NoError(t,os.WriteFile(filepath.Join(dir,"latest.json"),raw,0o660))
+    require.NoError(t,os.WriteFile(filepath.Join(dir,messageID+".json"),raw,0o660))
 }
 
 func TestXGRGetInterchainAttestationReadsLatestILNStore(t *testing.T) {
@@ -59,7 +65,7 @@ func TestXGRGetInterchainAttestationReadsLatestILNStore(t *testing.T) {
 	got, err := ep.GetInterchainAttestation("BASE_TO_XGR")
 	require.NoError(t, err)
 	require.Equal(t, messageID, got.AuthorizedMessageID)
-	require.Equal(t, root, got.Root)
+	require.Equal(t, "0x8888888888888888888888888888888888888888", got.DestinationISM)
 	require.Equal(t, "0x6666666666666666666666666666666666666666", got.SourceRouter)
 }
 
