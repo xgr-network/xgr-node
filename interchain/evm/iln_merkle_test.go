@@ -181,7 +181,7 @@ func TestILNHookAllowsAdvancingHeadButRejectsChangedRoot(t *testing.T) {
    _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"result":%s}`,req.ID,raw)
  }))
  defer srv.Close()
- source:=&Destination{Name:"base",ChainID:8453,Domain:8453,RPCURL:srv.URL,Confirmations:1}
+ source:=&Destination{Name:"base",ChainID:8453,Domain:8453,RPCURL:srv.URL,ILNRegistryAddress:"0x2222222222222222222222222222222222222222",Confirmations:1}
  snapshot:=&ILNRouteSnapshot{Route:protocol.ILNRoute{Mailbox:mailbox,MerkleTreeHook:hook},BlockNumber:10}
  got,err:=GetConfirmedILNCheckpoint(source,snapshot)
  require.NoError(t,err)
