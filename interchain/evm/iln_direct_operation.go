@@ -4,6 +4,8 @@ import (
     "fmt"
     "math/big"
 
+    "github.com/umbracle/ethgo/jsonrpc"
+
     "github.com/umbracle/ethgo"
     "github.com/xgr-network/xgr-node/crypto"
     "github.com/xgr-network/xgr-node/types"
@@ -118,4 +120,46 @@ func GetDirectILNOperation(
         return nil,nil,nil,fmt.Errorf("immutable Gateway FeeVault allocation not proven: %w",err)
     }
     return operation,raw,snapshot,nil
+}
+
+// GetDirectILNDestinationISM resolves the exact currently effective recipient
+// ISM and checks its immutable validator registry and domain. Signature
+// domain separation uses this address, never a user-provided contract.
+func GetDirectILNDestinationISM(destination *Destination, recipient types.Address) (types.Address,error){
+    if destination==nil||recipient==types.ZeroAddress {
+        return types.ZeroAddress,fmt.Errorf("invalid direct destination identity")
+    }
+    if err:=destination.ValidateMembershipRead();err!=nil{return types.ZeroAddress,err}
+    client,err:=jsonrpc.NewClient(destination.RPCURL)
+    if err!=nil{return types.ZeroAddress,err}
+    chainID,err:=client.Eth().ChainID()
+    if err!=nil||chainID==nil||!chainID.IsUint64()||
+        chainID.Uint64()!=destination.ChainID {
+        return types.ZeroAddress,fmt.Errorf("unverified destination RPC chain ID")
+    }
+    mailbox,err:=callILNAddressGetter(client,recipient,"mailbox()",ethgo.Latest)
+    if err!=nil{return types.ZeroAddress,err}
+    ism,err:=callILNAddressGetter(client,mailbox,"defaultIsm()",ethgo.Latest)
+    if err!=nil{return types.ZeroAddress,err}
+    // Reject recipients that deliberately install a different effective ISM:
+    // Mailbox.process() must exercise the very same module we sign for.
+    if raw,viewErr:=callILNSignatureView(client,recipient,
+        "interchainSecurityModule()",ethgo.Latest);viewErr==nil {
+        if len(raw)!=32{return types.ZeroAddress,fmt.Errorf("malformed recipient ISM")}
+        configured:=types.BytesToAddress(raw[12:])
+        if configured!=types.ZeroAddress&&configured!=ism {
+            return types.ZeroAddress,fmt.Errorf("recipient overrides canonical Direct-BLS ISM")
+        }
+    }
+    registry,err:=callILNAddressGetter(client,ism,"registry()",ethgo.Latest)
+    if err!=nil{return types.ZeroAddress,err}
+    if registry!=types.StringToAddress(destination.RegistryAddress) {
+        return types.ZeroAddress,fmt.Errorf("destination ISM registry mismatch")
+    }
+    domain,err:=callILNSignatureView(client,ism,"destinationDomain()",ethgo.Latest)
+    if err!=nil||len(domain)!=32||
+       new(big.Int).SetBytes(domain).Cmp(new(big.Int).SetUint64(uint64(destination.Domain)))!=0 {
+        return types.ZeroAddress,fmt.Errorf("destination ISM domain mismatch")
+    }
+    return ism,nil
 }
