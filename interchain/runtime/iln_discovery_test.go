@@ -65,7 +65,7 @@ func TestILNDiscoveryRejectsMismatchedGatewayAndDoesNotAdvance(t *testing.T) {
 func TestILNDiscoveryRetryOnTransientRegistryFailure(t *testing.T) {
  routeID:=types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
  gateway:=types.StringToAddress("0x1111111111111111111111111111111111111111")
- source:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryAddress:"0x5555555555555555555555555555555555555555"}
+ source:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryAddress:"0x5555555555555555555555555555555555555555",ILNRegistryActivationBlock:99}
  destination:=&evm.Destination{Name:"xgr",ChainID:1643,Domain:1643}
  w:=&Worker{dataDir:t.TempDir(),destinations:map[string]*evm.Destination{"base":source,"xgr":destination},routes:make(map[string]*evm.CheckpointRoute)}
  oldHead,oldAdds,oldRoute,oldActivation:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRouteAtBlock,getILNRegistryActivationBlock
