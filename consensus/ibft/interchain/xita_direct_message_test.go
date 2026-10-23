@@ -2,6 +2,7 @@ package interchain
 
 import (
     "math/big"
+    "encoding/hex"
     "testing"
 
     "github.com/stretchr/testify/require"
@@ -31,6 +32,16 @@ func TestXITADirectMessageWireAndSignatureDomain(t *testing.T) {
     require.NoError(t,err)
     require.Equal(t, len(XITADirectMessageDomain)+8+4+4+32+8+8+5*20+32+32+20+20,len(raw))
     require.Equal(t, XITADirectMessageDomain,string(raw[:len(XITADirectMessageDomain)]))
+    expected,err:=hex.DecodeString("584954415f4449524543545f4d4553534147455f5631000000000000a4b10000a4b10000066baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000000009000000001ed99fbf1111111111111111111111111111111111111111222222222222222222222222222222222222222233333333333333333333333333333333333333334444444444444444444444444444444444444444555555555555555555555555555555555555555500000000000000000000000000000000000000000000000000000000000003e8bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb66666666666666666666666666666666666666667777777777777777777777777777777777777777")
+    require.NoError(t,err)
+    require.Equal(t,expected,raw,"must match Solidity XITADirectProtocol.encode exactly")
+    var decoded XITADirectMessage
+    require.NoError(t,decoded.UnmarshalBinary(raw))
+    again,err:=decoded.MarshalBinary()
+    require.NoError(t,err)
+    require.Equal(t,raw,again)
+    require.Error(t,decoded.UnmarshalBinary(raw[:len(raw)-1]))
+    require.Error(t,decoded.UnmarshalBinary(append(append([]byte(nil),raw...),0x00)))
     originalHash,err:=original.Hash()
     require.NoError(t,err)
     mutations:=[]func(*XITADirectMessage){
