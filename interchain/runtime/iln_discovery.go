@@ -58,6 +58,27 @@ func (w *Worker) ensureILNRouteCatalogVersion(source *evmInterchain.Destination)
  return os.WriteFile(marker,[]byte("route-event-catalog-v1\n"),0o660)
 }
 
+// A previous version may have persisted Solidity's L1 block.number as an
+// L2 RPC cursor. Its numerical value can be below the L2 head, so comparing
+// cursor <= head cannot detect the mismatch. Migrate exactly once while
+// retaining and independently revalidating every durable route catalog entry.
+func (w *Worker) ensureILNRPCDiscoveryCursorVersion(source *evmInterchain.Destination) error {
+ dir:=w.ilnRouteCatalogDir(source)
+ if err:=os.MkdirAll(dir,0o770);err!=nil{return err}
+ marker:=filepath.Join(dir,".rpc-native-v324")
+ if _,err:=os.Stat(marker);err==nil{return nil}else if !os.IsNotExist(err){return err}
+ if err:=os.Remove(w.ilnCursorPath("_discovery_"+source.Name));err!=nil&&!os.IsNotExist(err){return err}
+ return os.WriteFile(marker,[]byte("source-rpc-height-v1\n"),0o660)
+}
+
+// On previously unknown chains, read a recent bounded window immediately.
+// Earlier routes are learned via registry-verified hints, peer announcements
+// and the durable catalog, never by waiting for a genesis-to-head replay.
+func ilnRecentDiscoveryCursor(head uint64) uint64 {
+ if head>ilnRouteDiscoveryScanChunk{return head-ilnRouteDiscoveryScanChunk}
+ return 0
+}
+
 func (w *Worker) rememberILNRouteAdded(source *evmInterchain.Destination,event evmInterchain.ILNRouteAdded) error {
  if event.RouteID==types.ZeroHash||event.Gateway==types.ZeroAddress||event.DestinationDomain==0{return fmt.Errorf("invalid ILN discovery event")}
  record:=ilnDiscoveredRoute{SourceNetwork:source.Name,SourceDomain:source.Domain,DestinationDomain:event.DestinationDomain,RouteID:event.RouteID.String(),Gateway:event.Gateway.String()}
@@ -126,7 +147,49 @@ func (w *Worker) restoreILNDiscoveredRoutes(source *evmInterchain.Destination,he
  return nil
 }
 
+// Resolve bounded user hints against the independently confirmed source
+// registry. No route file or signing cursor is created for an invalid hint.
+// In particular, this path never interprets Solidity block.number as an RPC
+// block number, and never scans from an L1 height on an L2.
+func (w *Worker) discoverILNHintedRoutes() {
+ dir:=filepath.Join(w.ilnDir(),"route-hints")
+ entries,err:=os.ReadDir(dir)
+ if os.IsNotExist(err){return}
+ if err!=nil{w.logger.Debug("ILN route hint directory unavailable","err",err);return}
+ processed:=0
+ for _,entry:=range entries{
+  if processed>=8{break}
+  if entry.IsDir()||!strings.HasSuffix(entry.Name(),".json"){continue}
+  processed++
+  routeName:=strings.TrimSuffix(entry.Name(),".json")
+  sourceDomain,destinationDomain,routeID,err:=evmInterchain.ParseILNRouteName(routeName)
+  if err!=nil{_ = os.Remove(filepath.Join(dir,entry.Name()));continue}
+  var source *evmInterchain.Destination
+  for _,candidate:=range w.destinations {
+   if candidate!=nil && candidate.Domain==sourceDomain && strings.TrimSpace(candidate.ILNRegistryAddress)!=""{source=candidate;break}
+  }
+  if source==nil{continue}
+  destinationConfigured:=false
+  for _,candidate:=range w.destinations{
+   if candidate!=nil&&candidate.Domain==destinationDomain{destinationConfigured=true;break}
+  }
+  if !destinationConfigured{continue}
+  head,err:=getConfirmedILNHead(source)
+  if err!=nil{continue}
+  snapshot,err:=getILNRouteAtBlock(source,destinationDomain,routeID,head)
+  if err!=nil||!validILNSourceRouteNotice(source,destinationDomain,routeID,snapshot){continue}
+  record:=ilnDiscoveredRoute{SourceNetwork:source.Name,SourceDomain:sourceDomain,
+   DestinationDomain:destinationDomain,RouteID:routeID.String(),Gateway:snapshot.Route.Gateway.String()}
+  if err=w.rememberILNRouteAdded(source,evmInterchain.ILNRouteAdded{
+   DestinationDomain:destinationDomain,RouteID:routeID,Gateway:snapshot.Route.Gateway,BlockNumber:head,
+  });err!=nil{continue}
+  if err=w.attachILNDiscoveredRoute(source,record,head);err!=nil{continue}
+  _=os.Remove(filepath.Join(dir,entry.Name()))
+ }
+}
+
 func (w *Worker) discoverILNRoutes() {
+ w.discoverILNHintedRoutes()
  for _,source:=range w.destinations {
   if source==nil||strings.TrimSpace(source.ILNRegistryAddress)==""{continue}
   if err:=w.discoverILNRoutesFromSource(source);err!=nil {
@@ -139,17 +202,27 @@ func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) 
  head,err:=getConfirmedILNHead(source)
  if err!=nil{return err}
  if err:=w.ensureILNRouteCatalogVersion(source);err!=nil{return err}
+ if err:=w.ensureILNRPCDiscoveryCursorVersion(source);err!=nil{return err}
  if err:=w.restoreILNDiscoveredRoutes(source,head);err!=nil{return err}
  cursorName:="_discovery_"+source.Name
  cursor,exists,err:=w.readILNCursor(cursorName)
  if err!=nil{return err}
  if !exists {
-  activation,err:=getILNRegistryActivationBlock(source)
-  if err!=nil{return err}
-  if activation==0{return fmt.Errorf("missing ILN registry deployment block")}
-  cursor=activation-1
+  if source.ILNRegistryActivationBlock!=0 {
+   // Explicit operator configuration is an RPC-native deployment height.
+   activation,err:=getILNRegistryActivationBlock(source)
+   if err!=nil{return err}
+   if activation==0||activation>head{return fmt.Errorf("invalid RPC-native ILN registry deployment block")}
+   cursor=activation-1
+  } else {
+   cursor=ilnRecentDiscoveryCursor(head)
+  }
  }
- if cursor>=head{return nil}
+ if cursor>head{
+  // A restored cursor above the confirmed RPC head is not a valid scan.
+  cursor=ilnRecentDiscoveryCursor(head)
+ }
+ if cursor==head{return nil}
  from,to:=cursor+1,head
  if to-from+1>ilnRouteDiscoveryScanChunk{to=from+ilnRouteDiscoveryScanChunk-1}
  events,err:=getConfirmedILNRouteAdds(source,from,to)

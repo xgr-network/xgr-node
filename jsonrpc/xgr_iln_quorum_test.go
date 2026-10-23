@@ -135,3 +135,27 @@ func TestILNQuorumProgressSurvivesRequestCleanup(t *testing.T) {
  require.NoError(t,err)
  require.Equal(t,"NOT_FOUND",status.Status)
 }
+
+func TestILNUnknownCanonicalRouteCreatesHintNotSigningAdmission(t *testing.T) {
+ dir:=t.TempDir()
+ heartbeat:=filepath.Join(dir,"interchain","worker.heartbeat")
+ require.NoError(t,os.MkdirAll(filepath.Dir(heartbeat),0o770))
+ require.NoError(t,os.WriteFile(heartbeat,[]byte("worker"),0o660))
+ route:="iln_42161_1643_"+strings.Repeat("f",64)
+ ep:=newXGREndpoint(nil,dir)
+ status,err:=ep.RequestILNQuorum(route,quorumTestMessage,517578687)
+ require.NoError(t,err)
+ require.Equal(t,"PENDING",status.Status)
+ hintPath:=filepath.Join(dir,"interchain","iln","route-hints",route+".json")
+ raw,err:=os.ReadFile(hintPath)
+ require.NoError(t,err)
+ require.Contains(t,string(raw),`"sourceDomain":42161`)
+ require.Contains(t,string(raw),`"destinationDomain":1643`)
+ require.Contains(t,string(raw),strings.Repeat("f",64))
+ _,err=os.Stat(filepath.Join(dir,"interchain","iln","registered-routes",route+".route"))
+ require.True(t,os.IsNotExist(err),"unverified hints must not register a route")
+ _,err=ep.RequestILNQuorum(route,quorumTestMessage,517578687)
+ require.NoError(t,err,"same hint is idempotent")
+ _,err=ep.RequestILNQuorum("iln_042161_1643_"+strings.Repeat("f",64),quorumTestMessage,123)
+ require.Error(t,err)
+}
