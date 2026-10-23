@@ -68,6 +68,8 @@ func TestILNReplicaLiveCatchUpUsesOnlyRecentHookEvents(t *testing.T){
     log:=testILNInsertedLog(hook,leaves[1],1,54)
     var requestedLogs int
     failLogs:=false
+    rpcHead:="0x50"
+    expectFrom,expectTo:="0x21","0x40"
     server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
         var req struct{
             ID json.RawMessage `json:"id"`
@@ -79,13 +81,79 @@ func TestILNReplicaLiveCatchUpUsesOnlyRecentHookEvents(t *testing.T){
         var result interface{}
         switch req.Method {
         case "eth_chainId":result="0x2105"
-        case "eth_blockNumber":result="0x50" // 80 - 12 => confirmed 68
+        case "eth_blockNumber":result=rpcHead
         case "eth_getLogs":
             requestedLogs++
             var f struct{From string `json:"fromBlock"`;To string `json:"toBlock"`}
             require.NoError(t,json.Unmarshal(req.Params[0],&f))
-            require.Equal(t,"0x21",f.From)
-            require.Equal(t,"0x40",f.To)
+            require.Equal(t,expectFrom,f.From)
+            require.Equal(t,expectTo,f.To)
+            if failLogs{
+                _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"error":{"code":-32005,"message":"RPC pruned"}}`,req.ID)
+                return
+            }
+            if f.From==expectFrom && expectFrom=="0x49" {result=[]interface{}{}} else {result=[]interface{}{log}}
+        default:t.Errorf("unexpected RPC method %s",req.Method)
+        }
+        data,err:=json.Marshal(result);require.NoError(t,err)
+        _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"result":%s}`,req.ID,data)
+    }))
+    defer server.Close()
+    source:=&Destination{Name:"base",ChainID:8453,Domain:8453,
+        ILNRegistryAddress:registry.String(),RPCURL:server.URL,Confirmations:12}
+    result,err:=CatchUpILNReplicaFromRecentHook(source,old,canonical)
+    require.NoError(t,err)
+    require.Equal(t,leaves,result.Leaves)
+    require.Equal(t,1,requestedLogs)
+    failLogs=true
+    _,err=CatchUpILNReplicaFromRecentHook(source,old,canonical)
+    require.True(t,errors.Is(err,ErrILNReplicaPeerRequired))
+    // Test that missing old events outside the bounded window fail closed:
+    // no complete suffix -> no canonical checkpoint promotion.
+    failLogs=false
+    rpcHead="0x12c" // 300 => confirmed 288
+    expectFrom,expectTo="0x49","0xc8" // 73..200; index 1 was emitted in block 54
+    old.CheckpointBlock=1
+    canonical.BlockNumber=200 // 199 blocks behind => do not query historical logs
+    _,err=CatchUpILNReplicaFromRecentHook(source,old,canonical)
+    require.ErrorIs(t,err,ErrILNReplicaPeerRequired)
+    require.Equal(t,3,requestedLogs)
+}
+
+func TestILNReplicaSparseChainRecoverAfterThousandsOfIdleBlocks(t *testing.T){
+    hook:=types.StringToAddress("0x1111111111111111111111111111111111111111")
+    registry:=types.StringToAddress("0x2222222222222222222222222222222222222222")
+    leaves:=[]types.Hash{
+        crypto.Keccak256Hash([]byte("old")),crypto.Keccak256Hash([]byte("new")),
+    }
+    oldTree:=&ilnMerkleAccumulator{}
+    require.NoError(t,oldTree.insert(0,leaves[0]))
+    old:=ILNReplica{ChainID:8453,Hook:hook,CheckpointBlock:32,Root:oldTree.root(),Leaves:leaves[:1]}
+    tree:=&ilnMerkleAccumulator{}
+    require.NoError(t,tree.insert(0,leaves[0]))
+    require.NoError(t,tree.insert(1,leaves[1]))
+    canonical:=ILNReplicaCheckpoint{ChainID:8453,Hook:hook,Root:tree.root(),Count:2,BlockNumber:7000}
+    log:=testILNInsertedLog(hook,leaves[1],1,6992)
+    var requestedLogs int
+    failLogs:=false
+    server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+        var req struct{
+            ID json.RawMessage `json:"id"`
+            Method string `json:"method"`
+            Params []json.RawMessage `json:"params"`
+        }
+        require.NoError(t,json.NewDecoder(r.Body).Decode(&req))
+        w.Header().Set("Content-Type","application/json")
+        var result interface{}
+        switch req.Method {
+        case "eth_chainId":result="0x2105"
+        case "eth_blockNumber":result="0x1b65" // 7013 - 12 => confirmed 7001
+        case "eth_getLogs":
+            requestedLogs++
+            var f struct{From string `json:"fromBlock"`;To string `json:"toBlock"`}
+            require.NoError(t,json.Unmarshal(req.Params[0],&f))
+            require.Equal(t,"0x1ad9",f.From)
+            require.Equal(t,"0x1b58",f.To)
             if failLogs{
                 _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"error":{"code":-32005,"message":"RPC pruned"}}`,req.ID)
                 return
@@ -103,12 +171,4 @@ func TestILNReplicaLiveCatchUpUsesOnlyRecentHookEvents(t *testing.T){
     require.NoError(t,err)
     require.Equal(t,leaves,result.Leaves)
     require.Equal(t,1,requestedLogs)
-    failLogs=true
-    _,err=CatchUpILNReplicaFromRecentHook(source,old,canonical)
-    require.True(t,errors.Is(err,ErrILNReplicaPeerRequired))
-    old.CheckpointBlock=1
-    canonical.BlockNumber=200 // 199 blocks behind => do not query historical logs
-    _,err=CatchUpILNReplicaFromRecentHook(source,old,canonical)
-    require.ErrorIs(t,err,ErrILNReplicaPeerRequired)
-    require.Equal(t,2,requestedLogs)
 }

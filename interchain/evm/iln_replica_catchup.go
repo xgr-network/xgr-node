@@ -72,22 +72,36 @@ func CatchUpILNReplicaFromRecentHook(
     if uint64(len(previous.Leaves))==canonical.Count {
         return ExtendILNReplica(canonical,previous,nil)
     }
-    if previous.CheckpointBlock==canonical.BlockNumber ||
-        canonical.BlockNumber-previous.CheckpointBlock>maxILNReplicaRecentBlocks {
+    if previous.CheckpointBlock==canonical.BlockNumber {
         return ILNReplica{},ErrILNReplicaPeerRequired
     }
+    // Long idle periods do not imply missing leaves: search only the
+    // bounded recent *confirmed* range, and verify a complete suffix.
+    fromBlock:=previous.CheckpointBlock+1
     client,err:=ilnSourceClient(source)
     if err!=nil{return ILNReplica{},err}
     confirmed,err:=confirmedILNHead(client,source)
     if err!=nil{return ILNReplica{},err}
-    if canonical.BlockNumber>confirmed {return ILNReplica{},fmt.Errorf("unconfirmed ILN replica extension")}
+    // The canonical Hook root/count was observed at 'latest' and anchored at
+    // its observation head. That timestamp is NOT an already finalized head.
+    // Use only independently confirmed log blocks to reconstruct new leaves;
+    // the existing per-prefix finality gate separately matures the validated
+    // result before any BLS vote can be issued.
+    toBlock:=canonical.BlockNumber
+    if toBlock>confirmed {toBlock=confirmed}
+    if toBlock<=previous.CheckpointBlock {
+        return ILNReplica{},ErrILNReplicaPeerRequired
+    }
+    if toBlock-fromBlock+1>maxILNReplicaRecentBlocks {
+        fromBlock=toBlock-maxILNReplicaRecentBlocks+1
+    }
     topic:=ethgo.Hash(crypto.Keccak256Hash([]byte("InsertedIntoTree(bytes32,uint32)")))
     filter:=&ethgo.LogFilter{
         Address:[]ethgo.Address{ethgo.Address(canonical.Hook)},
         Topics:[][]*ethgo.Hash{{&topic}},
     }
-    filter.SetFromUint64(previous.CheckpointBlock+1)
-    filter.SetToUint64(canonical.BlockNumber)
+    filter.SetFromUint64(fromBlock)
+    filter.SetToUint64(toBlock)
     logs,err:=client.Eth().GetLogs(filter)
     if err!=nil {return ILNReplica{},fmt.Errorf("%w: recent Hook logs not available: %v",ErrILNReplicaPeerRequired,err)}
     sort.SliceStable(logs,func(i,j int)bool{
@@ -98,8 +112,8 @@ func CatchUpILNReplicaFromRecentHook(
     chunks:=make([]ILNReplicaChunk,0)
     var lastBlock,lastLogIndex uint64
     for i,log:=range logs {
-        if log==nil || log.Removed || log.BlockNumber<=previous.CheckpointBlock ||
-            log.BlockNumber>canonical.BlockNumber || types.Address(log.Address)!=canonical.Hook ||
+        if log==nil || log.Removed || log.BlockNumber<fromBlock ||
+            log.BlockNumber>toBlock || types.Address(log.Address)!=canonical.Hook ||
             (i>0 && (log.BlockNumber<lastBlock ||
               (log.BlockNumber==lastBlock && log.LogIndex<=lastLogIndex))) {
             return ILNReplica{},ErrILNReplicaUnverified
@@ -117,6 +131,9 @@ func CatchUpILNReplicaFromRecentHook(
         next++
         lastBlock,lastLogIndex=log.BlockNumber,log.LogIndex
     }
-    if next!=canonical.Count {return ILNReplica{},ErrILNReplicaUnverified}
+    // If the latest Hook includes a still-unconfirmed insertion, the
+    // confirmed log window will be incomplete. Never promote partial data.
+    // Retry after finality or recover from a peer with the complete root.
+    if next!=canonical.Count {return ILNReplica{},ErrILNReplicaPeerRequired}
     return ExtendILNReplica(canonical,previous,chunks)
 }
