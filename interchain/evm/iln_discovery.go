@@ -26,6 +26,15 @@ func GetILNRegistryActivationBlock(source *Destination) (uint64,error) {
  if err!=nil{return 0,err}
  confirmed,err:=confirmedILNHead(client,source)
  if err!=nil{return 0,err}
+ // A configured activation height is explicitly expressed in the RPC
+ // chain's numbering domain, unlike Solidity block.number on some rollups.
+ // It takes precedence and must never be compared to an L1-origin value.
+ if source.ILNRegistryActivationBlock!=0 {
+  if source.ILNRegistryActivationBlock>confirmed {
+   return 0,fmt.Errorf("configured ILN registry activation block is not yet confirmed")
+  }
+  return source.ILNRegistryActivationBlock,nil
+ }
  registry:=types.StringToAddress(source.ILNRegistryAddress)
  raw,callErr:=callILNSignatureView(client,registry,"activationBlock()",ethgo.Latest)
  if callErr==nil&&len(raw)==32{
