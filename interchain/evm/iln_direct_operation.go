@@ -1,0 +1,121 @@
+package evm
+
+import (
+    "fmt"
+    "math/big"
+
+    "github.com/umbracle/ethgo"
+    "github.com/xgr-network/xgr-node/crypto"
+    "github.com/xgr-network/xgr-node/types"
+)
+
+// VerifyDirectILNReceipt authenticates ONE actual successful Gateway lock/burn
+// and its ONE canonical Mailbox Dispatch in the SAME source receipt.
+// No Merkle tree, root, leaf, insertion index, or historical contract state.
+func VerifyDirectILNReceipt(
+    operation ILNOperation, receipt *ethgo.Receipt,
+    sourceDomain uint32, gateway, mailbox, sourceRouter, destinationRouter types.Address,
+)([]byte,error){
+    if receipt==nil||operation.TransactionHash==types.ZeroHash||
+       operation.MessageID==types.ZeroHash||operation.BlockNumber==0||
+       sourceDomain==0||gateway==types.ZeroAddress||mailbox==types.ZeroAddress||
+       sourceRouter==types.ZeroAddress||destinationRouter==types.ZeroAddress||
+       operation.DestinationDomain==0||operation.RouteID==types.ZeroHash||
+       operation.ValidatorFeeWei==nil||operation.ValidatorFeeWei.Sign()<=0 {
+        return nil,fmt.Errorf("invalid direct ILN source operation")
+    }
+    if receipt.Status!=uint64(types.ReceiptSuccess)||
+       receipt.BlockNumber!=operation.BlockNumber||
+       types.Hash(receipt.TransactionHash)!=operation.TransactionHash {
+        return nil,fmt.Errorf("direct source transaction not confirmed or wrong receipt")
+    }
+    gatewayTopic:=ethgo.Hash(crypto.Keccak256Hash([]byte(ilnOperationEventSignature)))
+    dispatchTopic:=ethgo.Hash(crypto.Keccak256Hash([]byte("Dispatch(address,uint32,bytes32,bytes)")))
+    events,dispatches:=0,0
+    var message []byte
+    for _,log:=range receipt.Logs {
+        if log==nil||log.Removed {return nil,fmt.Errorf("removed source receipt log")}
+        if types.Hash(log.TransactionHash)!=operation.TransactionHash ||
+           log.BlockNumber!=operation.BlockNumber {
+            return nil,fmt.Errorf("source receipt log does not belong to operation")
+        }
+        if types.Address(log.Address)==gateway&&len(log.Topics)>0&&log.Topics[0]==gatewayTopic {
+            record,err:=parseILNOperationLog(log)
+            if err!=nil{return nil,err}
+            if record.RouteID==operation.RouteID&&record.MessageID==operation.MessageID&&
+               record.DestinationDomain==operation.DestinationDomain&&
+               record.ValidatorFeeWei.Cmp(operation.ValidatorFeeWei)==0&&
+               record.LogIndex==operation.LogIndex {
+                events++
+            }
+        }
+        if types.Address(log.Address)!=mailbox||len(log.Topics)==0||log.Topics[0]!=dispatchTopic {continue}
+        if len(log.Topics)!=4 {return nil,fmt.Errorf("malformed canonical Mailbox Dispatch topics")}
+        if new(big.Int).SetBytes(log.Topics[1][:12]).Sign()!=0||
+           new(big.Int).SetBytes(log.Topics[3][:12]).Sign()!=0||
+           types.BytesToAddress(log.Topics[1][12:])!=sourceRouter||
+           types.BytesToAddress(log.Topics[3][12:])!=destinationRouter||
+           new(big.Int).SetBytes(log.Topics[2][:]).Cmp(
+             new(big.Int).SetUint64(uint64(operation.DestinationDomain)))!=0 {
+            return nil,fmt.Errorf("wrong source router or destination in canonical Mailbox Dispatch")
+        }
+        if len(log.Data)<64||new(big.Int).SetBytes(log.Data[:32]).Cmp(big.NewInt(32))!=0 {
+            return nil,fmt.Errorf("invalid canonical Mailbox Dispatch ABI")
+        }
+        n:=new(big.Int).SetBytes(log.Data[32:64])
+        if !n.IsUint64()||n.Uint64()>MaxILNSerializedMessageBytes||
+           n.Uint64()>uint64(len(log.Data)-64) {
+            return nil,fmt.Errorf("invalid bounded Hyperlane message length")
+        }
+        candidate:=append([]byte(nil),log.Data[64:64+int(n.Uint64())]...)
+        if err:=VerifyILNMessageBytes(candidate,operation.MessageID,sourceDomain,
+            sourceRouter,operation.DestinationDomain,destinationRouter);err!=nil {
+            return nil,fmt.Errorf("canonical Mailbox Dispatch message mismatch: %w",err)
+        }
+        message=candidate
+        dispatches++
+    }
+    if events!=1||dispatches!=1 {
+        return nil,fmt.Errorf("source receipt must contain exactly one fee-qualified Gateway operation and one bound Mailbox Dispatch")
+    }
+    return message,nil
+}
+
+// GetDirectILNOperation resolves an operation at its actual, source-RPC-native
+// block, and requires the original Gateway and Mailbox events plus FeeVault
+// allocation. All RPC queries are to current state or the single source
+// receipt/block; no historical eth_call and no Merkle history.
+func GetDirectILNOperation(
+    source *Destination, route *CheckpointRoute, destinationDomain uint32,
+    messageID types.Hash, sourceBlock uint64,
+)(*ILNOperation,[]byte,*ILNRouteSnapshot,error){
+    if source==nil||route==nil||messageID==types.ZeroHash||sourceBlock==0 {
+        return nil,nil,nil,fmt.Errorf("invalid direct source message identity")
+    }
+    snapshot,err:=GetILNRouteAtBlock(source,destinationDomain,route.RouteID,sourceBlock)
+    if err!=nil{return nil,nil,nil,err}
+    ops,err:=GetConfirmedILNOperations(source,snapshot.Route.Gateway,
+        route.RouteID,destinationDomain,sourceBlock,sourceBlock)
+    if err!=nil{return nil,nil,nil,err}
+    var operation *ILNOperation
+    for i:=range ops {
+        if ops[i].MessageID!=messageID {continue}
+        if operation!=nil{return nil,nil,nil,fmt.Errorf("duplicate Gateway operation for direct message")}
+        operation=&ops[i]
+    }
+    if operation==nil {
+        return nil,nil,nil,fmt.Errorf("direct ILN message not found at source block")
+    }
+    client,err:=ilnSourceClient(source)
+    if err!=nil{return nil,nil,nil,err}
+    receipt,err:=client.Eth().GetTransactionReceipt(ethgo.Hash(operation.TransactionHash))
+    if err!=nil{return nil,nil,nil,fmt.Errorf("canonical source transaction receipt unavailable: %w",err)}
+    raw,err:=VerifyDirectILNReceipt(*operation,receipt,source.Domain,
+        snapshot.Route.Gateway,snapshot.Route.Mailbox,snapshot.Route.SourceRouter,
+        snapshot.Route.DestinationRouter)
+    if err!=nil{return nil,nil,nil,err}
+    if err:=VerifyConfirmedILNFeeAllocation(source,snapshot,messageID,sourceBlock);err!=nil{
+        return nil,nil,nil,fmt.Errorf("immutable Gateway FeeVault allocation not proven: %w",err)
+    }
+    return operation,raw,snapshot,nil
+}
