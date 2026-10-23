@@ -92,7 +92,7 @@ func TestDirectReceiptRejectsRevertOrWrongTransaction(t *testing.T){
     _,err:=VerifyDirectILNReceipt(op,receipt,8453,gateway,mailbox,router,destination)
     require.Error(t,err)
     receipt.Status=uint64(types.ReceiptSuccess)
-    receipt.Logs[0].TransactionHash=types.ZeroHash
+    receipt.Logs[0].TransactionHash=ethgo.Hash{}
     _,err=VerifyDirectILNReceipt(op,receipt,8453,gateway,mailbox,router,destination)
     require.Error(t,err)
 }
