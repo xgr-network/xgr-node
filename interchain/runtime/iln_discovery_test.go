@@ -146,3 +146,27 @@ func TestILNDiscoveryRemembersUnknownDestinationUntilChainConfigured(t *testing.
  require.Len(t,later.routes,1)
  require.Equal(t,1,scans,"must restore from catalog even after the cursor advanced")
 }
+
+func TestILNDiscoveryRecoversPersistedL1HeightOnL2(t *testing.T) {
+ source:=&evm.Destination{Name:"rollup",ChainID:42161,Domain:42161,ILNRegistryAddress:"0x5555555555555555555555555555555555555555"}
+ w:=&Worker{dataDir:t.TempDir(),destinations:map[string]*evm.Destination{"rollup":source},routes:make(map[string]*evm.CheckpointRoute)}
+ oldHead,oldAdds,oldActivation:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRegistryActivationBlock
+ defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds;getILNRegistryActivationBlock=oldActivation}()
+ getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 517578687,nil}
+ getILNRegistryActivationBlock=func(*evm.Destination)(uint64,error){return 24000000,nil}
+ require.NoError(t,w.ensureILNRouteCatalogVersion(source))
+ require.NoError(t,w.writeILNCursor("_discovery_rollup",517578688))
+ calls:=0
+ getConfirmedILNRouteAdds=func(_ *evm.Destination,from,to uint64)([]evm.ILNRouteAdded,error){
+  calls++
+  require.Equal(t,uint64(1),from,"cross-domain cursor must not be trusted")
+  require.Equal(t,uint64(1000),to)
+  return nil,nil
+ }
+ require.NoError(t,w.discoverILNRoutesFromSource(source))
+ require.Equal(t,1,calls)
+ cursor,exists,err:=w.readILNCursor("_discovery_rollup")
+ require.NoError(t,err)
+ require.True(t,exists)
+ require.Equal(t,uint64(1000),cursor)
+}
