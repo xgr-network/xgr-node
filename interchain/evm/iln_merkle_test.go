@@ -153,6 +153,7 @@ func TestILNHookAllowsAdvancingHeadButRejectsChangedRoot(t *testing.T) {
  require.NoError(t,tree.insert(0,leaf))
  selector:=func(name string)string{return crypto.Keccak256Hash([]byte(name)).String()[:10]}
  var height atomic.Int32
+ var rootReads atomic.Int32
  var poison atomic.Bool
  srv:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
    var req struct{ID json.RawMessage `json:"id"`;Method string `json:"method"`;Params []json.RawMessage `json:"params"`}
@@ -161,7 +162,7 @@ func TestILNHookAllowsAdvancingHeadButRejectsChangedRoot(t *testing.T) {
    switch req.Method {
    case "eth_chainId":out="0x2105"
    case "eth_blockNumber":
-      if height.Add(1)%2==0 {out="0xc9"} else {out="0xc8"}
+      out=fmt.Sprintf("0x%x",200+height.Add(1))
    case "eth_call":
       require.Len(t,req.Params,2)
       require.Equal(t,`"latest"`,string(req.Params[1]))
@@ -171,7 +172,7 @@ func TestILNHookAllowsAdvancingHeadButRejectsChangedRoot(t *testing.T) {
       case selector("mailbox()"):out=fmt.Sprintf("0x%064x",mailbox.Bytes())
       case selector("count()"):out=fmt.Sprintf("0x%064x",1)
       case selector("root()"):
-          if poison.Load() && height.Load()%2==0{out=crypto.Keccak256Hash([]byte("poison")).String()}else{out=tree.root().String()}
+          if poison.Load() && rootReads.Add(1)%2==0{out=crypto.Keccak256Hash([]byte("poison")).String()}else{out=tree.root().String()}
       default:t.Errorf("unexpected getter: %s",call.Data);return
       }
    default:t.Errorf("unexpected JSON-RPC %s",req.Method);return
@@ -185,7 +186,7 @@ func TestILNHookAllowsAdvancingHeadButRejectsChangedRoot(t *testing.T) {
  got,err:=GetConfirmedILNCheckpoint(source,snapshot)
  require.NoError(t,err)
  require.Equal(t,tree.root(),got.Root)
- require.EqualValues(t,201,got.BlockNumber)
+ require.EqualValues(t,203,got.BlockNumber)
  // On the next read, the second root differs at the same count; reject it.
  poison.Store(true)
  _,err=GetConfirmedILNCheckpoint(source,snapshot)
