@@ -391,9 +391,6 @@ func (w *Worker) tick() {
 			w.logger.Error("interchain worker panic isolated", "panic", recovered)
 		}
 	}()
-	if err := w.touchHeartbeat(); err != nil {
-		w.logger.Warn("update interchain worker heartbeat failed", "err", err)
-	}
 	if !w.state.IsSynchronized() {
 		w.logger.Debug("interchain signing paused while XGR node is synchronizing")
 		return
