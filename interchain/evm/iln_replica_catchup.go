@@ -72,10 +72,12 @@ func CatchUpILNReplicaFromRecentHook(
     if uint64(len(previous.Leaves))==canonical.Count {
         return ExtendILNReplica(canonical,previous,nil)
     }
-    if previous.CheckpointBlock==canonical.BlockNumber ||
-        canonical.BlockNumber-previous.CheckpointBlock>maxILNReplicaRecentBlocks {
+    if previous.CheckpointBlock==canonical.BlockNumber {
         return ILNReplica{},ErrILNReplicaPeerRequired
     }
+    // Long idle periods do not imply missing leaves: search only the
+    // bounded recent *confirmed* range, and verify a complete suffix.
+    fromBlock:=previous.CheckpointBlock+1
     client,err:=ilnSourceClient(source)
     if err!=nil{return ILNReplica{},err}
     confirmed,err:=confirmedILNHead(client,source)
@@ -98,7 +100,7 @@ func CatchUpILNReplicaFromRecentHook(
         Address:[]ethgo.Address{ethgo.Address(canonical.Hook)},
         Topics:[][]*ethgo.Hash{{&topic}},
     }
-    filter.SetFromUint64(previous.CheckpointBlock+1)
+    filter.SetFromUint64(fromBlock)
     filter.SetToUint64(toBlock)
     logs,err:=client.Eth().GetLogs(filter)
     if err!=nil {return ILNReplica{},fmt.Errorf("%w: recent Hook logs not available: %v",ErrILNReplicaPeerRequired,err)}
@@ -110,7 +112,7 @@ func CatchUpILNReplicaFromRecentHook(
     chunks:=make([]ILNReplicaChunk,0)
     var lastBlock,lastLogIndex uint64
     for i,log:=range logs {
-        if log==nil || log.Removed || log.BlockNumber<=previous.CheckpointBlock ||
+        if log==nil || log.Removed || log.BlockNumber<fromBlock ||
             log.BlockNumber>toBlock || types.Address(log.Address)!=canonical.Hook ||
             (i>0 && (log.BlockNumber<lastBlock ||
               (log.BlockNumber==lastBlock && log.LogIndex<=lastLogIndex))) {
