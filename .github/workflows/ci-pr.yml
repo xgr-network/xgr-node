@@ -16,6 +16,19 @@ jobs:
           go-version: "1.23.x"
           cache: true
 
+      - name: Validate GitHub Actions syntax
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+          for workflow in sorted(Path(".github/workflows").glob("*.yml")):
+              with workflow.open(encoding="utf-8") as handle:
+                  yaml.safe_load(handle)
+              print("YAML OK:", workflow)
+          PY
+
       - name: Go test (unit)
         run: |
           set -euo pipefail
