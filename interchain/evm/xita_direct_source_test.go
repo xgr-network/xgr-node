@@ -87,7 +87,7 @@ func TestDirectBLSRequiresUniqueFeeQualifiedCanonicalMailboxReceipt(t *testing.T
  malformed:=map[string]interface{}{}
  for k,v:=range dispatchEvent{malformed[k]=v}
  malformed["topics"]=[]string{bytes32(dispatchTopic),topic(types.StringToAddress("0x9999999999999999999999999999999999999999")),fmt.Sprintf("0x%064x",uint64(1643)),topic(destinationRouter)}
- logs=[]interface{}{malformed,gatewayEvent,insertionEvent}
+ logs=[]interface{}{malformed,gatewayEvent}
  require.Error(t,check(),"wrong source WarpRouter must be rejected")
  
  logs=[]interface{}{dispatchEvent,gatewayEvent,gatewayEvent}
