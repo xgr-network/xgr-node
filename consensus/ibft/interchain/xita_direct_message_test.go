@@ -84,3 +84,23 @@ func TestXITADirectMessageRejectsEmptyQuorumAndFee(t *testing.T) {
     _,err=a.MarshalBinary()
     require.Error(t,err)
 }
+
+func TestXITADirectMessageStrictWireRoundTrip(t *testing.T) {
+    a:=sampleXITADirectMessage()
+    bytes,err:=a.MarshalBinary()
+    require.NoError(t,err)
+    var roundTrip XITADirectMessage
+    require.NoError(t,roundTrip.UnmarshalBinary(bytes))
+    require.Equal(t,a,roundTrip)
+
+    invalid:=append([]byte(nil),bytes...)
+    invalid[0]^=0x40
+    require.Error(t,roundTrip.UnmarshalBinary(invalid),"cross-protocol replay must fail")
+    require.Error(t,roundTrip.UnmarshalBinary(bytes[:len(bytes)-1]),"truncated payload")
+    invalid=append(append([]byte(nil),bytes...),0x00)
+    require.Error(t,roundTrip.UnmarshalBinary(invalid),"trailing bytes forbidden")
+    invalid=append([]byte(nil),bytes...)
+    invalid[len(invalid)-1]=0
+    for i:=len(invalid)-20;i<len(invalid);i++ {invalid[i]=0}
+    require.Error(t,roundTrip.UnmarshalBinary(invalid),"zero destination registry forbidden")
+}
