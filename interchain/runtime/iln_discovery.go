@@ -189,7 +189,16 @@ func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) 
   activation,err:=getILNRegistryActivationBlock(source)
   if err!=nil{return err}
   if activation==0{return fmt.Errorf("missing ILN registry deployment block")}
-  cursor=activation-1
+  // Solidity block.number may be an L1 height while eth_blockNumber is L2.
+  // An immutable activationBlock cannot be used as an authoritative RPC
+  // log cursor on every EVM chain. Preserve complete discovery by starting
+  // at genesis if an exact, RPC-native deployment height is not provided.
+  // Hinted and peer-discovered routes activate independently of this backfill.
+  if source.ILNRegistryActivationBlock==0 {
+   cursor=0
+  } else {
+   cursor=activation-1
+  }
  }
  if cursor>=head{return nil}
  from,to:=cursor+1,head
