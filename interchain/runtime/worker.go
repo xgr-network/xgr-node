@@ -67,7 +67,6 @@ type wireEnvelope struct {
 	Req                *wireRequest            `json:"request,omitempty"`
 	Vote               *wireVote               `json:"vote,omitempty"`
 	ILNCheckpointVote  *ilnCheckpointVote `json:"ilnCheckpointVote,omitempty"`
-    ILNReplicaRequest *ilnReplicaRequestWire `json:"ilnReplicaRequest,omitempty"`
     ILNRouteNotice *ilnRouteNoticeWire `json:"ilnRouteNotice,omitempty"`
 	ILNQuorumRequest   *requestedILNQuorum     `json:"ilnQuorumRequest,omitempty"`
 	GovernanceProposal *governanceProposalWire  `json:"governanceProposal,omitempty"`
