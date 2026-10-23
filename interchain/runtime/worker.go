@@ -330,7 +330,8 @@ func (w *Worker) Start() error {
 		return err
 	}
 
-	w.wg.Add(4)
+	w.wg.Add(5)
+    go w.heartbeatLoop()
     go w.quorumHintLoop()
 	go w.storageMaintenanceLoop()
 	go w.governanceExecuteLoop()
@@ -560,6 +561,23 @@ func (w *Worker) hasPendingMembership(chain string, setID uint64, action protoco
 		}
 	}
 	return false
+}
+
+// The worker heartbeat must not depend on slow external EVM RPCs in tick().
+func (w *Worker) heartbeatLoop() {
+    defer w.wg.Done()
+    ticker:=time.NewTicker(2*time.Second)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-w.closeCh:
+            return
+        case <-ticker.C:
+            if err:=w.touchHeartbeat();err!=nil{
+                w.logger.Warn("update interchain worker heartbeat failed","err",err)
+            }
+        }
+    }
 }
 
 func (w *Worker) touchHeartbeat() error {
