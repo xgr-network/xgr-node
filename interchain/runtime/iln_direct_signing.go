@@ -157,5 +157,7 @@ func (w *Worker) scanDirectILNOperations(route *evm.CheckpointRoute) error {
         if err:=w.writeILNCursor(cursorName,to);err!=nil{return err}
         cursor=to
     }
+    if cursor>head{return fmt.Errorf("source RPC head behind persisted confirmed operation cursor")}
+    w.recordILNDirectScan(route,head,cursor)
     return nil
 }
