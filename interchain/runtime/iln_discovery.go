@@ -58,6 +58,27 @@ func (w *Worker) ensureILNRouteCatalogVersion(source *evmInterchain.Destination)
  return os.WriteFile(marker,[]byte("route-event-catalog-v1\n"),0o660)
 }
 
+// A previous version may have persisted Solidity's L1 block.number as an
+// L2 RPC cursor. Its numerical value can be below the L2 head, so comparing
+// cursor <= head cannot detect the mismatch. Migrate exactly once while
+// retaining and independently revalidating every durable route catalog entry.
+func (w *Worker) ensureILNRPCDiscoveryCursorVersion(source *evmInterchain.Destination) error {
+ dir:=w.ilnRouteCatalogDir(source)
+ if err:=os.MkdirAll(dir,0o770);err!=nil{return err}
+ marker:=filepath.Join(dir,".rpc-native-v324")
+ if _,err:=os.Stat(marker);err==nil{return nil}else if !os.IsNotExist(err){return err}
+ if err:=os.Remove(w.ilnCursorPath("_discovery_"+source.Name));err!=nil&&!os.IsNotExist(err){return err}
+ return os.WriteFile(marker,[]byte("source-rpc-height-v1\n"),0o660)
+}
+
+// On previously unknown chains, read a recent bounded window immediately.
+// Earlier routes are learned via registry-verified hints, peer announcements
+// and the durable catalog, never by waiting for a genesis-to-head replay.
+func ilnRecentDiscoveryCursor(head uint64) uint64 {
+ if head>ilnRouteDiscoveryScanChunk{return head-ilnRouteDiscoveryScanChunk}
+ return 0
+}
+
 func (w *Worker) rememberILNRouteAdded(source *evmInterchain.Destination,event evmInterchain.ILNRouteAdded) error {
  if event.RouteID==types.ZeroHash||event.Gateway==types.ZeroAddress||event.DestinationDomain==0{return fmt.Errorf("invalid ILN discovery event")}
  record:=ilnDiscoveredRoute{SourceNetwork:source.Name,SourceDomain:source.Domain,DestinationDomain:event.DestinationDomain,RouteID:event.RouteID.String(),Gateway:event.Gateway.String()}
@@ -181,33 +202,25 @@ func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) 
  head,err:=getConfirmedILNHead(source)
  if err!=nil{return err}
  if err:=w.ensureILNRouteCatalogVersion(source);err!=nil{return err}
+ if err:=w.ensureILNRPCDiscoveryCursorVersion(source);err!=nil{return err}
  if err:=w.restoreILNDiscoveredRoutes(source,head);err!=nil{return err}
  cursorName:="_discovery_"+source.Name
  cursor,exists,err:=w.readILNCursor(cursorName)
  if err!=nil{return err}
  if !exists {
-  activation,err:=getILNRegistryActivationBlock(source)
-  if err!=nil{return err}
-  if activation==0{return fmt.Errorf("missing ILN registry deployment block")}
-  // Solidity block.number may be an L1 height while eth_blockNumber is L2.
-  // An immutable activationBlock cannot be used as an authoritative RPC
-  // log cursor on every EVM chain. Preserve complete discovery by starting
-  // at genesis if an exact, RPC-native deployment height is not provided.
-  // Hinted and peer-discovered routes activate independently of this backfill.
-  if source.ILNRegistryActivationBlock==0 {
-   cursor=0
-  } else {
+  if source.ILNRegistryActivationBlock!=0 {
+   // Explicit operator configuration is an RPC-native deployment height.
+   activation,err:=getILNRegistryActivationBlock(source)
+   if err!=nil{return err}
+   if activation==0||activation>head{return fmt.Errorf("invalid RPC-native ILN registry deployment block")}
    cursor=activation-1
+  } else {
+   cursor=ilnRecentDiscoveryCursor(head)
   }
  }
- // Previously persisted cursors may have been initialized from an
- // L1-origin Solidity block.number. A cursor beyond the source RPC head is
- // not evidence that any L2 block was scanned.
  if cursor>head{
-  cursor=0
-  if source.ILNRegistryActivationBlock!=0 && source.ILNRegistryActivationBlock<=head {
-   cursor=source.ILNRegistryActivationBlock-1
-  }
+  // A restored cursor above the confirmed RPC head is not a valid scan.
+  cursor=ilnRecentDiscoveryCursor(head)
  }
  if cursor==head{return nil}
  from,to:=cursor+1,head
