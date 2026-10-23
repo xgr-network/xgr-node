@@ -18,13 +18,11 @@ The node provides:
 - Online State Trie Sweeper / State Growth Control,
 - genesis and chain-configuration tooling.
 
-Current public release:
+Current interchain runtime baseline (tagged release):
 
-    v3.1.1
+    v3.2.3
 
-Release commit:
-
-    1a4844b311fb856cb8c2303a40fa8aa69b560544
+For v3.2.3 architecture, chain configuration, operator CLI, JSON-RPC, Merkle-replica management and independent delivery, see [Interchain v3.2.3 operator reference](docs/ILN_V323_OPERATOR_REFERENCE.md). Historical v3.1.1 installation/release checksums further down are retained strictly as a historical example.
 
 ---
 
@@ -232,7 +230,7 @@ It does not itself define:
 
 Interchain infrastructure is maintained separately in:
 
-https://github.com/xgr-network/xgr-hyperlane
+https://github.com/xgr-network/xgr-interchain
 
 ---
 
@@ -308,9 +306,9 @@ Private embedded-engine builds can replace that stub in their own development en
 
 ---
 
-# Current release
+# Historical release example
 
-## `v3.1.1`
+## `v3.1.1` (historical only)
 
 Release:
 
@@ -335,7 +333,9 @@ The release also publishes:
 
 ---
 
-# Install release binary
+# Historical v3.1.1 binary installation example
+
+**Do not use this historical binary for current v3.2.3 Interchain validation.** Select and verify the exact signed/tagged v3.2.3 binary or build from the v3.2.3 tag.
 
 Example for Linux AMD64:
 
@@ -386,20 +386,14 @@ A normal Linux build environment should include:
     cd xgr-node
 
     git fetch --all --tags
-    git checkout v3.1.1
+    git checkout v3.2.3
 
 Verify:
 
     git describe --tags --exact-match
     git rev-parse HEAD
 
-Expected:
-
-    v3.1.1
-
-and:
-
-    1a4844b311fb856cb8c2303a40fa8aa69b560544
+Expected: the `v3.2.3` tag. Verify the commit against the GitHub release; do not substitute the historical v3.1.1 SHA.
 
 ---
 
@@ -567,7 +561,7 @@ https://github.com/xgr-network/XGR/blob/main/docs/chain/XGRCHAIN_Staking_PoS_End
 
 ## Interchain attestation RPC
 
-`v3.1.1` also includes read-only XGR Interchain attestation methods including:
+The legacy `v3.1.1` APIs include read-only XGR Interchain attestation methods. Current `v3.2.3` adds the v3.2.x ILN quorum, replica proof and indexer status APIs documented in [the operator reference](docs/ILN_V323_OPERATOR_REFERENCE.md):
 
     xgr_getInterchainAttestation
     xgr_getInterchainAttestationByCheckpoint
@@ -669,7 +663,7 @@ Router deployments, cross-chain validators, relayers and destination security mo
 
 Repository:
 
-https://github.com/xgr-network/xgr-hyperlane
+https://github.com/xgr-network/xgr-interchain
 
 The first implemented XGR asset route between XGRChain and Base has been validated end-to-end in both directions on mainnet.
 
@@ -814,7 +808,7 @@ Do not commit or publish:
 - XGRChain node releases: https://github.com/xgr-network/xgr-node/releases
 - Explorer: https://explorer.xgr.network
 - Testnet faucet: https://faucet.xgr.network
-- Interchain implementation: https://github.com/xgr-network/xgr-hyperlane
+- Interchain implementation: https://github.com/xgr-network/xgr-interchain
 - MCP implementation: https://github.com/xgr-network/xgr-mcp
 
 ---
@@ -836,12 +830,9 @@ Do not remove or alter third-party legal attribution without appropriate review.
 
 # Current status
 
-Current public XGRChain node baseline:
+Current tagged Interchain node runtime baseline: `xgr-node v3.2.3`.
 
-    xgr-node v3.1.1
+Historical v3.1.1 release documentation above is archival. The current source of truth is the tagged v3.2.3 code, `interchain/` and `jsonrpc/`, plus [the v3.2.3 operator reference](docs/ILN_V323_OPERATOR_REFERENCE.md).
 
-Commit:
-
-    1a4844b311fb856cb8c2303a40fa8aa69b560544
 
 The public release provides the standalone open-source foundation for XGRChain mainnet node operation, delegated PoS consensus participation, EVM execution, RPC access and XGR-specific protocol functionality.
