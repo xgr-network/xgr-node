@@ -145,6 +145,54 @@ func TestILNCheckpointUsesConfirmedHookStateWithoutHistoricalLogs(t *testing.T) 
  require.ErrorContains(t,err,"not sufficiently confirmed")
 }
 
+func TestILNHookAllowsAdvancingHeadButRejectsChangedRoot(t *testing.T) {
+ hook:=types.StringToAddress("0x1111111111111111111111111111111111111111")
+ mailbox:=types.StringToAddress("0x3333333333333333333333333333333333333333")
+ leaf:=crypto.Keccak256Hash([]byte("immutable insertion"))
+ tree:=&ilnMerkleAccumulator{}
+ require.NoError(t,tree.insert(0,leaf))
+ selector:=func(name string)string{return crypto.Keccak256Hash([]byte(name)).String()[:10]}
+ var height atomic.Int32
+ var rootReads atomic.Int32
+ var poison atomic.Bool
+ srv:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+   var req struct{ID json.RawMessage `json:"id"`;Method string `json:"method"`;Params []json.RawMessage `json:"params"`}
+   require.NoError(t,json.NewDecoder(r.Body).Decode(&req))
+   var out interface{}
+   switch req.Method {
+   case "eth_chainId":out="0x2105"
+   case "eth_blockNumber":
+      out=fmt.Sprintf("0x%x",200+height.Add(1))
+   case "eth_call":
+      require.Len(t,req.Params,2)
+      require.Equal(t,`"latest"`,string(req.Params[1]))
+      var call struct{Data string `json:"data"`}
+      require.NoError(t,json.Unmarshal(req.Params[0],&call))
+      switch strings.ToLower(call.Data[:10]){
+      case selector("mailbox()"):out=fmt.Sprintf("0x%064x",mailbox.Bytes())
+      case selector("count()"):out=fmt.Sprintf("0x%064x",1)
+      case selector("root()"):
+          if poison.Load() && rootReads.Add(1)%2==0{out=crypto.Keccak256Hash([]byte("poison")).String()}else{out=tree.root().String()}
+      default:t.Errorf("unexpected getter: %s",call.Data);return
+      }
+   default:t.Errorf("unexpected JSON-RPC %s",req.Method);return
+   }
+   raw,_:=json.Marshal(out)
+   _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"result":%s}`,req.ID,raw)
+ }))
+ defer srv.Close()
+ source:=&Destination{Name:"base",ChainID:8453,Domain:8453,RPCURL:srv.URL,ILNRegistryAddress:"0x2222222222222222222222222222222222222222",Confirmations:1}
+ snapshot:=&ILNRouteSnapshot{Route:protocol.ILNRoute{Mailbox:mailbox,MerkleTreeHook:hook},BlockNumber:10}
+ got,err:=GetConfirmedILNCheckpoint(source,snapshot)
+ require.NoError(t,err)
+ require.Equal(t,tree.root(),got.Root)
+ require.EqualValues(t,203,got.BlockNumber)
+ // On the next read, the second root differs at the same count; reject it.
+ poison.Store(true)
+ _,err=GetConfirmedILNCheckpoint(source,snapshot)
+ require.Error(t,err)
+}
+
 func TestILNRouteSnapshotUsesAppendOnlyCurrentBindings(t *testing.T) {
 	registry := types.StringToAddress("0x1111111111111111111111111111111111111111")
 	gateway := types.StringToAddress("0x2222222222222222222222222222222222222222")

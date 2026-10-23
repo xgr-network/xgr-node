@@ -42,12 +42,28 @@ func GetConfirmedILNHookCheckpoint(source *Destination, snapshot *ILNRouteSnapsh
         root=types.BytesToHash(encoded)
     }
     again,err:=callILNSignatureView(client,snapshot.Route.MerkleTreeHook,"count()",ethgo.Latest)
-    if err!=nil||len(again)!=32{return nil,fmt.Errorf("latest Hook count changed: %v",err)}
+    if err!=nil||len(again)!=32{return nil,fmt.Errorf("latest Hook count unavailable: %v",err)}
+    if new(big.Int).SetBytes(again).Cmp(n)!=0{
+        return nil,fmt.Errorf("Hook count changed during latest observation; retry")
+    }
+    // Block production alone does not change a Hyperlane Merkle tree.
+    // An unchanged count is insufficient across reorgs: independently read
+    // root AGAIN and reject any content change, even at the same index.
+    if n.Sign()>0 {
+        repeated,readErr:=callILNSignatureView(client,snapshot.Route.MerkleTreeHook,"root()",ethgo.Latest)
+        if readErr!=nil||len(repeated)!=32||types.BytesToHash(repeated)!=root{
+            return nil,fmt.Errorf("Hook root changed during latest observation; retry: %v",readErr)
+        }
+    }
     after,err:=client.Eth().BlockNumber()
     if err!=nil{return nil,err}
-    if before!=after||new(big.Int).SetBytes(again).Cmp(n)!=0{
-        return nil,fmt.Errorf("Hook head/count advanced during latest observation; retry")
+    if after<before {
+        return nil,fmt.Errorf("source RPC head regressed during latest Hook observation; retry")
     }
+    // Anchor at the LATER observed head: a prefix is never aged from an
+    // earlier block that may predate its insertion. The separate validator-
+    // local prefix finality gate is unchanged. No historical eth_call.
+    
     if n.Sign()==0{return &ConfirmedCheckpoint{BlockNumber:after},nil}
     return &ConfirmedCheckpoint{Root:root,Index:uint32(n.Uint64()-1),BlockNumber:after},nil
 }
