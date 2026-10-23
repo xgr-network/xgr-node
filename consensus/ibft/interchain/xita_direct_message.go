@@ -97,6 +97,35 @@ func (a *XITADirectMessage) UnmarshalBinary(raw []byte) error {
     return err
 }
 
+// UnmarshalBinary decodes exactly the Solidity XITADirectProtocol V1 format.
+// A P2P peer's arbitrary payload never overrides independently verified
+// source-transaction and destination-validator-set evidence.
+func (a *XITADirectMessage) UnmarshalBinary(raw []byte) error {
+    const tail = 8+4+4+32+8+8+5*types.AddressLength+32+types.HashLength+2*types.AddressLength
+    if a==nil || len(raw)!=len(XITADirectMessageDomain)+tail ||
+        string(raw[:len(XITADirectMessageDomain)])!=XITADirectMessageDomain {
+        return fmt.Errorf("invalid XITA direct message signing payload")
+    }
+    at:=len(XITADirectMessageDomain)
+    a.SourceChainID=binary.BigEndian.Uint64(raw[at:at+8]);at+=8
+    a.SourceDomain=binary.BigEndian.Uint32(raw[at:at+4]);at+=4
+    a.DestinationDomain=binary.BigEndian.Uint32(raw[at:at+4]);at+=4
+    a.RouteID=types.BytesToHash(raw[at:at+types.HashLength]);at+=types.HashLength
+    a.SetID=binary.BigEndian.Uint64(raw[at:at+8]);at+=8
+    a.SourceBlockNumber=binary.BigEndian.Uint64(raw[at:at+8]);at+=8
+    a.SourceRegistry=types.BytesToAddress(raw[at:at+types.AddressLength]);at+=types.AddressLength
+    a.Gateway=types.BytesToAddress(raw[at:at+types.AddressLength]);at+=types.AddressLength
+    a.SourceRouter=types.BytesToAddress(raw[at:at+types.AddressLength]);at+=types.AddressLength
+    a.SourceMailbox=types.BytesToAddress(raw[at:at+types.AddressLength]);at+=types.AddressLength
+    a.DestinationRouter=types.BytesToAddress(raw[at:at+types.AddressLength]);at+=types.AddressLength
+    a.ValidatorFeeWei=new(big.Int).SetBytes(raw[at:at+32]);at+=32
+    a.MessageID=types.BytesToHash(raw[at:at+types.HashLength]);at+=types.HashLength
+    a.DestinationISM=types.BytesToAddress(raw[at:at+types.AddressLength]);at+=types.AddressLength
+    a.DestinationRegistry=types.BytesToAddress(raw[at:at+types.AddressLength])
+    _,err:=a.MarshalBinary()
+    return err
+}
+
 func (a XITADirectMessage) Hash() (types.Hash,error) {
     b,err:=a.MarshalBinary()
     if err!=nil{return types.ZeroHash,err}
