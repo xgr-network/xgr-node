@@ -53,7 +53,7 @@ jobs:
       - name: Require v3.2.3 regressions and scoped unit tests
         run: |
           set -euo pipefail
-          grep -REq '^func TestV322' interchain/evm interchain/runtime jsonrpc || {
+          grep -REq '^func TestILNHookAllowsAdvancingHeadButRejectsChangedRoot' interchain/evm || {
             echo "Missing explicit v3.2.3 ILN regressions: release refused" >&2
             exit 1
           }
