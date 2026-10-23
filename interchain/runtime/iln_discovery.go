@@ -200,7 +200,16 @@ func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) 
    cursor=activation-1
   }
  }
- if cursor>=head{return nil}
+ // Previously persisted cursors may have been initialized from an
+ // L1-origin Solidity block.number. A cursor beyond the source RPC head is
+ // not evidence that any L2 block was scanned.
+ if cursor>head{
+  cursor=0
+  if source.ILNRegistryActivationBlock!=0 && source.ILNRegistryActivationBlock<=head {
+   cursor=source.ILNRegistryActivationBlock-1
+  }
+ }
+ if cursor==head{return nil}
  from,to:=cursor+1,head
  if to-from+1>ilnRouteDiscoveryScanChunk{to=from+ilnRouteDiscoveryScanChunk-1}
  events,err:=getConfirmedILNRouteAdds(source,from,to)
