@@ -79,7 +79,7 @@ func TestXGRGetILNInterchainAttestationByMessageID(t *testing.T) {
 	got, err := ep.GetILNInterchainAttestation("base_to_xgr", messageID)
 	require.NoError(t, err)
 	require.Equal(t, messageID, got.AuthorizedMessageID)
-	require.Equal(t, root, got.Root)
+	require.Equal(t, "0x8888888888888888888888888888888888888888", got.DestinationISM)
 }
 
 func TestXGRGetILNInterchainAttestationRejectsUnsafeLookup(t *testing.T) {
