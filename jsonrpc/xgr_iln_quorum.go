@@ -7,6 +7,8 @@ import (
  "path/filepath"
  "strings"
  "time"
+
+ evmInterchain "github.com/xgr-network/xgr-node/interchain/evm"
 )
 
 const ilnQuorumHintLease = 15*time.Minute
@@ -47,7 +49,32 @@ func (x *xgrEndpoint) RequestILNQuorum(route, messageID string, sourceBlockNumbe
  cursor, cursorErr := os.Stat(filepath.Join(x.dataDir,"interchain","iln","cursors",normalized+".cursor"))
  registered, routeErr := os.Stat(filepath.Join(x.dataDir,"interchain","iln","registered-routes",normalized+".route"))
  if (cursorErr!=nil||!cursor.Mode().IsRegular()) && (routeErr!=nil||!registered.Mode().IsRegular()) {
-  return nil,fmt.Errorf("route is not configured or discovered locally")
+  // An unknown deterministic route is only a discovery hint. Admission to
+  // the quorum queue is NOT permission to sign: the validator worker must
+  // independently verify the canonical source registry before processing it.
+  sourceDomain,destinationDomain,routeID,parseErr:=evmInterchain.ParseILNRouteName(normalized)
+  if parseErr!=nil{return nil,fmt.Errorf("route is not configured or discovered locally")}
+  hintDir:=filepath.Join(x.dataDir,"interchain","iln","route-hints")
+  if err:=os.MkdirAll(hintDir,0o770);err!=nil{return nil,err}
+  hintPath:=filepath.Join(hintDir,normalized+".json")
+  hint:=struct{
+   SourceDomain uint32 `json:"sourceDomain"`
+   DestinationDomain uint32 `json:"destinationDomain"`
+   RouteID string `json:"routeId"`
+  }{sourceDomain,destinationDomain,routeID.String()}
+  raw,err:=json.Marshal(hint);if err!=nil{return nil,err}
+  // Bound unknown route hints. Repeated requests for the same identity are
+  // idempotent; bogus identities can never create validator attestations.
+  if _,err:=os.Stat(hintPath);os.IsNotExist(err){
+   entries,err:=os.ReadDir(hintDir);if err!=nil{return nil,err}
+   if len(entries)>=128{return nil,fmt.Errorf("ILN discovery hint queue full")}
+   f,err:=os.OpenFile(hintPath,os.O_WRONLY|os.O_CREATE|os.O_EXCL,0o660)
+   if err!=nil&&!os.IsExist(err){return nil,err}
+   if err==nil{
+    if _,err=f.Write(raw);err!=nil{f.Close();os.Remove(hintPath);return nil,err}
+    if err=f.Close();err!=nil{os.Remove(hintPath);return nil,err}
+   }
+  }else if err!=nil{return nil,err}
  }
  status := &ilnQuorumStatusRPC{Route:normalized, MessageID:normalizedID,SourceBlockNumber:sourceBlockNumber,Status:"PENDING"}
  dir:=filepath.Join(x.dataDir,"interchain","iln","quorum-requests",normalized)
