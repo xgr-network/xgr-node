@@ -40,11 +40,12 @@ func ilnQuorumErrorCategory(err error) string {
  if err==nil{return ""}
  s:=strings.ToLower(err.Error())
  switch {
- case strings.Contains(s,"rebuild canonical iln merkle")||strings.Contains(s,"insertion logs")||
-      strings.Contains(s,"checkpoint root")||strings.Contains(s,"merkle"):
-  return "SOURCE_MERKLE_RECONSTRUCTION"
+ case strings.Contains(s,"fee vault")||strings.Contains(s,"fee allocation"):
+  return "SOURCE_FEE_NOT_VERIFIED"
+ case strings.Contains(s,"source receipt")||strings.Contains(s,"dispatch")||strings.Contains(s,"receipt"):
+  return "SOURCE_RECEIPT_NOT_VERIFIED"
  case strings.Contains(s,"rpc")||strings.Contains(s,"eth_getlogs")||
-      strings.Contains(s,"get iln insertion logs")||strings.Contains(s,"chain id mismatch"):
+      strings.Contains(s,"get canonical source receipt")||strings.Contains(s,"chain id mismatch"):
   return "CHAIN_RPC_UNAVAILABLE"
  case strings.Contains(s,"signer")||strings.Contains(s,"bls")||
       strings.Contains(s,"validator set"):
@@ -193,9 +194,9 @@ func (w *Worker) processRequestedILNQuorums() {
 
 func (w *Worker) processRequestedILNQuorum(route *evmInterchain.CheckpointRoute,messageID types.Hash,sourceBlock uint64) error {
     // A public RPC hint is neither proof nor an order to sign. The supplied
-    // transaction height is a display/recovery hint only; all authority
-    // comes from the CANONICAL confirmed Hook root, verified replica leaf,
-    // route-bound FeeVault and current destination validator set.
+    // transaction block is only a SOURCE RPC locator. Independent
+    // canonical Gateway/Dispatch/fee receipts, current destination ISM and
+    // current BLS validator set authorize the vote, never the public hint.
     if route==nil||sourceBlock==0||messageID==types.ZeroHash{
         return fmt.Errorf("invalid public ILN quorum request")
     }
@@ -204,7 +205,7 @@ func (w *Worker) processRequestedILNQuorum(route *evmInterchain.CheckpointRoute,
     confirmed,err:=getConfirmedILNHead(source)
     if err!=nil{return err}
     if sourceBlock>confirmed{return fmt.Errorf("hint source transaction is not confirmed")}
-    return w.signVerifiedILNReplicaMessage(route,messageID)
+    return w.signDirectILNMessage(route,messageID,sourceBlock)
 }
 
 func (w *Worker) acceptRequestedILNQuorum(request requestedILNQuorum) error {

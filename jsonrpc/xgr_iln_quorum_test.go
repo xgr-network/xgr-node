@@ -120,13 +120,13 @@ func TestILNQuorumProgressSurvivesRequestCleanup(t *testing.T) {
  // Temporary validation errors must remain actionable after original
  // admission file was deleted.
  progress["status"]="RETRYING_VALIDATION"
- progress["failureCategory"]="SOURCE_MERKLE_RECONSTRUCTION"
+ progress["failureCategory"]="SOURCE_RECEIPT_NOT_VERIFIED"
  raw,err=json.Marshal(progress);require.NoError(t,err)
  require.NoError(t,os.WriteFile(path,raw,0o660))
  status,err=ep.GetILNQuorum(route,quorumTestMessage)
  require.NoError(t,err)
  require.Equal(t,"RETRYING_VALIDATION",status.Status)
- require.Equal(t,"SOURCE_MERKLE_RECONSTRUCTION",status.FailureCategory)
+ require.Equal(t,"SOURCE_RECEIPT_NOT_VERIFIED",status.FailureCategory)
  // Stale/unknown state must not create a false signed quorum.
  progress["updatedUnix"]=time.Now().Add(-48*time.Hour).Unix()
  raw,err=json.Marshal(progress);require.NoError(t,err)

@@ -73,5 +73,5 @@ func TestInterchainSignerEligibilityIsOptInActiveAndMatchingBLS(t *testing.T) {
 
 
 func TestInterchainProtocolTopicV313(t *testing.T) {
-	require.Equal(t, "/xgr/interchain/3.0.0", TopicID)
+	require.Equal(t, "/xgr/interchain/direct-bls/1.0.0", TopicID)
 }

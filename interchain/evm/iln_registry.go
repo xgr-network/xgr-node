@@ -26,7 +26,7 @@ const ilnRegistryJSONABI = `[
 		{"internalType":"address","name":"gateway","type":"address"},
 		{"internalType":"address","name":"sourceRouter","type":"address"},
 		{"internalType":"address","name":"mailbox","type":"address"},
-		{"internalType":"address","name":"merkleTreeHook","type":"address"},
+		{"internalType":"address","name":"dispatchHook","type":"address"},
 		{"internalType":"address","name":"destinationRouter","type":"address"},
 		{"internalType":"uint256","name":"validatorFeeWei","type":"uint256"},
 		{"internalType":"bool","name":"enabled","type":"bool"}
@@ -49,7 +49,6 @@ type ILNOperation struct {
 	BlockNumber       uint64
 	TransactionHash types.Hash
 	LogIndex uint64
-	InsertionIndex uint32 // Authenticated by canonical receipt Hook event.
 }
 
 func (d *Destination) ValidateILNRead() error {
@@ -233,7 +232,7 @@ func getILNRouteAtBlock(
 	if err != nil {
 		return nil, err
 	}
-	hook, err := decodedAddress(values, "merkleTreeHook", "5")
+	hook, err := decodedAddress(values, "dispatchHook", "5")
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +266,7 @@ func getILNRouteAtBlock(
 		Gateway: gateway,
 		SourceRouter: sourceRouter,
 		Mailbox: mailbox,
-		MerkleTreeHook: hook,
+		DispatchHook: hook,
 		DestinationRouter: destinationRouter,
 		ValidatorFeeWei: fee,
 		Enabled: enabled,
@@ -314,7 +313,7 @@ func verifyILNGatewayBinding(
 	if warpRouter != route.SourceRouter {
 		return fmt.Errorf("ILN gateway source router mismatch")
 	}
-	// Dynamic Gateway.mailbox()/merkleTreeHook() getters deliberately reject
+	// Dynamic Gateway.mailbox()/dispatchHook() getters deliberately reject
 	// disabled routes. For historical proofs, check immutable gateway registry
 	// and router here; the same-tx canonical Mailbox.Dispatch proof provides
 	// the remaining binding to the source message.
@@ -326,11 +325,11 @@ func verifyILNGatewayBinding(
 	if gatewayMailbox != route.Mailbox {
 		return fmt.Errorf("ILN gateway mailbox mismatch")
 	}
-	gatewayHook, err := callILNAddressGetter(client, route.Gateway, "merkleTreeHook()", block)
+	gatewayHook, err := callILNAddressGetter(client, route.Gateway, "dispatchHook()", block)
 	if err != nil {
 		return fmt.Errorf("verify ILN gateway hook: %w", err)
 	}
-	if gatewayHook != route.MerkleTreeHook {
+	if gatewayHook != route.DispatchHook {
 		return fmt.Errorf("ILN gateway hook mismatch")
 	}
 	return nil
@@ -339,37 +338,6 @@ func verifyILNGatewayBinding(
 // GetILNGatewayActivationBlock is the initial event-scan cursor for a canonical
 // Gateway. The Gateway stores its deployment/activation block immutably so a
 // newly started validator does not need to scan the source chain from genesis.
-func GetILNGatewayActivationBlock(source *Destination, gateway types.Address) (uint64, error) {
-	client, err := ilnSourceClient(source)
-	if err != nil {
-		return 0, err
-	}
-	confirmed, err := confirmedILNHead(client, source)
-	if err != nil {
-		return 0, err
-	}
-	block := ethgo.Latest
-	raw, err := callILNSignatureView(client, gateway, "activationBlock()", block)
-	if err != nil {
-		return 0, fmt.Errorf("read ILN gateway activation block: %w", err)
-	}
-	if len(raw) != 32 {
-		return 0, fmt.Errorf("unexpected activationBlock response length %d", len(raw))
-	}
-	value := new(big.Int).SetBytes(raw)
-	if !value.IsUint64() || value.Sign() <= 0 {
-		return 0, fmt.Errorf("invalid ILN gateway activation block")
-	}
-	activation := value.Uint64()
-	if activation > confirmed {
-		return 0, fmt.Errorf("ILN gateway activation block is not confirmed")
-	}
-	return activation, nil
-}
-
-// GetConfirmedILNOperations returns fee-qualified Gateway operations in a
-// bounded confirmed block range. Each event authorizes exactly one Hyperlane
-// message ID. Direct calls to the Warp router do not produce this event.
 func GetConfirmedILNOperations(
 	source *Destination,
 	gateway types.Address,
@@ -428,97 +396,6 @@ func GetConfirmedILNOperations(
 // verifyILNDispatchInReceipt binds a fee-qualified Gateway event to the actual
 // canonical WarpRouter -> Mailbox dispatch in the SAME successful source tx.
 // An event from the wrong sender, transaction, route or message cannot pass.
-func verifyILNDispatchInReceipt(client *jsonrpc.Client, operation ILNOperation, gateway, mailbox, hook, sourceRouter types.Address, destinationDomain uint32, destinationRouter types.Address) (uint32, error) {
- if operation.TransactionHash == types.ZeroHash { return 0, fmt.Errorf("missing ILN gateway transaction hash") }
- receipt, err := client.Eth().GetTransactionReceipt(ethgo.Hash(operation.TransactionHash))
- if err != nil || receipt == nil { return 0, fmt.Errorf("ILN source transaction receipt unavailable: %v", err) }
- if receipt.Status != 1 || receipt.BlockNumber != operation.BlockNumber || types.Hash(receipt.TransactionHash) != operation.TransactionHash {
-  return 0, fmt.Errorf("ILN gateway transaction not successful or from wrong block")
- }
- dispatchTopic := ethgo.Hash(crypto.Keccak256Hash([]byte("Dispatch(address,uint32,bytes32,bytes)")))
- operationTopic := ethgo.Hash(crypto.Keccak256Hash([]byte(ilnOperationEventSignature)))
- found := 0
- gatewayEvents:=0
- insertions:=0
- var insertionIndex uint32
- for _, log := range receipt.Logs {
-  if log == nil || log.Removed { continue }
-  if types.Address(log.Address)==gateway && len(log.Topics)==4 && log.Topics[0]==operationTopic {
-   original,decodeErr:=parseILNOperationLog(log)
-   if decodeErr!=nil{return 0, fmt.Errorf("invalid original ILN gateway event: %w",decodeErr)}
-   if original.RouteID==operation.RouteID && original.MessageID==operation.MessageID &&
-     original.DestinationDomain==operation.DestinationDomain &&
-     original.ValidatorFeeWei.Cmp(operation.ValidatorFeeWei)==0 &&
-     original.LogIndex==operation.LogIndex &&
-     types.Hash(log.TransactionHash)==operation.TransactionHash {gatewayEvents++}
-  }
-  if types.Address(log.Address)==hook {
-    msg,index,parseErr:=parseILNInsertionLog(log)
-    if parseErr!=nil {return 0,fmt.Errorf("invalid canonical Hook insertion: %w",parseErr)}
-    if types.Hash(log.TransactionHash)!=operation.TransactionHash || log.BlockNumber!=operation.BlockNumber {
-      return 0,fmt.Errorf("Hook insertion transaction/block mismatch")
-    }
-    if msg==operation.MessageID {insertions++;insertionIndex=index}
-  }
-  if types.Address(log.Address) != mailbox || len(log.Topics) != 4 || log.Topics[0] != dispatchTopic { continue }
-  if types.BytesToAddress(log.Topics[1][12:]) != sourceRouter { continue }
-  if new(big.Int).SetBytes(log.Topics[2][:]).Cmp(new(big.Int).SetUint64(uint64(destinationDomain))) != 0 { continue }
-  if types.BytesToAddress(log.Topics[3][12:]) != destinationRouter { continue }
-  // ABI encoding for one dynamic bytes argument: offset=32, length at 32.
-  if len(log.Data) < 64 || new(big.Int).SetBytes(log.Data[:32]).Cmp(big.NewInt(32)) != 0 { continue }
-  length := new(big.Int).SetBytes(log.Data[32:64])
-  if !length.IsUint64() || length.Uint64() > uint64(len(log.Data)-64) { continue }
-  message := log.Data[64:64+int(length.Uint64())]
-  if crypto.Keccak256Hash(message) == operation.MessageID { found++ }
- }
- if gatewayEvents != 1 || found != 1 || insertions != 1 {
-  return 0,fmt.Errorf("ILN source receipt must contain unique Gateway, Dispatch and canonical Hook insertion")
- }
- return insertionIndex,nil
-}
-
-// GetILNOperationAtBlock verifies the exact Gateway event referenced by a peer
-// vote. More than one matching event for the same message ID is rejected.
-func GetILNOperationAtBlock(
-	source *Destination,
-	gateway types.Address,
-	routeID types.Hash,
-	destinationDomain uint32,
-	messageID types.Hash,
-	blockNumber uint64,
-) (*ILNOperation, error) {
-	operations, err := GetConfirmedILNOperations(
-		source, gateway, routeID, destinationDomain, blockNumber, blockNumber,
-	)
-	if err != nil {
-		return nil, err
-	}
-	var match *ILNOperation
-	for i := range operations {
-		if operations[i].MessageID != messageID {
-			continue
-		}
-		if match != nil {
-			return nil, fmt.Errorf("duplicate ILN operation for message id %s", messageID)
-		}
-		copyOp := operations[i]
-		match = &copyOp
-	}
-	if match == nil {
-		return nil, fmt.Errorf("ILN operation %s not found at source block %d", messageID, blockNumber)
-	}
-	// Resolve canonical historical router/mailbox binding and verify actual
-	// same-tx Dispatch from the unforgeable Mailbox address.
-	snapshot, err := GetILNRouteAtBlock(source, destinationDomain, routeID, blockNumber)
-	if err != nil { return nil, err }
-	client, err := ilnSourceClient(source)
-	if err != nil { return nil, err }
-	index,err:=verifyILNDispatchInReceipt(client, *match, snapshot.Route.Gateway, snapshot.Route.Mailbox, snapshot.Route.MerkleTreeHook, snapshot.Route.SourceRouter, destinationDomain, snapshot.Route.DestinationRouter)
-	if err!=nil{return nil,err}
-	match.InsertionIndex=index
-	return match,nil
-}
-
 func parseILNOperationLog(log *ethgo.Log) (ILNOperation, error) {
 	var out ILNOperation
 	if log == nil || log.Removed {
@@ -597,12 +474,8 @@ func GetILNMessageDelivered(destination *Destination, destinationRouter types.Ad
 	return raw[31] == 1, nil
 }
 
-// GetConfirmedILNCheckpoint restores the confirmed Hyperlane MerkleTreeHook
+// GetConfirmedILNCheckpoint restores the confirmed Hyperlane DispatchHook
 // contract-state path from v3.1.1. No historical Merkle log replay is required.
-func GetConfirmedILNCheckpoint(source *Destination, snapshot *ILNRouteSnapshot) (*ConfirmedCheckpoint, error) {
-    return GetConfirmedILNHookCheckpoint(source, snapshot)
-}
-
 func callILNAddressGetter(client *jsonrpc.Client, address types.Address, signature string, block ethgo.BlockNumber) (types.Address, error) {
 	raw, err := callILNSignatureView(client, address, signature, block)
 	if err != nil {

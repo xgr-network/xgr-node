@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	TopicID                    = "/xgr/interchain/3.0.0"
+	TopicID                    = "/xgr/interchain/direct-bls/1.0.0"
 	defaultPollInterval        = 2 * time.Second // local state / gossip, no periodic external RPC
 	// XGR v3.2.1: external RPC traffic must not follow the fast 2s loop.
 	ilnExternalCheckpointInterval = 30 * time.Second
@@ -67,11 +67,7 @@ type wireEnvelope struct {
 	Req                *wireRequest            `json:"request,omitempty"`
 	Vote               *wireVote               `json:"vote,omitempty"`
 	ILNCheckpointVote  *ilnCheckpointVote `json:"ilnCheckpointVote,omitempty"`
-    ILNReplicaRequest *ilnReplicaRequestWire `json:"ilnReplicaRequest,omitempty"`
-    ILNReplicaChunk *ilnReplicaChunkWire `json:"ilnReplicaChunk,omitempty"`
     ILNRouteNotice *ilnRouteNoticeWire `json:"ilnRouteNotice,omitempty"`
-    ILNMessageRequest *ilnMessageRequestWire `json:"ilnMessageRequest,omitempty"`
-    ILNMessageResponse *ilnMessageResponseWire `json:"ilnMessageResponse,omitempty"`
 	ILNQuorumRequest   *requestedILNQuorum     `json:"ilnQuorumRequest,omitempty"`
 	GovernanceProposal *governanceProposalWire  `json:"governanceProposal,omitempty"`
 	GovernanceVote     *governanceVote         `json:"governanceVote,omitempty"`
@@ -117,13 +113,8 @@ type Worker struct {
 	ilnLastMembershipPoll time.Time
 	ilnLastRetryPoll      time.Time
 	ilnLastHealthWrite    time.Time
-    ilnReplicaSync map[string]*ilnReplicaSyncState
-    ilnReplicaServed map[peer.ID]time.Time
     ilnRouteLastPublished map[string]time.Time
     ilnRouteLastSeen map[peer.ID]time.Time
-    ilnMessageLastScan map[string]time.Time
-    ilnMessageRequests map[string]time.Time
-    ilnMessageLastServed map[peer.ID]time.Time
 
 	txKey       ethgo.Key
 	localAddr   types.Address
@@ -196,7 +187,6 @@ func New(
 		}
 		// One persistent source-chain/hook cache per validator node. All routes
 		// remain permissionless; no per-route configuration is introduced.
-		d.ILNMerkleCacheDir = filepath.Join(dataDir, "interchain", "iln", "merkle-cache")
 		if err := d.ValidateMembershipRead(); err != nil {
 			return nil, fmt.Errorf("destination %q: %w", d.Name, err)
 		}
@@ -248,13 +238,8 @@ func New(
 		reserveWarned:    make(map[string]bool),
 		ilnLocalVotes:                make(map[types.Hash]*ilnLocalVoteState),
 		ilnCheckpoints: make(map[types.Hash]*ilnCheckpointState),
-        ilnReplicaSync: make(map[string]*ilnReplicaSyncState),
-        ilnReplicaServed: make(map[peer.ID]time.Time),
         ilnRouteLastPublished: make(map[string]time.Time),
         ilnRouteLastSeen: make(map[peer.ID]time.Time),
-        ilnMessageLastScan: make(map[string]time.Time),
-        ilnMessageRequests: make(map[string]time.Time),
-        ilnMessageLastServed: make(map[peer.ID]time.Time),
 		governance:                   make(map[types.Hash]*governanceState),
 		governanceExecuteCh: make(chan governanceExecuteRequest,1),
 		governanceExecuteInFlight: make(map[string]struct{}),
@@ -421,20 +406,20 @@ func (w *Worker) tick() {
 		w.publishVerifiedILNRoutes()
 	}
 	if dueILNPeriodicPolling(now,&w.ilnLastCheckpointPoll,ilnExternalCheckpointInterval) {
-		w.refreshILNReplicas()
-		w.captureRecentILNMessages()
-		w.mu.Lock()
-		activeRoutes:=make([]*evmInterchain.CheckpointRoute,0,len(w.routes))
-		for _,route:=range w.routes { activeRoutes=append(activeRoutes,route) }
-		w.mu.Unlock()
-		for _,route:=range activeRoutes{
-			if err:=w.signVerifiedILNReplicaBatch(route);err!=nil{
-				w.logger.Debug("ILN checkpoint not signed",
-					"route",route.Name,"source",route.SourceNetwork,
-					"destination",route.Destination,"err",err)
-			}
-		}
-	}
+        w.mu.Lock()
+        activeRoutes:=make([]*evmInterchain.CheckpointRoute,0,len(w.routes))
+        for _,route:=range w.routes{activeRoutes=append(activeRoutes,route)}
+        w.mu.Unlock()
+        // The only background message source is the confirmed, fee-qualified
+        // Gateway operation; no Merkle state or quorum-request trigger.
+        for _,route:=range activeRoutes{
+            if err:=w.scanDirectILNOperations(route);err!=nil{
+                w.recordILNDirectScanFailure(route,err)
+                w.logger.Debug("Direct BLS source operation scan pending",
+                    "route",route.Name,"err",err)
+            }
+        }
+    }
 	if dueILNPeriodicPolling(now,&w.ilnLastHealthWrite,ilnLocalHealthInterval) {
 		// v3.2.1: purely local persisted observations; never query Base/XGR.
 		w.writeILNIndexerHealth()
@@ -444,7 +429,6 @@ func (w *Worker) tick() {
 		// Pending votes/message repair may require remote reads. They MUST NOT
 		// retry every 2s when the remote chain rate-limits a validator.
 		w.rebroadcastILNCheckpointVotes()
-		w.replicateILNMissingMessages()
 		w.trySubmissions()
 	}
 	w.rebroadcastGovernance()
@@ -848,30 +832,10 @@ func (w *Worker) handleWireFrom(raw []byte, from peer.ID) error {
 	case "iln_quorum_request":
 		if envelope.ILNQuorumRequest == nil { return fmt.Errorf("missing ILN quorum request") }
 		return w.acceptRequestedILNQuorum(*envelope.ILNQuorumRequest)
-	case "iln_message_request":
-        if envelope.ILNMessageRequest==nil{return fmt.Errorf("missing ILN message request")}
-        if from==""{return fmt.Errorf("ILN message request requires authenticated peer")}
-        return w.respondILNMessageRequest(from,*envelope.ILNMessageRequest)
-    case "iln_message_response":
-        if envelope.ILNMessageResponse==nil{return fmt.Errorf("missing ILN message response")}
-        if from==""{return fmt.Errorf("ILN message response requires authenticated peer")}
-        return w.acceptILNMessageResponse(from,*envelope.ILNMessageResponse)
-    case "iln_route_notice":
+	case "iln_route_notice":
         if envelope.ILNRouteNotice==nil{return fmt.Errorf("missing ILN route notice")}
         if from==""{return fmt.Errorf("ILN route notice requires authenticated peer")}
         return w.acceptVerifiedILNRouteNotice(from,*envelope.ILNRouteNotice)
-    case "iln_replica_request":
-        if envelope.ILNReplicaRequest==nil {return fmt.Errorf("missing ILN replica request")}
-        if from=="" {return fmt.Errorf("ILN replica request requires authenticated transport peer")}
-        // GossipSub delivers the request to all peers. Only the targeted
-        // recipient should process it; other peers ignore it silently.
-        if w.network==nil{return fmt.Errorf("ILN replica network unavailable")}
-        if envelope.ILNReplicaRequest.Recipient!=w.network.AddrInfo().ID.String(){return nil}
-        return w.respondILNReplicaRequest(from,*envelope.ILNReplicaRequest)
-    case "iln_replica_chunk":
-        if envelope.ILNReplicaChunk==nil {return fmt.Errorf("missing ILN replica chunk")}
-        if from=="" {return fmt.Errorf("ILN replica chunk requires authenticated transport peer")}
-        return w.acceptILNReplicaChunk(from,*envelope.ILNReplicaChunk)
     case "iln_checkpoint_vote":
         if envelope.ILNCheckpointVote == nil {
 			return fmt.Errorf("missing ILN checkpoint vote")

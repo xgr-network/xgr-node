@@ -18,10 +18,10 @@ func TestILNIndexerStatusFreshStalledAfterRestartAndOutage(t *testing.T){
  path:=filepath.Join(dir,"interchain","iln","indexer-health.json")
  require.NoError(t,os.MkdirAll(filepath.Dir(path),0o770))
  mk:=func(age time.Duration,alive bool){
-  item:=ilnIndexerStatusRPC{Version:1,UpdatedUnix:time.Now().Add(-age).Unix(),
+  item:=ilnIndexerStatusRPC{Version:2,UpdatedUnix:time.Now().Add(-age).Unix(),
    WorkerAlive:alive,Routes:[]ilnIndexerRouteStatusRPC{{
     Route:"base_to_xgr",Source:"base",Destination:"xgr",State:"ok",
-    Leaves:4,LocalLeaves:4,
+    SourceHead:100,ScanCursor:100,BlockLag:0,
    }}}
   raw,e:=json.Marshal(item);require.NoError(t,e)
   require.NoError(t,os.WriteFile(path,raw,0o660))

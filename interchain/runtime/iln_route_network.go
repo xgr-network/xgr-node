@@ -77,7 +77,7 @@ func validILNSourceRouteNotice(source *evm.Destination,domain uint32,id types.Ha
         snapshot.Route.Gateway==types.ZeroAddress ||
         snapshot.Route.SourceRouter==types.ZeroAddress ||
         snapshot.Route.Mailbox==types.ZeroAddress ||
-        snapshot.Route.MerkleTreeHook==types.ZeroAddress ||
+        snapshot.Route.DispatchHook==types.ZeroAddress ||
         snapshot.Route.DestinationRouter==types.ZeroAddress ||
         snapshot.Route.ValidatorFeeWei==nil||
         snapshot.Route.ValidatorFeeWei.Sign()<=0 {

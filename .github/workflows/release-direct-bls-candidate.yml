@@ -1,0 +1,85 @@
+name: XGR Direct-BLS Release Candidate (Build + Tests)
+
+on:
+  pull_request:
+    branches: [XGR3.0]
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/release-direct-bls-candidate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xgr-direct-bls-rc-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  candidate-binary:
+    name: Build candidate Linux binary and checksums
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Build Direct-BLS release-candidate binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=v3.3.0-rc.1
+          PKG=github.com/xgr-network/xgrchain/versioning
+          COMMIT="$(git rev-parse --short HEAD)"
+          BRANCH=redesign/xita-direct-bls-validator
+          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          mkdir -p dist
+          go build -trimpath -o "dist/xgrchain-${VERSION}-linux-amd64" \
+            -ldflags "-X ${PKG}.Version=${VERSION} -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=${BRANCH} -X ${PKG}.BuildTime=${TIME}" .
+          chmod 755 "dist/xgrchain-${VERSION}-linux-amd64"
+          "dist/xgrchain-${VERSION}-linux-amd64" version
+          printf '%s\n' "${VERSION}" > dist/version.txt
+          git rev-parse HEAD > dist/commit.txt
+          (cd dist && sha256sum xgrchain-*-linux-amd64 version.txt commit.txt > sha256sums.txt)
+          (cd dist && sha256sum -c sha256sums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xgr-direct-bls-v3.3.0-rc.1-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+  direct-bls-gate:
+    name: Direct-BLS focused security regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Security-critical unit and receipt checks
+        run: |
+          set -euo pipefail
+          go test -count=1 ./consensus/ibft/interchain ./interchain/evm ./interchain/runtime ./jsonrpc
+      - name: Focused direct-message replay and authentic source receipt
+        run: |
+          set -euo pipefail
+          go test -count=3 ./consensus/ibft/interchain -run '^TestXITADirectMessage'
+          go test -count=3 ./interchain/evm -run '^TestDirect'
+  candidate-ready:
+    name: Candidate only - no production tag
+    needs: [candidate-binary, direct-bls-gate]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "Direct-BLS candidate built and focused unit tests passed."
+          echo "No production release, tag or deployment has been executed."

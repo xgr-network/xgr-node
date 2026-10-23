@@ -14,11 +14,8 @@ type ilnIndexerRouteStatusRPC struct{
  Destination string `json:"destination"`
  State string `json:"state"`
  SourceHead uint64 `json:"sourceHead"`
- CheckpointBlock uint64 `json:"checkpointBlock"`
- Leaves uint64 `json:"leaves"`
- LocalLeaves uint64 `json:"localLeaves"`
- LagLeaves uint64 `json:"lagLeaves"`
- PendingPeers int `json:"pendingPeers"`
+ ScanCursor uint64 `json:"scanCursor"`
+ BlockLag uint64 `json:"blockLag"`
  UpdatedUnix int64 `json:"updatedUnix"`
  Error string `json:"error,omitempty"`
 }
@@ -39,7 +36,7 @@ func (x *xgrEndpoint) GetILNIndexerStatus()(*ilnIndexerStatusRPC,error){
  if err!=nil{return nil,err}
  var status ilnIndexerStatusRPC
  if err:=json.Unmarshal(raw,&status);err!=nil{return nil,err}
- if status.Version!=1||status.UpdatedUnix<=0||status.Routes==nil{
+ if status.Version!=2||status.UpdatedUnix<=0||status.Routes==nil{
   return nil,fmt.Errorf("invalid ILN health schema")
  }
  if time.Since(time.Unix(status.UpdatedUnix,0))>2*time.Minute ||

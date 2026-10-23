@@ -96,35 +96,30 @@ func (w *Worker) pruneILNQuorumCaches() {
 }
 
 
-func (w *Worker) canRegenerateILNQuorum(route *evmInterchain.CheckpointRoute,aliasPath string,messageID types.Hash)bool{
- source:=w.destinations[route.SourceNetwork]
- destination:=w.destinations[route.Destination]
- if source==nil||destination==nil{return false}
+func (w *Worker) canRegenerateILNQuorum(route *evmInterchain.CheckpointRoute,aliasPath string,messageID types.Hash)bool {
+ if route==nil||messageID==types.ZeroHash{return false}
  raw,err:=os.ReadFile(aliasPath)
  if err!=nil||len(raw)>16384{return false}
  var record ilnCheckpointAttestation
  if json.Unmarshal(raw,&record)!=nil||record.Chain!=route.Name||
-   record.AuthorizedMessageID!=messageID.String()||record.SourceBlockNumber==0||record.Payload==""{return false}
+   record.Version!=protocol.XITADirectMessageDomain||
+   record.AuthorizedMessageID!=messageID.String()||
+   record.SourceBlockNumber==0||record.Payload==""{return false}
  packed,err:=hex.DecodeString(strings.TrimPrefix(record.Payload,"0x"))
  if err!=nil{return false}
- var payload protocol.ILNCheckpointPayload
+ var payload protocol.XITADirectMessage
  if payload.UnmarshalBinary(packed)!=nil||payload.RouteID!=route.RouteID||
-   payload.AuthorizedMessageID!=messageID||payload.SourceBlockNumber!=record.SourceBlockNumber||
-   payload.DestinationDomain!=destination.Domain{return false}
- snapshot,err:=getILNRouteAtBlock(source,destination.Domain,route.RouteID,payload.SourceBlockNumber)
- if err!=nil||snapshot==nil||snapshot.Route.Gateway!=payload.Gateway||
-   snapshot.Route.DestinationRouter!=payload.DestinationRouter||snapshot.Registry!=payload.Registry{return false}
- operation,err:=getILNOperationAtBlock(source,snapshot.Route.Gateway,route.RouteID,destination.Domain,messageID,payload.SourceBlockNumber)
- if err!=nil||operation==nil||operation.ValidatorFeeWei==nil||payload.ValidatorFeeWei==nil||
-   operation.ValidatorFeeWei.Cmp(payload.ValidatorFeeWei)!=0{return false}
- checkpoint,err:=getConfirmedILNCheckpoint(source,snapshot)
- if err!=nil||checkpoint==nil||checkpoint.Root!=payload.Root||checkpoint.Index!=payload.Index{return false}
- set,err:=getILNValidatorSet(destination)
- return err==nil&&set!=nil&&set.SetID>0&&len(set.Validators)>0&&len(set.BLSPublicKeys)==len(set.Validators)
+   payload.MessageID!=messageID||payload.SourceBlockNumber!=record.SourceBlockNumber{return false}
+ // Pending signatures may be removed ONLY when the original confirmed
+ // fee-qualified source receipt remains independently re-verifiable under
+ // the current destination set. A pruned RPC or a source outage retains them.
+ ctx,err:=w.verifyDirectILNEvidence(route,messageID,payload.SourceBlockNumber)
+ if err!=nil{return false}
+ current:=w.directILNPayload(ctx)
+ expected,err:=current.MarshalBinary()
+ return err==nil&&len(expected)>0&&ctx.set.SetID>0
 }
 
-// These are temporary governance control-plane artifacts, not pending asset
-// custody proofs. Only an explicitly expired proposal + grace period is purged.
 func (w *Worker) pruneExpiredILNGovernance() {
  entries,err:=os.ReadDir(w.governanceProposalDir());if err!=nil{return}
  cutoff:=uint64(time.Now().Add(-ilnSettledRetention).Unix())

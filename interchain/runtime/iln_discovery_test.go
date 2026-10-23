@@ -196,7 +196,7 @@ func TestILNHintDiscoveryRequiresCanonicalRegistryProof(t *testing.T) {
    Key:protocol.ILNRouteKey{SourceChainID:42161,SourceDomain:42161,DestinationDomain:1643,RouteID:routeID},
    Gateway:gateway,SourceRouter:types.StringToAddress("0x2222222222222222222222222222222222222222"),
    Mailbox:types.StringToAddress("0x3333333333333333333333333333333333333333"),
-   MerkleTreeHook:types.StringToAddress("0x4444444444444444444444444444444444444444"),
+   DispatchHook:types.StringToAddress("0x4444444444444444444444444444444444444444"),
    DestinationRouter:types.StringToAddress("0x6666666666666666666666666666666666666666"),
    ValidatorFeeWei:big.NewInt(1),Enabled:true,
   }},nil

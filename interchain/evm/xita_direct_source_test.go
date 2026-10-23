@@ -2,6 +2,7 @@ package evm
 
 import (
  "encoding/hex"
+ "encoding/binary"
  "encoding/json"
  "fmt"
  "math/big"
@@ -15,15 +16,21 @@ import (
  "github.com/xgr-network/xgr-node/types"
 )
 
-func TestVerifyILNDispatchInReceiptAuthenticatesGatewayAndMailbox(t *testing.T) {
+func TestDirectBLSRequiresUniqueFeeQualifiedCanonicalMailboxReceipt(t *testing.T) {
  gateway:=types.StringToAddress("0x1111111111111111111111111111111111111111")
  mailbox:=types.StringToAddress("0x2222222222222222222222222222222222222222")
- hook:=types.StringToAddress("0x5555555555555555555555555555555555555555")
  router:=types.StringToAddress("0x3333333333333333333333333333333333333333")
  destinationRouter:=types.StringToAddress("0x4444444444444444444444444444444444444444")
  routeID:=types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
  txHash:=types.StringToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
- message:=[]byte("genuine warp router mailbox message")
+ message:=make([]byte,77)
+ message[0]=3
+ binary.BigEndian.PutUint32(message[1:5],7)
+ binary.BigEndian.PutUint32(message[5:9],42161)
+ copy(message[21:41],router.Bytes())
+ binary.BigEndian.PutUint32(message[41:45],1643)
+ copy(message[57:77],destinationRouter.Bytes())
+ message=append(message,[]byte("authenticated bridge operation")...)
  messageID:=crypto.Keccak256Hash(message)
  fee:=big.NewInt(123)
  op:=ILNOperation{RouteID:routeID,MessageID:messageID,DestinationDomain:1643,ValidatorFeeWei:fee,BlockNumber:77,TransactionHash:txHash,LogIndex:1}
@@ -47,14 +54,7 @@ func TestVerifyILNDispatchInReceiptAuthenticatesGatewayAndMailbox(t *testing.T) 
   "transactionHash":txHash.String(),"removed":false,
  }
  success:=true
- insertionTopic:=crypto.Keccak256Hash([]byte("InsertedIntoTree(bytes32,uint32)"))
- insertionEvent:=map[string]interface{}{
- "address":hook.String(),"topics":[]string{insertionTopic.String()},
- "data":"0x"+hex.EncodeToString(append(word(new(big.Int).SetBytes(messageID.Bytes())),word(big.NewInt(0))...)),
- "blockNumber":"0x4d","logIndex":"0x2","transactionIndex":"0x0",
- "transactionHash":txHash.String(),"removed":false,
- }
- logs:=[]interface{}{dispatchEvent,gatewayEvent,insertionEvent}
+ logs:=[]interface{}{dispatchEvent,gatewayEvent}
  server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
   var req struct{ID json.RawMessage `json:"id"`; Method string `json:"method"`}
   require.NoError(t,json.NewDecoder(r.Body).Decode(&req))
@@ -70,22 +70,31 @@ func TestVerifyILNDispatchInReceiptAuthenticatesGatewayAndMailbox(t *testing.T) 
  defer server.Close()
  client,err:=jsonrpc.NewClient(server.URL)
  require.NoError(t,err)
- check:=func()error{_,err:=verifyILNDispatchInReceipt(client,op,gateway,mailbox,hook,router,1643,destinationRouter);return err}
- require.NoError(t,check(),"canonical source receipt must authorize message")
- logs=[]interface{}{dispatchEvent,gatewayEvent}
- require.Error(t,check(),"missing canonical Hook insertion must fail")
- logs=[]interface{}{dispatchEvent,gatewayEvent,insertionEvent}
+ check:=func()error{
+  actual,err:=verifyXITADirectReceipt(client,op,gateway,mailbox,router,destinationRouter,42161)
+  if err==nil{require.Equal(t,message,actual)}
+  return err
+ }
+ require.NoError(t,check(),"Merkle-free direct source receipt authorizes message")
  logs=[]interface{}{dispatchEvent} // malicious direct WarpRouter caller cannot emit Gateway event
  require.Error(t,check(),"missing canonical Gateway must be rejected")
  logs=[]interface{}{gatewayEvent} // forged source message without canonical dispatch
  require.Error(t,check(),"missing canonical Mailbox.Dispatch must be rejected")
- logs=[]interface{}{dispatchEvent,gatewayEvent,insertionEvent}
+ logs=[]interface{}{dispatchEvent,gatewayEvent}
  success=false
  require.Error(t,check(),"reverted source transaction cannot authorize an ILN quorum")
  success=true
  malformed:=map[string]interface{}{}
  for k,v:=range dispatchEvent{malformed[k]=v}
  malformed["topics"]=[]string{bytes32(dispatchTopic),topic(types.StringToAddress("0x9999999999999999999999999999999999999999")),fmt.Sprintf("0x%064x",uint64(1643)),topic(destinationRouter)}
- logs=[]interface{}{malformed,gatewayEvent,insertionEvent}
+ logs=[]interface{}{malformed,gatewayEvent}
  require.Error(t,check(),"wrong source WarpRouter must be rejected")
+ 
+ logs=[]interface{}{dispatchEvent,gatewayEvent,gatewayEvent}
+ require.Error(t,check(),"duplicate fee event must fail closed")
+ logs=[]interface{}{dispatchEvent,gatewayEvent,dispatchEvent}
+ require.Error(t,check(),"duplicate matching mailbox dispatch must fail closed")
+ logs=[]interface{}{dispatchEvent,gatewayEvent}
+ op.MessageID=types.StringToHash("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+ require.Error(t,check(),"different message ID cannot authorize a direct vote")
 }
