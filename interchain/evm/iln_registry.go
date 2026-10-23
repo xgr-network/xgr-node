@@ -26,7 +26,7 @@ const ilnRegistryJSONABI = `[
 		{"internalType":"address","name":"gateway","type":"address"},
 		{"internalType":"address","name":"sourceRouter","type":"address"},
 		{"internalType":"address","name":"mailbox","type":"address"},
-		{"internalType":"address","name":"merkleTreeHook","type":"address"},
+		{"internalType":"address","name":"dispatchHook","type":"address"},
 		{"internalType":"address","name":"destinationRouter","type":"address"},
 		{"internalType":"uint256","name":"validatorFeeWei","type":"uint256"},
 		{"internalType":"bool","name":"enabled","type":"bool"}
@@ -233,7 +233,7 @@ func getILNRouteAtBlock(
 	if err != nil {
 		return nil, err
 	}
-	hook, err := decodedAddress(values, "merkleTreeHook", "5")
+	hook, err := decodedAddress(values, "dispatchHook", "5")
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +326,7 @@ func verifyILNGatewayBinding(
 	if gatewayMailbox != route.Mailbox {
 		return fmt.Errorf("ILN gateway mailbox mismatch")
 	}
-	gatewayHook, err := callILNAddressGetter(client, route.Gateway, "merkleTreeHook()", block)
+	gatewayHook, err := callILNAddressGetter(client, route.Gateway, "dispatchHook()", block)
 	if err != nil {
 		return fmt.Errorf("verify ILN gateway hook: %w", err)
 	}
