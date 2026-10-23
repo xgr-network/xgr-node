@@ -126,7 +126,49 @@ func (w *Worker) restoreILNDiscoveredRoutes(source *evmInterchain.Destination,he
  return nil
 }
 
+// Resolve bounded user hints against the independently confirmed source
+// registry. No route file or signing cursor is created for an invalid hint.
+// In particular, this path never interprets Solidity block.number as an RPC
+// block number, and never scans from an L1 height on an L2.
+func (w *Worker) discoverILNHintedRoutes() {
+ dir:=filepath.Join(w.ilnDir(),"route-hints")
+ entries,err:=os.ReadDir(dir)
+ if os.IsNotExist(err){return}
+ if err!=nil{w.logger.Debug("ILN route hint directory unavailable","err",err);return}
+ processed:=0
+ for _,entry:=range entries{
+  if processed>=8{break}
+  if entry.IsDir()||!strings.HasSuffix(entry.Name(),".json"){continue}
+  processed++
+  routeName:=strings.TrimSuffix(entry.Name(),".json")
+  sourceDomain,destinationDomain,routeID,err:=evmInterchain.ParseILNRouteName(routeName)
+  if err!=nil{_ = os.Remove(filepath.Join(dir,entry.Name()));continue}
+  var source *evmInterchain.Destination
+  for _,candidate:=range w.destinations {
+   if candidate!=nil && candidate.Domain==sourceDomain && strings.TrimSpace(candidate.ILNRegistryAddress)!=""{source=candidate;break}
+  }
+  if source==nil{continue}
+  destinationConfigured:=false
+  for _,candidate:=range w.destinations{
+   if candidate!=nil&&candidate.Domain==destinationDomain{destinationConfigured=true;break}
+  }
+  if !destinationConfigured{continue}
+  head,err:=getConfirmedILNHead(source)
+  if err!=nil{continue}
+  snapshot,err:=getILNRouteAtBlock(source,destinationDomain,routeID,head)
+  if err!=nil||!validILNSourceRouteNotice(source,destinationDomain,routeID,snapshot){continue}
+  record:=ilnDiscoveredRoute{SourceNetwork:source.Name,SourceDomain:sourceDomain,
+   DestinationDomain:destinationDomain,RouteID:routeID.String(),Gateway:snapshot.Route.Gateway.String()}
+  if err=w.rememberILNRouteAdded(source,evmInterchain.ILNRouteAdded{
+   DestinationDomain:destinationDomain,RouteID:routeID,Gateway:snapshot.Route.Gateway,BlockNumber:head,
+  });err!=nil{continue}
+  if err=w.attachILNDiscoveredRoute(source,record,head);err!=nil{continue}
+  _=os.Remove(filepath.Join(dir,entry.Name()))
+ }
+}
+
 func (w *Worker) discoverILNRoutes() {
+ w.discoverILNHintedRoutes()
  for _,source:=range w.destinations {
   if source==nil||strings.TrimSpace(source.ILNRegistryAddress)==""{continue}
   if err:=w.discoverILNRoutesFromSource(source);err!=nil {
