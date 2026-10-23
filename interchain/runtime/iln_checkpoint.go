@@ -1,6 +1,7 @@
 package runtime
 
 import (
+    "bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -25,7 +26,7 @@ type ilnCheckpointVote struct {
 
 type ilnCheckpointState struct {
 	route   string
-	payload protocol.ILNCheckpointPayload
+	payload protocol.XITADirectMessage
 	raw     []byte
 	votes   map[types.Address][]byte
 }
@@ -49,12 +50,11 @@ type ilnCheckpointAttestation struct {
 	Gateway                      string `json:"gateway"`
 	SourceRouter                 string `json:"sourceRouter"`
 	Mailbox                      string `json:"mailbox"`
-	MerkleTreeHook               string `json:"merkleTreeHook"`
 	DestinationRouter            string `json:"destinationRouter"`
 	ValidatorFeeWei              string `json:"validatorFeeWei"`
 	AuthorizedMessageID          string `json:"authorizedMessageId"`
-	Root                         string `json:"root"`
-	Index                        uint32 `json:"index"`
+	DestinationISM               string `json:"destinationIsm"`
+	DestinationRegistry          string `json:"destinationRegistry"`
 	Payload                      string `json:"payload"`
 	SignerBitmap                 string `json:"signerBitmap"`
 	AggregateSignature           string `json:"aggregateSignature"`
@@ -166,152 +166,57 @@ func (w *Worker) removeILNLocalVote(hash types.Hash) {
 	_ = os.Remove(filepath.Join(w.ilnVoteDir(), hash.String()+".json"))
 }
 
-func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
-	var payload protocol.ILNCheckpointPayload
-	if err := payload.UnmarshalBinary(vote.Payload); err != nil {
-		return err
-	}
-	w.mu.Lock()
-	route := w.routes[vote.Route]
-	// Old ENV route aliases and new deterministic on-chain-discovery route
-	// names must interoperate: the SIGNED canonical route identity wins.
-	if route == nil {
-		for _,candidate := range w.routes {
-			src := w.destinations[candidate.SourceNetwork]
-			dst := w.destinations[candidate.Destination]
-			if src!=nil && dst!=nil && candidate.RouteID==payload.RouteID &&
-				src.Domain==payload.SourceDomain && dst.Domain==payload.DestinationDomain {
-				route=candidate
-				break
-			}
-		}
-	}
-	w.mu.Unlock()
-	if route == nil || stringsTrim(route.SourceNetwork) == "" {
-		return fmt.Errorf("unknown ILN checkpoint route")
-	}
-	source := w.destinations[route.SourceNetwork]
-	destination := w.destinations[route.Destination]
-	if source == nil || destination == nil {
-		return fmt.Errorf("ILN checkpoint route networks are not configured")
-	}
-
-	if payload.RouteID != route.RouteID {
-		return fmt.Errorf("ILN checkpoint route id mismatch")
-	}
-	head,err:=getConfirmedILNHead(source)
-	if err!=nil{return err}
-	snapshot, err := getILNRouteAtBlock(source, destination.Domain, payload.RouteID, head)
-	if err != nil {
-		return err
-	}
-	if payload.Registry != snapshot.Registry ||
-		payload.SourceChainID != snapshot.Route.Key.SourceChainID ||
-		payload.SourceDomain != snapshot.Route.Key.SourceDomain ||
-		payload.DestinationDomain != snapshot.Route.Key.DestinationDomain ||
-		payload.RouteID != snapshot.Route.Key.RouteID ||
-		payload.Gateway != snapshot.Route.Gateway ||
-		payload.SourceRouter != snapshot.Route.SourceRouter ||
-		payload.Mailbox != snapshot.Route.Mailbox ||
-		payload.MerkleTreeHook != snapshot.Route.MerkleTreeHook ||
-		payload.DestinationRouter != snapshot.Route.DestinationRouter ||
-		payload.ValidatorFeeWei == nil ||
-		payload.ValidatorFeeWei.Sign() <= 0 {
-		return fmt.Errorf("ILN checkpoint canonical route mismatch")
-	}
-
-    // Verify the full, independently observed CURRENT Hook tree first.
-    // The signed checkpoint is its deterministic immutable message prefix.
-    checkpoint,err:=getConfirmedILNCheckpoint(source,snapshot)
+func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote)error{
+    var payload protocol.XITADirectMessage
+    if err:=payload.UnmarshalBinary(vote.Payload);err!=nil{return err}
+    w.mu.Lock()
+    route:=w.routes[vote.Route]
+    if route==nil {
+        for _,candidate:=range w.routes {
+            src,dst:=w.destinations[candidate.SourceNetwork],w.destinations[candidate.Destination]
+            if src!=nil&&dst!=nil&&candidate.RouteID==payload.RouteID&&
+               src.Domain==payload.SourceDomain&&dst.Domain==payload.DestinationDomain {
+                route=candidate;break
+            }
+        }
+    }
+    w.mu.Unlock()
+    if route==nil{return fmt.Errorf("unknown canonical XITA Direct-BLS route")}
+    ctx,err:=w.verifyDirectILNEvidence(route,payload.MessageID,payload.SourceBlockNumber)
     if err!=nil{return err}
-    if checkpoint.Root==types.ZeroHash||checkpoint.Index==^uint32(0){
-        return fmt.Errorf("source Hook has no verified current Merkle checkpoint")
+    canonical:=w.directILNPayload(ctx)
+    packed,err:=canonical.MarshalBinary()
+    if err!=nil||!bytes.Equal(packed,vote.Payload){
+        return fmt.Errorf("received Direct-BLS vote disagrees with independent source receipt, destination ISM or current validator set")
     }
-    canonical:=evmInterchain.ILNReplicaCheckpoint{
-        ChainID:source.ChainID,Hook:snapshot.Route.MerkleTreeHook,
-        Root:checkpoint.Root,Count:uint64(checkpoint.Index)+1,
-        BlockNumber:checkpoint.BlockNumber,
-    }
-    replica,err:=w.verifiedILNReplicaAt(canonical)
-    if err!=nil{return fmt.Errorf("unverified local source Merkle replica: %w",err)}
-    if payload.Index==^uint32(0)||uint64(payload.Index)>=canonical.Count||
-        replica.Leaves[payload.Index]!=payload.AuthorizedMessageID {
-        return fmt.Errorf("signed ILN message not at verified source insertion index")
-    }
-    ready,err:=w.confirmedILNPrefixCount(source,canonical,replica)
-    if err!=nil{return fmt.Errorf("independent source finality unavailable: %w",err)}
-    if uint64(payload.Index)>=ready{
-        return fmt.Errorf("received BLS vote references unfinalized source insertion")
-    }
-    _,prefix,err:=evmInterchain.VerifiedILNMessagePrefix(replica,canonical,payload.Index)
+    index:=indexOf(ctx.set.Validators,vote.Signer)
+    if index<0{return fmt.Errorf("Direct-BLS voter not in destination validator set")}
+    eligible,err:=w.interchainSignerEligible(ctx.set,vote.Signer)
     if err!=nil{return err}
-    if prefix.Root!=payload.Root||prefix.Count!=uint64(payload.Index)+1||
-       prefix.BlockNumber!=payload.SourceBlockNumber{
-        return fmt.Errorf("ILN signed checkpoint differs from immutable verified Merkle prefix")
+    if !eligible{return fmt.Errorf("inactive Direct-BLS validator vote")}
+    if err:=crypto.VerifyBLSSignatureFromBytes(
+        ctx.set.BLSPublicKeys[index],vote.Signature,vote.Payload);err!=nil{
+        return fmt.Errorf("invalid signed Direct-BLS vote: %w",err)
     }
-    if snapshot.Route.ValidatorFeeWei==nil||
-       payload.ValidatorFeeWei.Cmp(snapshot.Route.ValidatorFeeWei)!=0 {
-       return fmt.Errorf("signed fee differs from canonical current route policy")
+    hash:=crypto.Keccak256Hash(vote.Payload)
+    w.mu.Lock()
+    state:=w.ilnCheckpoints[hash]
+    if state==nil{
+        state=&ilnCheckpointState{route:route.Name,payload:payload,
+            raw:append([]byte(nil),vote.Payload...),votes:make(map[types.Address][]byte)}
+        w.ilnCheckpoints[hash]=state
     }
-    if err:=verifyILNFeeAllocation(source,snapshot,payload.AuthorizedMessageID,
-        canonical.BlockNumber);err!=nil{
-       return fmt.Errorf("ILN message lacks immutable source FeeVault eligibility: %w",err)
-    }
-    delivered,err:=getILNMessageDelivered(destination,snapshot.Route.DestinationRouter,payload.AuthorizedMessageID)
-    if err!=nil{return fmt.Errorf("ILN vote destination state unavailable: %w",err)}
-    if delivered{return fmt.Errorf("ILN message already delivered; reject historical vote")}
-
-	set, err := getILNValidatorSet(destination)
-	if err != nil {
-		return err
-	}
-	if payload.SetID != set.SetID {
-		return fmt.Errorf("stale ILN checkpoint validator set id")
-	}
-	index := indexOf(set.Validators, vote.Signer)
-	if index < 0 {
-		return fmt.Errorf("ILN checkpoint signer is not in current interchain set")
-	}
-	eligible, err := w.interchainSignerEligible(set, vote.Signer)
-	if err != nil {
-		return err
-	}
-	if !eligible {
-		return fmt.Errorf("ILN checkpoint signer is not currently eligible")
-	}
-	if err := crypto.VerifyBLSSignatureFromBytes(
-		set.BLSPublicKeys[index], vote.Signature, vote.Payload,
-	); err != nil {
-		return fmt.Errorf("invalid ILN checkpoint vote: %w", err)
-	}
-
-	hash := crypto.Keccak256Hash(vote.Payload)
-	w.mu.Lock()
-	state := w.ilnCheckpoints[hash]
-	if state == nil {
-		state = &ilnCheckpointState{
-			route: vote.Route,
-			payload: payload,
-			raw: append([]byte(nil), vote.Payload...),
-			votes: make(map[types.Address][]byte),
-		}
-		w.ilnCheckpoints[hash] = state
-	}
-	state.votes[vote.Signer] = append([]byte(nil), vote.Signature...)
-	voteCount := len(state.votes)
-	w.mu.Unlock()
-
-	threshold, err := protocol.QuorumThreshold(len(set.Validators))
-	if err != nil { return err }
-	if progressErr:=w.recordILNQuorumProgress(ilnQuorumProgress{
-		Route:route.Name,MessageID:payload.AuthorizedMessageID.String(),
-		SourceBlockNumber:payload.SourceBlockNumber,Status:"PARTIAL_QUORUM",
-		Votes:voteCount,QuorumThreshold:threshold,
-	});progressErr!=nil {
-		w.logger.Warn("ILN partial-quorum status persistence failed",
-			"route",route.Name,"err",progressErr)
-	}
-	return w.finalizeILNCheckpointAttestation(hash, route, destination, set)
+    state.votes[vote.Signer]=append([]byte(nil),vote.Signature...)
+    count:=len(state.votes)
+    w.mu.Unlock()
+    threshold,err:=protocol.QuorumThreshold(len(ctx.set.Validators))
+    if err!=nil{return err}
+    if err:=w.recordILNQuorumProgress(ilnQuorumProgress{
+        Route:route.Name,MessageID:payload.MessageID.String(),
+        SourceBlockNumber:payload.SourceBlockNumber,Status:"PARTIAL_QUORUM",
+        Votes:count,QuorumThreshold:threshold,
+    });err!=nil{w.logger.Warn("Direct-BLS quorum progress write failed","err",err)}
+    return w.finalizeILNCheckpointAttestation(hash,route,ctx.destination,ctx.set)
 }
 
 func (w *Worker) finalizeILNCheckpointAttestation(
@@ -339,7 +244,7 @@ func (w *Worker) finalizeILNCheckpointAttestation(
 	currentSet, err := getILNValidatorSet(destination)
 	if err != nil { return fmt.Errorf("ILN finalization set unavailable: %w", err) }
 	if currentSet.SetID != payload.SetID || currentSet.SetID != set.SetID { return fmt.Errorf("ILN finalization refused stale validator set") }
-	delivered, err := getILNMessageDelivered(destination, payload.DestinationRouter, payload.AuthorizedMessageID)
+	delivered, err := getILNMessageDelivered(destination, payload.DestinationRouter, payload.MessageID)
 	if err != nil { return fmt.Errorf("ILN finalization delivery check failed closed: %w", err) }
 	if delivered { return fmt.Errorf("ILN finalized delivery already recorded by destination") }
 
@@ -376,7 +281,7 @@ func (w *Worker) finalizeILNCheckpointAttestation(
 	}
 
 	attestation := ilnCheckpointAttestation{
-		Version: protocol.ILNCheckpointDomainV1,
+		Version: protocol.XITADirectMessageDomain,
 		Chain: route.Name,
 		Destination: destination.Name,
 		OriginChainID: payload.SourceChainID,
@@ -385,16 +290,15 @@ func (w *Worker) finalizeILNCheckpointAttestation(
 		RouteID: payload.RouteID.String(),
 		SetID: payload.SetID,
 		SourceBlockNumber: payload.SourceBlockNumber,
-		Registry: payload.Registry.String(),
+		Registry: payload.SourceRegistry.String(),
 		Gateway: payload.Gateway.String(),
 		SourceRouter: payload.SourceRouter.String(),
-		Mailbox: payload.Mailbox.String(),
-		MerkleTreeHook: payload.MerkleTreeHook.String(),
+		Mailbox: payload.SourceMailbox.String(),
 		DestinationRouter: payload.DestinationRouter.String(),
 		ValidatorFeeWei: payload.ValidatorFeeWei.String(),
-		AuthorizedMessageID: payload.AuthorizedMessageID.String(),
-		Root: payload.Root.String(),
-		Index: payload.Index,
+		AuthorizedMessageID: payload.MessageID.String(),
+		DestinationISM: payload.DestinationISM.String(),
+		DestinationRegistry: payload.DestinationRegistry.String(),
 		Payload: "0x" + hex.EncodeToString(raw),
 		SignerBitmap: "0x" + hex.EncodeToString(bitmap.Bytes()),
 		AggregateSignature: "0x" + hex.EncodeToString(eipSignature),
@@ -404,7 +308,7 @@ func (w *Worker) finalizeILNCheckpointAttestation(
 		return err
 	}
 	if progressErr:=w.recordILNQuorumProgress(ilnQuorumProgress{
-		Route:route.Name,MessageID:payload.AuthorizedMessageID.String(),
+		Route:route.Name,MessageID:payload.MessageID.String(),
 		SourceBlockNumber:payload.SourceBlockNumber,Status:"AVAILABLE_UNVERIFIED",
 		Votes:len(votes),QuorumThreshold:threshold,
 	});progressErr!=nil {
@@ -451,75 +355,50 @@ func (w *Worker) writeILNCheckpointAttestation(attestation ilnCheckpointAttestat
 }
 
 func (w *Worker) rebroadcastILNCheckpointVotes() {
-	now := time.Now()
-	var pending []struct {
-		hash types.Hash
-		vote ilnCheckpointVote
-	}
-
-	w.mu.Lock()
-	for hash, state := range w.ilnLocalVotes {
-		if state == nil || len(state.vote.Signature) == 0 {
-			continue
-		}
-		if now.Sub(state.lastBroadcast) < requestRebroadcastInterval {
-			continue
-		}
-		state.lastBroadcast = now
-		vote := state.vote
-		vote.Payload = append([]byte(nil), state.vote.Payload...)
-		vote.Signature = append([]byte(nil), state.vote.Signature...)
-		pending = append(pending, struct {
-			hash types.Hash
-			vote ilnCheckpointVote
-		}{hash: hash, vote: vote})
-	}
-	w.mu.Unlock()
-
-	for i := range pending {
-		var payload protocol.ILNCheckpointPayload
-		if err := payload.UnmarshalBinary(pending[i].vote.Payload); err != nil {
-			w.removeILNLocalVote(pending[i].hash)
-			continue
-		}
-		w.mu.Lock()
-		route := w.routes[pending[i].vote.Route]
-		w.mu.Unlock()
-		if route == nil {
-			w.removeILNLocalVote(pending[i].hash)
-			continue
-		}
-		source := w.destinations[route.SourceNetwork]
-		destination := w.destinations[route.Destination]
-		if source == nil || destination == nil {
-			continue
-		}
-		set, err := getILNValidatorSet(destination)
-		if err != nil {
-			continue
-		}
-		// On-chain delivery allows reclaiming local vote memory and disk.
-        // A failed destination RPC is never grounds for deletion.
-        if delivered,deliveryErr:=getILNMessageDelivered(destination,payload.DestinationRouter,payload.AuthorizedMessageID);deliveryErr==nil&&delivered {
-          w.removeILNLocalVote(pending[i].hash)
-          continue
+    now:=time.Now()
+    var pending []ilnCheckpointVote
+    w.mu.Lock()
+    for _,state:=range w.ilnLocalVotes {
+        if state==nil||len(state.vote.Signature)==0||
+           now.Sub(state.lastBroadcast)<requestRebroadcastInterval{continue}
+        state.lastBroadcast=now
+        v:=state.vote
+        v.Payload=append([]byte(nil),state.vote.Payload...)
+        v.Signature=append([]byte(nil),state.vote.Signature...)
+        pending=append(pending,v)
+    }
+    w.mu.Unlock()
+    for _,vote:=range pending {
+        hash:=crypto.Keccak256Hash(vote.Payload)
+        var payload protocol.XITADirectMessage
+        if payload.UnmarshalBinary(vote.Payload)!=nil{
+            w.removeILNLocalVote(hash)
+            continue
         }
-        // Append-only Hook growth does not invalidate an already signed
-        // immutable message prefix. Only destination-set rotation does.
-        needsRefresh:=set.SetID!=payload.SetID
-        if needsRefresh {
-            w.removeILNLocalVote(pending[i].hash)
-            if err:=w.signVerifiedILNReplicaMessage(route,payload.AuthorizedMessageID);err!=nil {
-                w.logger.Debug("ILN local vote awaits fresh confirmed root/set",
-                    "route",route.Name,"message",payload.AuthorizedMessageID,"err",err)
+        w.mu.Lock();route:=w.routes[vote.Route];w.mu.Unlock()
+        if route==nil{w.removeILNLocalVote(hash);continue}
+        dest:=w.destinations[route.Destination]
+        if dest==nil{continue}
+        set,err:=getILNValidatorSet(dest)
+        if err!=nil{continue}
+        delivered,err:=getILNMessageDelivered(dest,payload.DestinationRouter,payload.MessageID)
+        if err!=nil{continue}
+        if delivered{
+            w.removeILNLocalVote(hash)
+            continue
+        }
+        if set.SetID!=payload.SetID{
+            w.removeILNLocalVote(hash)
+            if err:=w.signDirectILNMessage(route,payload.MessageID,payload.SourceBlockNumber);err!=nil{
+                w.logger.Debug("Direct-BLS message awaits current validator set",
+                  "route",route.Name,"err",err)
             }
             continue
         }
-
-        // Re-accept the local vote after restart so it contributes to this
-		// process's in-memory aggregate state before rebroadcast.
-		_ = w.acceptILNCheckpointVote(pending[i].vote)
-		_ = w.publish(wireEnvelope{Type: "iln_checkpoint_vote", ILNCheckpointVote: &pending[i].vote})
-	}
+        if err:=w.acceptILNCheckpointVote(vote);err!=nil{
+            w.logger.Debug("Direct-BLS vote cannot yet be reverified","route",route.Name,"err",err)
+            continue
+        }
+        _=w.publish(wireEnvelope{Type:"iln_checkpoint_vote",ILNCheckpointVote:&vote})
+    }
 }
-
