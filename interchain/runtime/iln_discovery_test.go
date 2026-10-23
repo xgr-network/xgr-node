@@ -2,6 +2,7 @@ package runtime
 
 import (
  "fmt"
+ "math/big"
  "testing"
  "os"
  "path/filepath"
@@ -169,4 +170,45 @@ func TestILNDiscoveryRecoversPersistedL1HeightOnL2(t *testing.T) {
  require.NoError(t,err)
  require.True(t,exists)
  require.Equal(t,uint64(1000),cursor)
+}
+
+func TestILNHintDiscoveryRequiresCanonicalRegistryProof(t *testing.T) {
+ routeID:=types.StringToHash("0x"+fmt.Sprintf("%064x",98765))
+ gateway:=types.StringToAddress("0x1111111111111111111111111111111111111111")
+ registry:=types.StringToAddress("0x5555555555555555555555555555555555555555")
+ source:=&evm.Destination{Name:"rollup",ChainID:42161,Domain:42161,ILNRegistryAddress:registry.String()}
+ dst:=&evm.Destination{Name:"xgr",ChainID:1643,Domain:1643}
+ w:=&Worker{dataDir:t.TempDir(),destinations:map[string]*evm.Destination{"rollup":source,"xgr":dst},routes:make(map[string]*evm.CheckpointRoute)}
+ name:=fmt.Sprintf("iln_42161_1643_%s",routeID.String()[2:])
+ hintDir:=filepath.Join(w.ilnDir(),"route-hints")
+ require.NoError(t,os.MkdirAll(hintDir,0o770))
+ require.NoError(t,os.WriteFile(filepath.Join(hintDir,name+".json"),[]byte("{}"),0o660))
+ oldHead,oldRoute:=getConfirmedILNHead,getILNRouteAtBlock
+ defer func(){getConfirmedILNHead=oldHead;getILNRouteAtBlock=oldRoute}()
+ getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 517578687,nil}
+ approved:=false
+ getILNRouteAtBlock=func(_ *evm.Destination,d uint32,id types.Hash,head uint64)(*evm.ILNRouteSnapshot,error){
+  require.Equal(t,uint32(1643),d)
+  require.Equal(t,routeID,id)
+  require.Equal(t,uint64(517578687),head)
+  if !approved{return nil,fmt.Errorf("source route is not canonical")}
+  return &evm.ILNRouteSnapshot{Registry:registry,BlockNumber:head,Route:protocol.ILNRoute{
+   Key:protocol.ILNRouteKey{SourceChainID:42161,SourceDomain:42161,DestinationDomain:1643,RouteID:routeID},
+   Gateway:gateway,SourceRouter:types.StringToAddress("0x2222222222222222222222222222222222222222"),
+   Mailbox:types.StringToAddress("0x3333333333333333333333333333333333333333"),
+   MerkleTreeHook:types.StringToAddress("0x4444444444444444444444444444444444444444"),
+   DestinationRouter:types.StringToAddress("0x6666666666666666666666666666666666666666"),
+   ValidatorFeeWei:big.NewInt(1),Enabled:true,
+  }},nil
+ }
+ w.discoverILNHintedRoutes()
+ require.Empty(t,w.routes)
+ _,err:=os.Stat(filepath.Join(w.ilnDir(),"registered-routes",name+".route"))
+ require.True(t,os.IsNotExist(err))
+ approved=true
+ w.discoverILNHintedRoutes()
+ require.Contains(t,w.routes,name)
+ require.FileExists(t,filepath.Join(w.ilnDir(),"registered-routes",name+".route"))
+ _,err=os.Stat(filepath.Join(hintDir,name+".json"))
+ require.True(t,os.IsNotExist(err))
 }
