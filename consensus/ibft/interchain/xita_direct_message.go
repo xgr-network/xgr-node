@@ -69,6 +69,34 @@ func (a XITADirectMessage) MarshalBinary() ([]byte,error) {
     return out.Bytes(),nil
 }
 
+// UnmarshalBinary must be unambiguous: reject any extra, omitted or
+// noncanonical data before an incoming peer vote is considered.
+func (a *XITADirectMessage) UnmarshalBinary(raw []byte) error {
+    const size=8+4+4+32+8+8+5*20+32+32+20+20
+    if a==nil || len(raw)!=len(XITADirectMessageDomain)+size ||
+        string(raw[:len(XITADirectMessageDomain)])!=XITADirectMessageDomain {
+        return fmt.Errorf("invalid direct BLS payload length or domain")
+    }
+    o:=len(XITADirectMessageDomain)
+    a.SourceChainID=binary.BigEndian.Uint64(raw[o:o+8]);o+=8
+    a.SourceDomain=binary.BigEndian.Uint32(raw[o:o+4]);o+=4
+    a.DestinationDomain=binary.BigEndian.Uint32(raw[o:o+4]);o+=4
+    a.RouteID=types.BytesToHash(raw[o:o+32]);o+=32
+    a.SetID=binary.BigEndian.Uint64(raw[o:o+8]);o+=8
+    a.SourceBlockNumber=binary.BigEndian.Uint64(raw[o:o+8]);o+=8
+    a.SourceRegistry=types.BytesToAddress(raw[o:o+20]);o+=20
+    a.Gateway=types.BytesToAddress(raw[o:o+20]);o+=20
+    a.SourceRouter=types.BytesToAddress(raw[o:o+20]);o+=20
+    a.SourceMailbox=types.BytesToAddress(raw[o:o+20]);o+=20
+    a.DestinationRouter=types.BytesToAddress(raw[o:o+20]);o+=20
+    a.ValidatorFeeWei=new(big.Int).SetBytes(raw[o:o+32]);o+=32
+    a.MessageID=types.BytesToHash(raw[o:o+32]);o+=32
+    a.DestinationISM=types.BytesToAddress(raw[o:o+20]);o+=20
+    a.DestinationRegistry=types.BytesToAddress(raw[o:o+20])
+    _,err:=a.MarshalBinary()
+    return err
+}
+
 func (a XITADirectMessage) Hash() (types.Hash,error) {
     b,err:=a.MarshalBinary()
     if err!=nil{return types.ZeroHash,err}
