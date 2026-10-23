@@ -160,8 +160,8 @@ func TestILNDiscoveryRecoversPersistedL1HeightOnL2(t *testing.T) {
  calls:=0
  getConfirmedILNRouteAdds=func(_ *evm.Destination,from,to uint64)([]evm.ILNRouteAdded,error){
   calls++
-  require.Equal(t,uint64(1),from,"cross-domain cursor must not be trusted")
-  require.Equal(t,uint64(1000),to)
+  require.Equal(t,uint64(517577688),from,"cross-domain cursor must not be trusted")
+  require.Equal(t,uint64(517578687),to)
   return nil,nil
  }
  require.NoError(t,w.discoverILNRoutesFromSource(source))
@@ -169,7 +169,7 @@ func TestILNDiscoveryRecoversPersistedL1HeightOnL2(t *testing.T) {
  cursor,exists,err:=w.readILNCursor("_discovery_rollup")
  require.NoError(t,err)
  require.True(t,exists)
- require.Equal(t,uint64(1000),cursor)
+ require.Equal(t,uint64(517578687),cursor)
 }
 
 func TestILNHintDiscoveryRequiresCanonicalRegistryProof(t *testing.T) {
@@ -211,4 +211,25 @@ func TestILNHintDiscoveryRequiresCanonicalRegistryProof(t *testing.T) {
  require.FileExists(t,filepath.Join(w.ilnDir(),"registered-routes",name+".route"))
  _,err=os.Stat(filepath.Join(hintDir,name+".json"))
  require.True(t,os.IsNotExist(err))
+}
+
+func TestILNRPCDiscoveryCursorMigrationRejectsNumericallyPlausibleL1Height(t *testing.T) {
+ source:=&evm.Destination{Name:"arbitrum",ChainID:42161,Domain:42161,ILNRegistryAddress:"0x5555555555555555555555555555555555555555"}
+ w:=&Worker{dataDir:t.TempDir(),destinations:map[string]*evm.Destination{"arbitrum":source},routes:make(map[string]*evm.CheckpointRoute)}
+ oldHead,oldAdds:=getConfirmedILNHead,getConfirmedILNRouteAdds
+ defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds}()
+ getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 517578687,nil}
+ require.NoError(t,w.ensureILNRouteCatalogVersion(source))
+ require.NoError(t,w.writeILNCursor("_discovery_arbitrum",24000000))
+ scans:=0
+ getConfirmedILNRouteAdds=func(_ *evm.Destination,from,to uint64)([]evm.ILNRouteAdded,error){
+  scans++
+  require.Equal(t,uint64(517577688),from)
+  require.Equal(t,uint64(517578687),to)
+  return nil,nil
+ }
+ require.NoError(t,w.discoverILNRoutesFromSource(source))
+ require.Equal(t,1,scans)
+ require.NoError(t,w.discoverILNRoutesFromSource(source))
+ require.Equal(t,1,scans,"migrated cursor must not repeatedly rescan")
 }
