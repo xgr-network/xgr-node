@@ -1,6 +1,7 @@
 package runtime
 
 import (
+    "encoding/json"
 	"math/big"
     "fmt"
 	"os"
@@ -40,6 +41,14 @@ func installILNCheckpointTestReplica(t *testing.T,w *Worker,hook types.Address,m
     replica:=evm.ILNReplica{ChainID:8453,Hook:hook,Root:root,
         CheckpointBlock:block,Leaves:[]types.Hash{message}}
     require.NoError(t,evm.StoreVerifiedILNReplica(w.ilnReplicaPath(c),replica,c))
+    oldHead:=getConfirmedILNHead
+    t.Cleanup(func(){getConfirmedILNHead=oldHead})
+    getConfirmedILNHead=func(*evm.Destination)(uint64,error){return block+32,nil}
+    state:=ilnPrefixFinality{ChainID:c.ChainID,Hook:c.Hook,Confirmed:&ilnObservedPrefix{Root:root,Count:1,SeenAt:block-1}}
+    raw,err:=json.Marshal(state);require.NoError(t,err)
+    path:=filepath.Join(w.ilnDir(),"observations","8453",hook.String()+".json")
+    require.NoError(t,os.MkdirAll(filepath.Dir(path),0o770))
+    require.NoError(t,os.WriteFile(path,raw,0o660))
 }
 func mockConfirmedILNFeeAllocation(t *testing.T,expected types.Hash){
     t.Helper()
@@ -133,7 +142,7 @@ func TestAcceptILNCheckpointVoteRejectsUnauthorizedMessage(t *testing.T) {
 
 	payload := protocol.ILNCheckpointPayload{
 		SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643, RouteID: testCheckpointRouteID,
-		SetID: 7, SourceBlockNumber: 100, Registry: registry,
+		SetID: 7, SourceBlockNumber: 1, Registry: registry,
 		Gateway: gateway, SourceRouter: sourceRouter, Mailbox: mailbox,
 		MerkleTreeHook: hook, DestinationRouter: destinationRouter,
 		ValidatorFeeWei: big.NewInt(10), AuthorizedMessageID: wrongMessage,
@@ -227,7 +236,7 @@ func TestAcceptILNCheckpointVoteCreatesMessageSpecificQuorum(t *testing.T) {
 
 	payload := protocol.ILNCheckpointPayload{
 		SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643, RouteID: testCheckpointRouteID,
-		SetID: 7, SourceBlockNumber: 100, Registry: registry,
+		SetID: 7, SourceBlockNumber: 1, Registry: registry,
 		Gateway: gateway, SourceRouter: sourceRouter, Mailbox: mailbox,
 		MerkleTreeHook: hook, DestinationRouter: destinationRouter,
 		ValidatorFeeWei: big.NewInt(10), AuthorizedMessageID: messageID,
@@ -338,7 +347,7 @@ func TestILNCheckpointRequiresTwoIndependentVotesFromThree(t *testing.T) {
 
 	payload := protocol.ILNCheckpointPayload{
 		SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643, RouteID: testCheckpointRouteID,
-		SetID: 7, SourceBlockNumber: 100, Registry: registry,
+		SetID: 7, SourceBlockNumber: 1, Registry: registry,
 		Gateway: gateway, SourceRouter: sourceRouter, Mailbox: mailbox,
 		MerkleTreeHook: hook, DestinationRouter: destinationRouter,
 		ValidatorFeeWei: big.NewInt(10), AuthorizedMessageID: messageID,
@@ -409,7 +418,7 @@ func TestAcceptILNCheckpointVoteRejectsAlreadyDelivered(t *testing.T) {
  }
  payload:=protocol.ILNCheckpointPayload{
  SourceChainID:8453,SourceDomain:8453,DestinationDomain:1643,RouteID:testCheckpointRouteID,
- SetID:7,SourceBlockNumber:100,Registry:registry,Gateway:gateway,SourceRouter:sourceRouter,
+ SetID:7,SourceBlockNumber:1,Registry:registry,Gateway:gateway,SourceRouter:sourceRouter,
  Mailbox:mailbox,MerkleTreeHook:hook,DestinationRouter:destinationRouter,
  ValidatorFeeWei:big.NewInt(10),AuthorizedMessageID:messageID,Root:ilnTestCanonicalRoot(messageID),Index:0,
  }
@@ -509,7 +518,7 @@ func TestAcceptILNCheckpointVoteAllowsFeeUpdatedLaterInSameBlock(t *testing.T) {
 
 	payload := protocol.ILNCheckpointPayload{
 		SourceChainID: 8453, SourceDomain: 8453, DestinationDomain: 1643, RouteID: testCheckpointRouteID,
-		SetID: 7, SourceBlockNumber: 100, Registry: registry,
+		SetID: 7, SourceBlockNumber: 1, Registry: registry,
 		Gateway: gateway, SourceRouter: sourceRouter, Mailbox: mailbox,
 		MerkleTreeHook: hook, DestinationRouter: destinationRouter,
 		ValidatorFeeWei: big.NewInt(10), AuthorizedMessageID: messageID,

@@ -44,10 +44,9 @@ func VerifyConfirmedILNFeeAllocation(
     if err != nil { return err }
     confirmed, err := confirmedILNHead(client, source)
     if err != nil { return err }
-    if checkpointBlock > confirmed || checkpointBlock > uint64(1<<63-1) {
-        return fmt.Errorf("ILN allocation checkpoint is not source confirmed")
+    if checkpointBlock > uint64(1<<63-1) || (checkpointBlock>confirmed && checkpointBlock-confirmed>source.Confirmations) {
+        return fmt.Errorf("ILN allocation source observation exceeds current head")
     }
-    block := ethgo.BlockNumber(checkpointBlock)
 
     // These addresses are immutable in the verified source contracts; reading
     // their most recent value does not require historical RPC state.
@@ -81,7 +80,7 @@ func VerifyConfirmedILNFeeAllocation(
     data := make([]byte, 4+32)
     copy(data[:4],selector[:4])
     copy(data[4:],messageID.Bytes())
-    allocated, err := callILNView(client, vault, data, block)
+    allocated, err := callILNView(client, vault, data, ethgo.Latest)
     if err != nil || len(allocated) != 32 {
         return fmt.Errorf("ILN allocatedOperation at confirmed checkpoint unavailable: %v", err)
     }
@@ -90,7 +89,7 @@ func VerifyConfirmedILNFeeAllocation(
     }
     selector = crypto.Keccak256Hash([]byte("allocatedSetId(bytes32)"))
     copy(data[:4],selector[:4])
-    set, err := callILNView(client, vault, data, block)
+    set, err := callILNView(client, vault, data, ethgo.Latest)
     if err != nil || len(set) != 32 {
         return fmt.Errorf("ILN allocated validator set at checkpoint unavailable: %v", err)
     }

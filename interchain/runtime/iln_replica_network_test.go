@@ -156,3 +156,23 @@ func TestILNReplicaThreeAuthenticatedLibp2pValidatorsE2E(t *testing.T) {
     _,err:=os.Stat(filepath.Join(client.ilnDir(),"replicas","8453",hook.String()+".json"))
     require.NoError(t,err,"honest peer should complete an authenticated cold join despite poisoned replica peer")
 }
+
+func TestILNContentIdentityIndependentOfRPCBlockEpoch(t *testing.T) {
+    hook:=types.StringToAddress("0x1111111111111111111111111111111111111111")
+    root:=crypto.Keccak256Hash([]byte("independently read Hook root"))
+    a:=evmInterchain.ILNReplicaCheckpoint{
+        ChainID:42161,Hook:hook,Root:root,Count:768,BlockNumber:128,
+    }
+    b:=a
+    b.BlockNumber=192
+    require.True(t,sameILNReplicaContent(a,b),
+        "different confirmed RPC heads must not lose an identical Merkle content")
+    b.ChainID=8453
+    require.False(t,sameILNReplicaContent(a,b))
+    b=a;b.Count++
+    require.False(t,sameILNReplicaContent(a,b))
+    b=a;b.Root=crypto.Keccak256Hash([]byte("poisoned root"))
+    require.False(t,sameILNReplicaContent(a,b))
+    b=a;b.Hook=types.StringToAddress("0x2222222222222222222222222222222222222222")
+    require.False(t,sameILNReplicaContent(a,b))
+}
