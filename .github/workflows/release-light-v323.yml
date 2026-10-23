@@ -53,7 +53,7 @@ jobs:
       - name: Require v3.2.3 regressions and scoped unit tests
         run: |
           set -euo pipefail
-          grep -REq '^func TestILNHookAllowsAdvancingHeadButRejectsChangedRoot' interchain/evm || {
+          grep -REq '^func TestV322' interchain/evm interchain/runtime jsonrpc || {
             echo "Missing explicit v3.2.3 ILN regressions: release refused" >&2
             exit 1
           }
@@ -69,96 +69,8 @@ jobs:
       - name: Source-to-destination ILN route E2E
         run: |
           set -euo pipefail
-          go test -count=1 ./interchain/evm -run '^TestILNHookAllowsAdvancingHeadButRejectsChangedRoot
-
-      - name: Build reproducibly attributed official v3.2.3 binary
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          COMMIT="$(git rev-parse --short HEAD)"
-          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          PKG=github.com/xgr-network/xgrchain/versioning
-          VERSION=v3.2.3
-          go build -trimpath -o dist/xgrchain-v3.2.3-linux-amd64 \
-            -ldflags "-X ${PKG}.Version=${VERSION} -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=XGR3.0 -X ${PKG}.BuildTime=${TIME}" .
-          chmod 755 dist/xgrchain-v3.2.3-linux-amd64
-          ./dist/xgrchain-v3.2.3-linux-amd64 version
-          printf '%s\n' 'v3.2.3' > dist/version.txt
-          (cd dist && sha256sum xgrchain-v3.2.3-linux-amd64 version.txt > sha256sums.txt)
-          (cd dist && sha256sum -c sha256sums.txt)
-          test -s dist/xgrchain-v3.2.3-linux-amd64
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xgr-v3.2.3-light-linux-amd64
-          path: dist/
-          retention-days: 30
-
-      - name: Publish immutable signed-off light release artifact
-        uses: ncipollo/release-action@v1
-        with:
-          tag: v3.2.3
-          name: v3.2.3
-          commit: ${{ github.sha }}
-          makeLatest: true
-          allowUpdates: false
-          generateReleaseNotes: false
-          body: |
-            XGR-Node v3.2.3 ILN interchain light release.
-            No changes to IBFT consensus, state transition, BLS threshold,
-            or deployed contracts are permitted in this release scope.
-            Focused ILN, regression and three-validator tests passed.
-            The full EEST / ForkGate suites were NOT run.
-            A release tag is not deployment: use backups and a rolling,
-            one-validator-at-a-time deployment, verifying XGR consensus,
-            ILN replicas and 2/3 quorum after each node.
-          artifacts: 'dist/*'
- -count=5 -v
-          go test -count=1 ./e2e -run '^TestInterchainILNRoutesE2E
-
-      - name: Build reproducibly attributed official v3.2.3 binary
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          COMMIT="$(git rev-parse --short HEAD)"
-          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          PKG=github.com/xgr-network/xgrchain/versioning
-          VERSION=v3.2.3
-          go build -trimpath -o dist/xgrchain-v3.2.3-linux-amd64 \
-            -ldflags "-X ${PKG}.Version=${VERSION} -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=XGR3.0 -X ${PKG}.BuildTime=${TIME}" .
-          chmod 755 dist/xgrchain-v3.2.3-linux-amd64
-          ./dist/xgrchain-v3.2.3-linux-amd64 version
-          printf '%s\n' 'v3.2.3' > dist/version.txt
-          (cd dist && sha256sum xgrchain-v3.2.3-linux-amd64 version.txt > sha256sums.txt)
-          (cd dist && sha256sum -c sha256sums.txt)
-          test -s dist/xgrchain-v3.2.3-linux-amd64
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xgr-v3.2.3-light-linux-amd64
-          path: dist/
-          retention-days: 30
-
-      - name: Publish immutable signed-off light release artifact
-        uses: ncipollo/release-action@v1
-        with:
-          tag: v3.2.3
-          name: v3.2.3
-          commit: ${{ github.sha }}
-          makeLatest: true
-          allowUpdates: false
-          generateReleaseNotes: false
-          body: |
-            XGR-Node v3.2.3 ILN interchain light release.
-            No changes to IBFT consensus, state transition, BLS threshold,
-            or deployed contracts are permitted in this release scope.
-            Focused ILN, regression and three-validator tests passed.
-            The full EEST / ForkGate suites were NOT run.
-            A release tag is not deployment: use backups and a rolling,
-            one-validator-at-a-time deployment, verifying XGR consensus,
-            ILN replicas and 2/3 quorum after each node.
-          artifacts: 'dist/*'
- -v -timeout 180s
+          go test -count=5 ./interchain/evm -run '^TestILNHookAllowsAdvancingHeadButRejectsChangedRoot$' -v
+          go test -count=1 ./e2e -run '^TestInterchainILNRoutesE2E$' -v -timeout 180s
 
       - name: Build reproducibly attributed official v3.2.3 binary
         run: |
