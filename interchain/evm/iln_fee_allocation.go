@@ -19,8 +19,8 @@ var ErrILNFeeNotAllocated = errors.New("ILN message not allocated by route FeeVa
 //
 // The source Gateway is factory/route-bound, owns one immutable route FeeVault,
 // and allocates the fee atomically with token movement and Hyperlane dispatch.
-// The caller MUST also verify that messageID occurs at the supplied index in
-// an independently reconstructed canonical source MerkleTreeHook root.
+// The caller MUST also verify the original successful Gateway operation
+// and same-transaction canonical Mailbox Dispatch before BLS signing.
 //
 // No historical fee amount is inferred: the V315 registry fee may change. The
 // FeeVault records the original allocated message and recipient epoch rather

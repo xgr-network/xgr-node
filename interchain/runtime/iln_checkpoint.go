@@ -64,10 +64,8 @@ type ilnCheckpointAttestation struct {
 var (
 	getConfirmedILNRoute          = evmInterchain.GetConfirmedILNRoute
 	getILNRouteAtBlock            = evmInterchain.GetILNRouteAtBlock
-	getConfirmedILNCheckpoint     = evmInterchain.GetConfirmedILNCheckpoint
 	getILNValidatorSet            = evmInterchain.GetValidatorSet
 	getConfirmedILNHead           = evmInterchain.GetConfirmedILNHead
-	getILNOperationAtBlock        = evmInterchain.GetILNOperationAtBlock
 	getILNMessageDelivered       = evmInterchain.GetILNMessageDelivered
 )
 

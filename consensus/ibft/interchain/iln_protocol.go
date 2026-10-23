@@ -15,7 +15,6 @@ const (
 	ILNFeeDomainV315     = "XITA_SOURCE_FEE_V315"
 	XITAAssetDomainV315 = "XITA_ASSET_V315"
 	XITARouteDomainV315 = "XITA_ROUTE_V315"
-	ILNCheckpointDomainV1 = "XGR_ILN_CHECKPOINT_V2"
 )
 
 // ILNRouteKey binds a deterministic asset+chain route ID to its source.
@@ -131,7 +130,7 @@ type ILNRoute struct {
 	Gateway           types.Address
 	SourceRouter      types.Address
 	Mailbox           types.Address
-	MerkleTreeHook    types.Address
+	DispatchHook    types.Address
 	DestinationRouter types.Address
 	ValidatorFeeWei   *big.Int
 	Enabled           bool
@@ -150,7 +149,7 @@ func (r ILNRoute) validateActive() error {
 	if r.Mailbox == types.ZeroAddress {
 		return fmt.Errorf("ILN mailbox must be non-zero")
 	}
-	if r.MerkleTreeHook == types.ZeroAddress {
+	if r.DispatchHook == types.ZeroAddress {
 		return fmt.Errorf("ILN merkle tree hook must be non-zero")
 	}
 	if r.DestinationRouter == types.ZeroAddress {
@@ -236,150 +235,6 @@ func (p *ILNSourceFeeProposal) UnmarshalBinary(raw []byte) error {
 }
 
 func (p ILNSourceFeeProposal) ProposalID() (types.Hash, error) {
-	raw, err := p.MarshalBinary()
-	if err != nil {
-		return types.ZeroHash, err
-	}
-	return crypto.Keccak256Hash(raw), nil
-}
-
-type ILNCheckpointPayload struct {
-	SourceChainID     uint64
-	SourceDomain      uint32
-	DestinationDomain uint32
-	RouteID           types.Hash
-	SetID             uint64
-	SourceBlockNumber uint64
-	Registry          types.Address
-	Gateway           types.Address
-	SourceRouter      types.Address
-	Mailbox           types.Address
-	MerkleTreeHook    types.Address
-	DestinationRouter types.Address
-	ValidatorFeeWei   *big.Int
-	AuthorizedMessageID types.Hash
-	Root                types.Hash
-	Index               uint32
-}
-
-func (p ILNCheckpointPayload) validate() error {
-	route := ILNRoute{
-		Key: ILNRouteKey{
-			SourceChainID:     p.SourceChainID,
-			SourceDomain:      p.SourceDomain,
-			DestinationDomain: p.DestinationDomain,
-			RouteID:           p.RouteID,
-		},
-		Gateway:           p.Gateway,
-		SourceRouter:      p.SourceRouter,
-		Mailbox:           p.Mailbox,
-		MerkleTreeHook:    p.MerkleTreeHook,
-		DestinationRouter: p.DestinationRouter,
-		ValidatorFeeWei:   p.ValidatorFeeWei,
-		Enabled:           true,
-	}
-	if err := ValidateILNRoute(route); err != nil {
-		return err
-	}
-	if p.SetID == 0 {
-		return fmt.Errorf("ILN checkpoint set id must be non-zero")
-	}
-	if p.SourceBlockNumber == 0 {
-		return fmt.Errorf("ILN checkpoint source block must be non-zero")
-	}
-	if p.Registry == types.ZeroAddress {
-		return fmt.Errorf("ILN checkpoint registry must be non-zero")
-	}
-	if p.AuthorizedMessageID == types.ZeroHash {
-		return fmt.Errorf("ILN checkpoint authorized message id must be non-zero")
-	}
-	if p.Root == types.ZeroHash {
-		return fmt.Errorf("ILN checkpoint root must be non-zero")
-	}
-	return nil
-}
-
-func (p ILNCheckpointPayload) MarshalBinary() ([]byte, error) {
-	if err := p.validate(); err != nil {
-		return nil, err
-	}
-	fee, err := marshalUint256(p.ValidatorFeeWei)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	buf.WriteString(ILNCheckpointDomainV1)
-	_ = binary.Write(&buf, binary.BigEndian, p.SourceChainID)
-	_ = binary.Write(&buf, binary.BigEndian, p.SourceDomain)
-	_ = binary.Write(&buf, binary.BigEndian, p.DestinationDomain)
-	buf.Write(p.RouteID.Bytes())
-	_ = binary.Write(&buf, binary.BigEndian, p.SetID)
-	_ = binary.Write(&buf, binary.BigEndian, p.SourceBlockNumber)
-	buf.Write(p.Registry.Bytes())
-	buf.Write(p.Gateway.Bytes())
-	buf.Write(p.SourceRouter.Bytes())
-	buf.Write(p.Mailbox.Bytes())
-	buf.Write(p.MerkleTreeHook.Bytes())
-	buf.Write(p.DestinationRouter.Bytes())
-	buf.Write(fee)
-	buf.Write(p.AuthorizedMessageID.Bytes())
-	buf.Write(p.Root.Bytes())
-	_ = binary.Write(&buf, binary.BigEndian, p.Index)
-
-	return buf.Bytes(), nil
-}
-
-func (p *ILNCheckpointPayload) UnmarshalBinary(raw []byte) error {
-	if p == nil {
-		return fmt.Errorf("ILN checkpoint payload is nil")
-	}
-	const fixedTail = 8 + 4 + 4 + types.HashLength + 8 + 8 + types.AddressLength*6 + 32 + types.HashLength*2 + 4
-	if len(raw) != len(ILNCheckpointDomainV1)+fixedTail {
-		return fmt.Errorf("invalid ILN checkpoint payload length %d", len(raw))
-	}
-	if string(raw[:len(ILNCheckpointDomainV1)]) != ILNCheckpointDomainV1 {
-		return fmt.Errorf("invalid ILN checkpoint domain")
-	}
-
-	o := len(ILNCheckpointDomainV1)
-	p.SourceChainID = binary.BigEndian.Uint64(raw[o : o+8])
-	o += 8
-	p.SourceDomain = binary.BigEndian.Uint32(raw[o : o+4])
-	o += 4
-	p.DestinationDomain = binary.BigEndian.Uint32(raw[o : o+4])
-	o += 4
-	p.RouteID = types.BytesToHash(raw[o : o+types.HashLength])
-	o += types.HashLength
-	p.SetID = binary.BigEndian.Uint64(raw[o : o+8])
-	o += 8
-	p.SourceBlockNumber = binary.BigEndian.Uint64(raw[o : o+8])
-	o += 8
-	p.Registry = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.Gateway = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.SourceRouter = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.Mailbox = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.MerkleTreeHook = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.DestinationRouter = types.BytesToAddress(raw[o : o+types.AddressLength])
-	o += types.AddressLength
-	p.ValidatorFeeWei = new(big.Int).SetBytes(raw[o : o+32])
-	o += 32
-	p.AuthorizedMessageID = types.BytesToHash(raw[o : o+types.HashLength])
-	o += types.HashLength
-	p.Root = types.BytesToHash(raw[o : o+types.HashLength])
-	o += types.HashLength
-	p.Index = binary.BigEndian.Uint32(raw[o : o+4])
-
-	_, err := p.MarshalBinary()
-	return err
-}
-
-func (p ILNCheckpointPayload) Hash() (types.Hash, error) {
 	raw, err := p.MarshalBinary()
 	if err != nil {
 		return types.ZeroHash, err

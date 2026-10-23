@@ -1,6 +1,7 @@
 package runtime
 
 import (
+    "fmt"
     "math/big"
     "testing"
     "time"
@@ -46,7 +47,7 @@ func TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs(t *testing.T)
         Gateway:gateway,
         SourceRouter:types.StringToAddress("0x7777777777777777777777777777777777777777"),
         Mailbox:types.StringToAddress("0x3333333333333333333333333333333333333333"),
-        MerkleTreeHook:types.StringToAddress("0x4444444444444444444444444444444444444444"),
+        DispatchHook:types.StringToAddress("0x4444444444444444444444444444444444444444"),
         DestinationRouter:types.StringToAddress("0x6666666666666666666666666666666666666666"),
         ValidatorFeeWei:big.NewInt(1000),Enabled:true,
     }
@@ -58,7 +59,7 @@ func TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs(t *testing.T)
     }()
     getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 128,nil}
     getILNRouteAtBlock=func(_ *evm.Destination,domain uint32,id types.Hash,at uint64)(*evm.ILNRouteSnapshot,error){
-        if at!=128||domain!=1643||id!=routeID{return nil,evm.ErrILNReplicaUnverified}
+        if at!=128||domain!=1643||id!=routeID{return nil,fmt.Errorf("unverified canonical route")}
         return &evm.ILNRouteSnapshot{
             Registry:registry,Route:canonical,BlockNumber:at,
         },nil
@@ -66,7 +67,7 @@ func TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs(t *testing.T)
     // This test disallows genesis RouteAdded event scans completely.
     getConfirmedILNRouteAdds=func(*evm.Destination,uint64,uint64)([]evm.ILNRouteAdded,error){
         t.Error("historical RouteAdded should not be needed for P2P synchronization")
-        return nil,evm.ErrILNReplicaUnverified
+        return nil,fmt.Errorf("unverified canonical route")
     }
 
     workers:=make([]*Worker,0,3)

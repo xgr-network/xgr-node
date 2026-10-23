@@ -109,7 +109,7 @@ func TestVerifyILNGatewayBindingRequiresCanonicalWarpRouter(t *testing.T) {
 			value = reportedRouter
 		case selectorHex("mailbox()"):
 			value = mailbox
-		case selectorHex("merkleTreeHook()"):
+		case selectorHex("dispatchHook()"):
 			value = hook
 		default:
 			t.Fatalf("unexpected eth_call data=%s", call.Data)
@@ -190,7 +190,7 @@ func protocolTestRoute(
 		Gateway: gateway,
 		SourceRouter: sourceRouter,
 		Mailbox: mailbox,
-		MerkleTreeHook: hook,
+		DispatchHook: hook,
 		DestinationRouter: destinationRouter,
 		ValidatorFeeWei: big.NewInt(1),
 		Enabled: true,

@@ -25,8 +25,6 @@ type Destination struct {
 	RegistryAddress           string
 	ILNRegistryAddress        string
 	ILNRegistryActivationBlock uint64
-	// Runtime-owned storage; not a route ENV setting. Empty disables cache.
-	ILNMerkleCacheDir string
 	RPCURL                    string
 	DeactivationReserveWei    *big.Int
 	Confirmations             uint64
