@@ -47,9 +47,9 @@ func (w *Worker) publishVerifiedILNRoutes() {
         last:=w.ilnRouteLastPublished[key]
         w.mu.Unlock()
         if !last.IsZero()&&time.Since(last)<90*time.Second{continue}
-        head,err:=getConfirmedILNHead(source)
+        head,err:=w.sourceILNHead(source)
         if err!=nil{continue}
-        snapshot,err:=getILNRouteAtBlock(source,dest.Domain,route.RouteID,head)
+        snapshot,err:=w.sourceILNRouteAtBlock(source,dest.Domain,route.RouteID,head)
         if err!=nil||!validILNSourceRouteNotice(source,dest.Domain,route.RouteID,snapshot){continue}
         notice:=ilnRouteNoticeWire{
             SourceNetwork:source.Name,SourceDomain:source.Domain,
@@ -110,9 +110,9 @@ func (w *Worker) acceptVerifiedILNRouteNotice(from peer.ID,notice ilnRouteNotice
     }
     w.ilnRouteLastSeen[from]=time.Now()
     w.mu.Unlock()
-    head,err:=getConfirmedILNHead(source)
+    head,err:=w.sourceILNHead(source)
     if err!=nil{return err}
-    snapshot,err:=getILNRouteAtBlock(source,notice.DestinationDomain,notice.RouteID,head)
+    snapshot,err:=w.sourceILNRouteAtBlock(source,notice.DestinationDomain,notice.RouteID,head)
     if err!=nil{return fmt.Errorf("verify announced route with source registry: %w",err)}
     if !validILNSourceRouteNotice(source,notice.DestinationDomain,notice.RouteID,snapshot)||
         notice.Gateway!=snapshot.Route.Gateway{
