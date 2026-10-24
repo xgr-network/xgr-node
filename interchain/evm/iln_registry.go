@@ -335,9 +335,8 @@ func verifyILNGatewayBinding(
 	return nil
 }
 
-// GetILNGatewayActivationBlock is the initial event-scan cursor for a canonical
-// Gateway. The Gateway stores its deployment/activation block immutably so a
-// newly started validator does not need to scan the source chain from genesis.
+// GetConfirmedILNOperations scans only bounded, confirmed source blocks
+// for fee-qualified canonical Gateway messages.
 func GetConfirmedILNOperations(
 	source *Destination,
 	gateway types.Address,
@@ -393,9 +392,7 @@ func GetConfirmedILNOperations(
 	return out, nil
 }
 
-// verifyILNDispatchInReceipt binds a fee-qualified Gateway event to the actual
-// canonical WarpRouter -> Mailbox dispatch in the SAME successful source tx.
-// An event from the wrong sender, transaction, route or message cannot pass.
+// parseILNOperationLog rejects invalid, removed or zero-fee Gateway events.
 func parseILNOperationLog(log *ethgo.Log) (ILNOperation, error) {
 	var out ILNOperation
 	if log == nil || log.Removed {
@@ -474,8 +471,7 @@ func GetILNMessageDelivered(destination *Destination, destinationRouter types.Ad
 	return raw[31] == 1, nil
 }
 
-// GetConfirmedILNCheckpoint restores the confirmed Hyperlane DispatchHook
-// contract-state path from v3.1.1. No historical Merkle log replay is required.
+// callILNAddressGetter reads immutable/current contract bindings.
 func callILNAddressGetter(client *jsonrpc.Client, address types.Address, signature string, block ethgo.BlockNumber) (types.Address, error) {
 	raw, err := callILNSignatureView(client, address, signature, block)
 	if err != nil {
