@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/hashicorp/go-hclog"
 	"github.com/stretchr/testify/require"
 
 	interchainEVM "github.com/xgr-network/xgr-node/interchain/evm"
@@ -66,16 +65,18 @@ func TestXGRGetInterchainValidatorsRequiresConfiguredDestination(t *testing.T) {
 	require.ErrorContains(t, err, "not configured")
 }
 
-func TestXGRGetInterchainValidatorsCannotBeEnabledByEnv(t *testing.T) {
- t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID","8453")
- t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN","8453")
+func TestXGRGetInterchainValidatorsCannotBeOverriddenByEnv(t *testing.T) {
+ t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID","1")
+ t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN","1")
  t.Setenv("XGR_INTERCHAIN_BASE_REGISTRY_ADDR","0x9999999999999999999999999999999999999999")
  t.Setenv("XGR_INTERCHAIN_BASE_RPC","http://127.0.0.1:9999")
+ cfg,err:=interchainEVM.Load("base")
+ require.NoError(t,err)
+ require.Equal(t,uint64(8453),cfg.ChainID)
+ require.Equal(t,uint32(8453),cfg.Domain)
+ require.Equal(t,"0x3dc4cc1912792749d320789a67c2c14b7ee4ee33",cfg.RegistryAddress)
+ require.Equal(t,"https://mainnet.base.org",cfg.RPCURL)
  ep:=newXGREndpoint(nil,t.TempDir())
- _,err:=ep.GetInterchainValidators("base")
+ _,err=ep.GetInterchainValidators("__unknown_interchain_destination__")
  require.ErrorContains(t,err,"not configured")
- d:=&Dispatcher{logger:hclog.NewNullLogger()}
- require.NoError(t,d.registerService("xgr",ep))
- _,_,rpcErr:=d.getFnHandler(Request{Method:"xgr_getInterchainValidators"})
- require.Nil(t,rpcErr)
 }
