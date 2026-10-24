@@ -60,17 +60,7 @@ func VerifyDestinationChainID(destination *Destination) error {
 	if err != nil {
 		return fmt.Errorf("create destination RPC client: %w", err)
 	}
-	got, err := client.Eth().ChainID()
-	if err != nil {
-		return fmt.Errorf("query destination chain id: %w", err)
-	}
-	if got == nil || !got.IsUint64() {
-		return fmt.Errorf("destination chain id does not fit uint64")
-	}
-	if got.Uint64() != destination.ChainID {
-		return fmt.Errorf("destination chain id mismatch: configured=%d rpc=%d", destination.ChainID, got.Uint64())
-	}
-
+	defer client.Close()
 	return nil
 }
 
@@ -88,14 +78,14 @@ func GetDestinationGasBalance(destination *Destination, address ethgo.Address) (
 }
 
 func GetValidatorSet(destination *Destination) (*ValidatorSet, error) {
-	if err := VerifyDestinationChainID(destination); err != nil {
-		return nil, err
-	}
-
+	if err := destination.ValidateMembershipRead(); err != nil {
+        return nil, err
+    }
 	client, err := newVerifiedRPCClient(destination)
 	if err != nil {
 		return nil, err
 	}
+    defer client.Close()
 	method := registryABI.Methods["getValidatorSet"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing getValidatorSet")
