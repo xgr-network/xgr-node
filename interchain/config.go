@@ -79,7 +79,8 @@ func validatePolicy(p ChainPolicy) error {
  operators:=make(map[string]struct{})
  for i,endpoint:=range p.RPCURLs{
   operator:=p.IndependentOperatorIDs[i]
-  if operator==""||operator!=strings.TrimSpace(operator)||strings.ContainsAny(operator," /\\\t\\n"){
+  words:=strings.Fields(operator)
+  if operator==""||len(words)!=1||words[0]!=operator||strings.ContainsAny(operator,"/"){
    return fmt.Errorf("invalid Interchain RPC operator identity on %s",p.Name)
   }
   operators[operator]=struct{}{}
