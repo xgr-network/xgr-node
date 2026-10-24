@@ -98,6 +98,21 @@ func newVerifiedRPCClient(d *Destination)(*jsonrpc.Client,error){
  }
  return nil,fmt.Errorf("all interchain RPC endpoints failed for %s: %w",d.Name,err)
 }
+// recordInterchainRPCReadFailure flags transport/rate-limit/method errors
+// *after* a successfully verified connection. The current operation fails
+// closed; the next read starts on the next independently verified provider.
+// No submitted transaction is ever retried by this mechanism.
+func recordInterchainRPCReadFailure(d *Destination){
+ endpoints:=rpcEndpoints(d)
+ if len(endpoints)<2{return}
+ state:=rpcState(d)
+ state.mu.Lock()
+ state.selected=(state.selected+1)%len(endpoints)
+ state.healthy=0
+ state.lastProbe=time.Now()
+ state.mu.Unlock()
+}
+
 func selectVerifiedRPCURL(d *Destination)(string,error){
  client,err:=newVerifiedRPCClient(d)
  if err!=nil{return "",err}
