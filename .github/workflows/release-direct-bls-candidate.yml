@@ -52,7 +52,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          XGRCHAIN_BINARY=./dist/xgrchain-v3.3.2-rc-linux-amd64 go test -count=1 -timeout 75s ./e2e -run TestInterchainBLSVerificationPrecompileE2E
+          XGRCHAIN_BINARY="$PWD/dist/xgrchain-v3.3.2-rc-linux-amd64" go test -count=1 -timeout 75s ./e2e -run TestInterchainBLSVerificationPrecompileE2E
       - uses: actions/upload-artifact@v4
         with:
           name: xgr-direct-bls-v3.3.2-rc-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
