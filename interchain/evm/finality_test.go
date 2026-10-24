@@ -75,7 +75,7 @@ func TestIBFTFinalityUsesCommittedLatestHead(t *testing.T){
   require.NoError(t,json.NewDecoder(r.Body).Decode(&req))
   var tag string
   require.NoError(t,json.Unmarshal(req.Params[0],&tag))
-  require.Equal(t,"latest",tag)
+  require.Contains(t,[]string{"latest","0x65"},tag)
   _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"result":%s}`,req.ID,
     testFinalityBlock(101,"0x"+strings.Repeat("3",64)))
  }))

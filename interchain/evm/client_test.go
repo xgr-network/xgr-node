@@ -32,6 +32,7 @@ func TestVerifyDestinationChainID(t *testing.T) {
 		ChainID:         8453,
 		Domain:          8453,
 		RegistryAddress: "0x1000000000000000000000000000000000000001",
+        VerifierFormat: VerifierFormatEIP2537,
 		RPCURL:          server.URL,
 	}
 	require.NoError(t, VerifyDestinationChainID(d))
@@ -48,6 +49,7 @@ func TestSubmissionValidationReserve(t *testing.T) {
 		ChainID:                   8453,
 		Domain:                    8453,
 		RegistryAddress:           "0x1000000000000000000000000000000000000001",
+        VerifierFormat: VerifierFormatEIP2537,
 		RPCURL:                    "https://base.example.invalid",
 		MembershipValiditySeconds: 300,
 		ExecutorStepDelaySeconds:  10,

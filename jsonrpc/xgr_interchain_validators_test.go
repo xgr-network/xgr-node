@@ -3,7 +3,6 @@ package jsonrpc
 import (
 	"bytes"
 	"encoding/hex"
-	"strings"
 	"testing"
 
 	"github.com/hashicorp/go-hclog"
