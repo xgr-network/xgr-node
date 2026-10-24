@@ -152,33 +152,19 @@ func GetValidatorStatusForDestination(destination *Destination, validator types.
 }
 
 func GetValidator(destination *Destination, validator types.Address) (*ValidatorDetails, error) {
-	if err := VerifyDestinationChainID(destination); err != nil {
-		return nil, err
-	}
-	client, err := newVerifiedRPCClient(destination)
-	if err != nil {
-		return nil, err
-	}
+	if err := destination.ValidateMembershipRead(); err != nil { return nil, err }
 	method := registryABI.Methods["getValidator"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing getValidator")
 	}
-	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
 	input, err := method.Inputs.Encode(map[string]interface{}{
 		"validator": ethgo.Address(validator),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode getValidator: %w", err)
 	}
-	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: append(method.ID(), input...)}, ethgo.Latest)
-	if err != nil {
-		recordInterchainRPCReadFailure(destination)
-		return nil, fmt.Errorf("call getValidator: %w", err)
-	}
-	decodedRaw, err := decodeRPCHex(raw)
-	if err != nil {
-		return nil, err
-	}
+	decodedRaw, err := DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),append(method.ID(),input...))
+    if err!=nil{return nil,fmt.Errorf("call getValidator: %w",err)}
 	decoded, err := method.Outputs.Decode(decodedRaw)
 	if err != nil {
 		return nil, fmt.Errorf("decode getValidator: %w", err)
@@ -219,27 +205,13 @@ func GetValidator(destination *Destination, validator types.Address) (*Validator
 }
 
 func MinimumDeactivationReserve(destination *Destination) (*big.Int, error) {
-	if err := VerifyDestinationChainID(destination); err != nil {
-		return nil, err
-	}
-	client, err := newVerifiedRPCClient(destination)
-	if err != nil {
-		return nil, err
-	}
+	if err := destination.ValidateMembershipRead(); err != nil { return nil, err }
 	method := registryABI.Methods["minimumDeactivationReserveWei"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing minimumDeactivationReserveWei")
 	}
-	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
-	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: method.ID()}, ethgo.Latest)
-	if err != nil {
-		recordInterchainRPCReadFailure(destination)
-		return nil, fmt.Errorf("call minimumDeactivationReserveWei: %w", err)
-	}
-	b, err := decodeRPCHex(raw)
-	if err != nil {
-		return nil, err
-	}
+	b,err:=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),method.ID())
+ if err!=nil{return nil,fmt.Errorf("call minimumDeactivationReserveWei: %w",err)}
 	decoded, err := method.Outputs.Decode(b)
 	if err != nil {
 		return nil, err
@@ -263,27 +235,13 @@ func MinimumDeactivationReserve(destination *Destination) (*big.Int, error) {
 }
 
 func MaximumExecutorReimbursement(destination *Destination) (*big.Int, error) {
-	if err := VerifyDestinationChainID(destination); err != nil {
-		return nil, err
-	}
-	client, err := newVerifiedRPCClient(destination)
-	if err != nil {
-		return nil, err
-	}
+	if err := destination.ValidateMembershipRead(); err != nil { return nil, err }
 	method := registryABI.Methods["maxExecutorReimbursementWei"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing maxExecutorReimbursementWei")
 	}
-	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
-	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: method.ID()}, ethgo.Latest)
-	if err != nil {
-		recordInterchainRPCReadFailure(destination)
-		return nil, fmt.Errorf("call maxExecutorReimbursementWei: %w", err)
-	}
-	b, err := decodeRPCHex(raw)
-	if err != nil {
-		return nil, err
-	}
+	b,err:=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),method.ID())
+ if err!=nil{return nil,fmt.Errorf("call maxExecutorReimbursementWei: %w",err)}
 	decoded, err := method.Outputs.Decode(b)
 	if err != nil {
 		return nil, err
