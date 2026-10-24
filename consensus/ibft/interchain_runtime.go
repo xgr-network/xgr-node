@@ -4,6 +4,7 @@ import (
 	"fmt"
  "math/big"
  "github.com/umbracle/ethgo"
+ "github.com/umbracle/ethgo/wallet"
 	"path/filepath"
 	"time"
 
@@ -154,6 +155,62 @@ func (s *ibftInterchainState) NativeXGRVerifyReceipt(receipt *ethgo.Receipt)erro
    entries[i].Status!=nil&&*entries[i].Status==types.ReceiptSuccess{return nil}
  }
  return fmt.Errorf("native receipt absent or reverted")
+}
+
+func (s *ibftInterchainState) NativeXGRSubmit(key ethgo.Key,to types.Address,data []byte,value *big.Int)(*ethgo.Receipt,error){
+ if key==nil||to==types.ZeroAddress||value==nil||value.Sign()<0{return nil,fmt.Errorf("invalid native transaction")}
+ head,err:=s.NativeXGRHead();if err!=nil{return nil,err}
+ h:=s.ibft.blockchain.Header()
+ if h==nil||h.Number!=head{return nil,fmt.Errorf("native XGR head changed")}
+ sim,err:=s.ibft.executor.BeginTxn(h.StateRoot,h,types.ZeroAddress)
+ if err!=nil{return nil,err}
+ sender:=types.Address(key.Address())
+ nonce:=sim.GetNonce(sender)
+ gasPrice:=new(big.Int).SetUint64(h.BaseFee)
+ if gasPrice.Sign()==0{gasPrice.SetUint64(1879048192)}
+ gasPrice.Mul(gasPrice,big.NewInt(2))
+ simulator,err:=s.ibft.executor.BeginTxn(h.StateRoot,h,types.ZeroAddress)
+ if err!=nil{return nil,err}
+ simulator.SetNonPayable(true)
+ test:=&types.Transaction{Type:types.LegacyTx,From:sender,To:&to,
+  Gas:h.GasLimit,GasPrice:big.NewInt(0),Value:new(big.Int).Set(value),Input:append([]byte(nil),data...)}
+ result,err:=simulator.Call(test)
+ if err!=nil||result==nil||result.Failed(){return nil,fmt.Errorf("native XGR contract simulation failed: %v",err)}
+ gas:=result.GasUsed*2
+ if gas<result.GasUsed||gas==0||gas>h.GasLimit{return nil,fmt.Errorf("native XGR gas limit unavailable")}
+ required:=new(big.Int).Add(new(big.Int).Mul(new(big.Int).SetUint64(gas),gasPrice),value)
+ if sim.GetBalance(sender).Cmp(required)<0{return nil,fmt.Errorf("native XGR executor balance insufficient")}
+ tx:=&ethgo.Transaction{Type:ethgo.TransactionLegacy,From:key.Address(),
+  To:(*ethgo.Address)(&to),Input:append([]byte(nil),data...),Value:new(big.Int).Set(value),
+  Gas:gas,GasPrice:gasPrice.Uint64(),Nonce:nonce,ChainID:new(big.Int).SetUint64(1643)}
+ signed,err:=wallet.NewEIP155Signer(1643).SignTx(tx,key)
+ if err!=nil{return nil,err}
+ encoded,err:=signed.MarshalRLPTo(nil)
+ if err!=nil{return nil,err}
+ local:=new(types.Transaction)
+ if err:=local.UnmarshalRLP(encoded);err!=nil{return nil,err}
+ if err:=s.ibft.txpool.AddTx(local);err!=nil{return nil,fmt.Errorf("native TxPool rejected transaction: %w",err)}
+ deadline:=time.Now().Add(2*time.Minute)
+ for time.Now().Before(deadline){
+  if !s.IsSynchronized(){return nil,fmt.Errorf("node unsynchronized after native transaction submission")}
+  blockHash,ok:=s.ibft.blockchain.ReadTxLookup(local.Hash)
+  if ok{
+   block,valid:=s.ibft.blockchain.GetBlockByHash(blockHash,true)
+   if !valid||block==nil{return nil,fmt.Errorf("native canonical receipt block missing")}
+   receipts,e:=s.ibft.blockchain.GetReceiptsByHash(blockHash)
+   if e!=nil{return nil,e}
+   for i,transaction:=range block.Transactions{
+    if transaction!=nil&&transaction.Hash==local.Hash&&i<len(receipts)&&receipts[i]!=nil&&receipts[i].Status!=nil{
+     receipt:=&ethgo.Receipt{TransactionHash:ethgo.Hash(local.Hash),
+      BlockHash:ethgo.Hash(blockHash),BlockNumber:block.Number(),Status:uint64(*receipts[i].Status)}
+     if e:=s.NativeXGRVerifyReceipt(receipt);e!=nil{return nil,e}
+     return receipt,nil
+    }
+   }
+  }
+  time.Sleep(500*time.Millisecond)
+ }
+ return nil,fmt.Errorf("native XGR receipt not committed before deadline; transaction may still be pending")
 }
 
 // startInterchainRuntime is deliberately outside every consensus-critical hook.
