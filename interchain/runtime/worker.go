@@ -108,6 +108,7 @@ type Worker struct {
 	ilnRouteHealthByName map[string]ilnRouteHealth
 	// Accessed only by the interchain worker loop, never from gossip handlers.
 	ilnLastCheckpointPoll time.Time
+    ilnDirectScanRetries map[string]directILNScanRetry
 	ilnLastDiscoveryPoll  time.Time
 	ilnLastMembershipPoll time.Time
 	ilnLastRetryPoll      time.Time
@@ -412,7 +413,10 @@ func (w *Worker) tick() {
         // The only background message source is the confirmed, fee-qualified
         // Gateway operation; no Merkle state or quorum-request trigger.
         for _,route:=range activeRoutes{
-            if err:=w.scanDirectILNOperations(route);err!=nil{
+            if !w.directILNScanMayRun(route,now){continue}
+            err:=w.scanDirectILNOperations(route)
+            w.directILNScanFinished(route,time.Now(),err)
+            if err!=nil{
                 w.recordILNDirectScanFailure(route,err)
                 w.logger.Debug("Direct BLS source operation scan pending",
                     "route",route.Name,"err",err)
