@@ -8,7 +8,6 @@ import (
 
 	"github.com/umbracle/ethgo"
 	"github.com/umbracle/ethgo/abi"
-	"github.com/umbracle/ethgo/jsonrpc"
 
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
 	"github.com/xgr-network/xgr-node/crypto"
