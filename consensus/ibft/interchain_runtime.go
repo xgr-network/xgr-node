@@ -189,7 +189,9 @@ func (s *ibftInterchainState) NativeXGRSubmit(key ethgo.Key,to types.Address,dat
  if err!=nil{return nil,err}
  local:=new(types.Transaction)
  if err:=local.UnmarshalRLP(encoded);err!=nil{return nil,err}
- if err:=s.ibft.txpool.AddTx(local);err!=nil{return nil,fmt.Errorf("native TxPool rejected transaction: %w",err)}
+ submitter,ok:=s.ibft.txpool.(interface{AddTx(*types.Transaction)error})
+ if !ok{return nil,fmt.Errorf("native XGR TxPool submission interface unavailable")}
+ if err:=submitter.AddTx(local);err!=nil{return nil,fmt.Errorf("native TxPool rejected transaction: %w",err)}
  deadline:=time.Now().Add(2*time.Minute)
  for time.Now().Before(deadline){
   if !s.IsSynchronized(){return nil,fmt.Errorf("node unsynchronized after native transaction submission")}
