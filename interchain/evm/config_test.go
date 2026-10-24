@@ -32,5 +32,5 @@ func TestInterchainEnvironmentCannotOverrideProtocol(t *testing.T){
  require.Equal(t,"https://mainnet.base.org",got.RPCURL)
  all,err:=LoadAll()
  require.NoError(t,err)
- require.Empty(t,all)
+ require.Len(t,all,3)
 }
