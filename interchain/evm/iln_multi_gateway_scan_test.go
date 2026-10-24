@@ -55,3 +55,26 @@ func TestMultiGatewayRejectsUnsafeWindowWithoutRPC(t *testing.T){
  _,err:=confirmedILNMultiGatewayLogsOnClient(nil,nil,100,101,100)
  require.Error(t,err)
 }
+
+type nativeMultiGatewayCountingReader struct{reads int}
+func (r *nativeMultiGatewayCountingReader) NativeXGRHead()(uint64,error){return 101,nil}
+func (r *nativeMultiGatewayCountingReader) NativeXGRBlock(number uint64)(*NativeXGRBlock,error){
+ r.reads++
+ return &NativeXGRBlock{Number:number,Hash:types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")},nil
+}
+func TestNativeXGRMultiGatewayUsesOneBlockReadForThreeGateways(t *testing.T){
+ reader:=&nativeMultiGatewayCountingReader{}
+ src:=&Destination{Name:"xgr",ChainID:1643,Domain:1643}
+ gateways:=[]types.Address{
+  types.StringToAddress("0x1111111111111111111111111111111111111111"),
+  types.StringToAddress("0x2222222222222222222222222222222222222222"),
+  types.StringToAddress("0x3333333333333333333333333333333333333333"),
+ }
+ head,from,to,events,err:=ScanNativeXGRMultiGatewayWindow(reader,src,gateways,100,256)
+ require.NoError(t,err)
+ require.Equal(t,uint64(101),head)
+ require.Equal(t,uint64(101),from)
+ require.Equal(t,uint64(101),to)
+ require.Empty(t,events)
+ require.Equal(t,1,reader.reads,"Gateway route count must not affect native receipt reads")
+}
