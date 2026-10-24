@@ -329,14 +329,18 @@ func GetConfirmedILNOperations(
 	fromBlock uint64,
 	toBlock uint64,
 ) ([]ILNOperation, error) {
-	client, err := ilnSourceClient(source)
-	if err != nil {
-		return nil, err
-	}
-	confirmed, err := confirmedILNHead(client, source)
-	if err != nil {
-		return nil, err
-	}
+	client, confirmed, err := newVerifiedRPCClientWithHead(source)
+	if err != nil { return nil, err }
+	defer client.Close()
+	return confirmedILNOperationsOnClient(client,source,gateway,routeID,destinationDomain,fromBlock,toBlock,confirmed)
+}
+
+// confirmedILNOperationsOnClient keeps a bounded log scan on the exact
+// verified provider, sharing its already-checked finality boundary.
+func confirmedILNOperationsOnClient(
+    client *jsonrpc.Client, source *Destination, gateway types.Address,
+    routeID types.Hash, destinationDomain uint32, fromBlock,toBlock,confirmed uint64,
+) ([]ILNOperation,error) {
 	if fromBlock == 0 || toBlock < fromBlock || toBlock > confirmed {
 		return nil, fmt.Errorf("invalid or unconfirmed ILN operation block range")
 	}
