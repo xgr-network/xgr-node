@@ -364,6 +364,7 @@ func GetConfirmedILNOperations(
 	filter.SetToUint64(toBlock)
 	logs, err := client.Eth().GetLogs(filter)
 	if err != nil {
+		recordInterchainRPCReadFailure(source)
 		return nil, fmt.Errorf("query ILN gateway operations: %w", err)
 	}
 
@@ -440,6 +441,7 @@ func GetILNMessageDelivered(destination *Destination, destinationRouter types.Ad
 	}
 	mailbox, err := callILNAddressGetter(client, destinationRouter, "mailbox()", ethgo.Latest)
 	if err != nil {
+		recordInterchainRPCReadFailure(destination)
 		return false, fmt.Errorf("resolve destination Mailbox: %w", err)
 	}
 	selector := crypto.Keccak256([]byte("delivered(bytes32)"))
