@@ -36,6 +36,9 @@ type ChainPolicy struct {
  Finality FinalityRule
  VerifierFormat string
  RPCURLs []string
+ // IndependentOperatorIDs aligns with RPCURLs. Multiple URLs operated by the
+ // same entity count as ONE witness (transport redundancy only).
+ IndependentOperatorIDs []string
  Registry string
  SourceRegistry string
  SourceActivationBlock uint64
@@ -46,19 +49,22 @@ var compiledChains = []ChainPolicy{
  // NEVER Solidity's L1-origin block.number on an L2.
  // xgrchain receipts: f0156bb3... (ValidatorRegistry), 369ce335... (SourceRegistry).
  {Name:"xgr",ChainID:1643,Domain:1643,Finality:FinalityIBFT,
-  VerifierFormat:"compressed",RPCURLs:[]string{"https://rpc.xgr.network"},
+  VerifierFormat:"compressed",RPCURLs:[]string{"https://rpc.xgr.network","https://rpc1.xgr.network","https://rpc2.xgr.network","https://1643.rpc.thirdweb.com"},
+  IndependentOperatorIDs:[]string{"xgr-network","xgr-network","xgr-network","thirdweb"},
   Registry:"0x9b6b92ef1745611f402341965f7fc649cbe0da8c",
   SourceRegistry:"0xea887a7f2f519f291732aaadf578baf3ff374df6",
   SourceActivationBlock:12053797},
  // base receipts: c8b2547d... (ValidatorRegistry), da05fb98... (SourceRegistry).
  {Name:"base",ChainID:8453,Domain:8453,Finality:FinalitySafe,
-  VerifierFormat:"eip2537",RPCURLs:[]string{"https://mainnet.base.org","https://gateway.tenderly.co/public/base"},
+  VerifierFormat:"eip2537",RPCURLs:[]string{"https://mainnet.base.org","https://gateway.tenderly.co/public/base","https://base-rpc.publicnode.com","https://base.drpc.org"},
+  IndependentOperatorIDs:[]string{"base-official","tenderly","publicnode","drpc"},
   Registry:"0x3dc4cc1912792749d320789a67c2c14b7ee4ee33",
   SourceRegistry:"0xf243093350b1b4ef8a9e3b0c13be3495297461b0",
   SourceActivationBlock:53026521},
  // arbitrum receipts: 879889c2... (ValidatorRegistry), 278fb105... (SourceRegistry).
  {Name:"arbitrum",ChainID:42161,Domain:42161,Finality:FinalitySafe,
-  VerifierFormat:"eip2537",RPCURLs:[]string{"https://arb1.arbitrum.io/rpc","https://arbitrum-one-rpc.publicnode.com"},
+  VerifierFormat:"eip2537",RPCURLs:[]string{"https://arb1.arbitrum.io/rpc","https://arbitrum-one-rpc.publicnode.com","https://arbitrum.gateway.tenderly.co","https://arbitrum.drpc.org"},
+  IndependentOperatorIDs:[]string{"arbitrum-official","publicnode","tenderly","drpc"},
   Registry:"0x1a6610cc7dd0d0f42e22c3608e025d891065814c",
   SourceRegistry:"0x51e3b684ed61fc88083497e475825a6cecaf21f5",
   SourceActivationBlock:517836903},
@@ -66,11 +72,17 @@ var compiledChains = []ChainPolicy{
 
 func validatePolicy(p ChainPolicy) error {
  if p.Name==""||p.ChainID==0||p.Domain==0||uint64(p.Domain)!=p.ChainID||
-  len(p.RPCURLs)==0||(p.VerifierFormat!="compressed"&&p.VerifierFormat!="eip2537") {
+  len(p.RPCURLs)<3||len(p.IndependentOperatorIDs)!=len(p.RPCURLs)||(p.VerifierFormat!="compressed"&&p.VerifierFormat!="eip2537") {
   return fmt.Errorf("invalid compiled XITA chain identity: %q",p.Name)
  }
  seen:=make(map[string]bool,len(p.RPCURLs))
- for _,endpoint:=range p.RPCURLs{
+ operators:=make(map[string]struct{})
+ for i,endpoint:=range p.RPCURLs{
+  operator:=p.IndependentOperatorIDs[i]
+  if operator==""||operator!=strings.TrimSpace(operator)||strings.ContainsAny(operator," /\\\t\\n"){
+   return fmt.Errorf("invalid Interchain RPC operator identity on %s",p.Name)
+  }
+  operators[operator]=struct{}{}
   parsed,err:=url.Parse(endpoint)
   if err!=nil||parsed.Scheme!="https"||parsed.Host==""||
    parsed.User!=nil||parsed.Fragment!=""||seen[endpoint] {
@@ -78,6 +90,7 @@ func validatePolicy(p ChainPolicy) error {
   }
   seen[endpoint]=true
  }
+ if len(operators)<2{return fmt.Errorf("at least two independent Interchain RPC operators required for %s",p.Name)}
  switch p.ChainID {
  case 1643:
   if p.Name!="xgr"||p.Finality!=FinalityIBFT||p.VerifierFormat!="compressed" {

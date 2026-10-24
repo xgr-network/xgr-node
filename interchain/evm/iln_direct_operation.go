@@ -116,6 +116,7 @@ func GetDirectILNOperation(
     if err:=verifyFinalizedReceipt(client,source,receipt);err!=nil{
       return nil,nil,nil,fmt.Errorf("source receipt is not canonical and final: %w",err)
     }
+    operation.CanonicalBlockHash=types.Hash(receipt.BlockHash)
     raw,err:=VerifyDirectILNReceipt(*operation,receipt,source.Domain,
         snapshot.Route.Gateway,snapshot.Route.Mailbox,snapshot.Route.SourceRouter,
         snapshot.Route.DestinationRouter)

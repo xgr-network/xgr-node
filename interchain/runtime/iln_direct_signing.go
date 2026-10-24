@@ -86,6 +86,11 @@ func (w *Worker) directILNPayload(c *directILNEvidence) protocol.XITADirectMessa
 func (w *Worker) signDirectILNMessage(
     route *evm.CheckpointRoute,messageID types.Hash,sourceBlock uint64,
 )error{
+    // M-03: recheck synchronization in the signing entry point, not only
+    // in the periodic worker tick. RPC requests and gossip can arrive anytime.
+    if w.state==nil||!w.state.IsSynchronized(){
+        return fmt.Errorf("Direct-BLS signing paused: XGR validator not synchronized")
+    }
     ctx,err:=w.verifyDirectILNEvidence(route,messageID,sourceBlock)
     if err!=nil{return err}
     eligible,err:=w.interchainSignerEligible(ctx.set,w.localAddr)
@@ -107,6 +112,9 @@ func (w *Worker) signDirectILNMessage(
     if delivered{return fmt.Errorf("Interchain message already delivered")}
     key,err:=crypto.BytesToBLSSecretKey(w.blsRaw)
     if err!=nil{return err}
+    if w.state==nil||!w.state.IsSynchronized(){
+        return fmt.Errorf("Direct-BLS signature rejected: node lost synchronization during verification")
+    }
     signature,err:=crypto.SignByBLS(key,raw)
     if err!=nil{return err}
     vote:=ilnCheckpointVote{Route:route.Name,Payload:raw,Signer:w.localAddr,Signature:signature}

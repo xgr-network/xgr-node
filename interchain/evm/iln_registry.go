@@ -49,6 +49,9 @@ type ILNOperation struct {
 	BlockNumber       uint64
 	TransactionHash types.Hash
 	LogIndex uint64
+	// CanonicalBlockHash is the successful, finality-checked receipt block.
+	// Only set by GetDirectILNOperation; never trusted from a gossip event.
+	CanonicalBlockHash types.Hash
 }
 
 func (d *Destination) ValidateILNRead() error {

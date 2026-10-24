@@ -23,6 +23,7 @@ type Destination struct {
  ILNRegistryActivationBlock uint64
  RPCURL string
  RPCURLs []string
+ IndependentOperatorIDs []string
  // FinalityRule is copied from the immutable release policy. Runtime checks
  // always re-resolve the rule by ChainID, never from this mutable field.
  FinalityRule policy.FinalityRule
@@ -36,7 +37,9 @@ func makeDestination(p policy.ChainPolicy) (*Destination,error) {
   Name:p.Name,ChainID:p.ChainID,Domain:p.Domain,
   RegistryAddress:p.Registry,ILNRegistryAddress:p.SourceRegistry,
   ILNRegistryActivationBlock:p.SourceActivationBlock,
-  RPCURL:p.RPCURLs[0],RPCURLs:append([]string(nil),p.RPCURLs...),FinalityRule:p.Finality,VerifierFormat:p.VerifierFormat,
+  RPCURL:p.RPCURLs[0],RPCURLs:append([]string(nil),p.RPCURLs...),
+  IndependentOperatorIDs:append([]string(nil),p.IndependentOperatorIDs...),
+  FinalityRule:p.Finality,VerifierFormat:p.VerifierFormat,
   MembershipValiditySeconds:300,ExecutorStepDelaySeconds:10,
  }
  for _,endpoint:=range d.RPCURLs{

@@ -167,15 +167,19 @@ func (w *Worker) removeILNLocalVote(hash types.Hash) {
 func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote)error{
     var payload protocol.XITADirectMessage
     if err:=payload.UnmarshalBinary(vote.Payload);err!=nil{return err}
+    // M-06: the peer-controlled route name is only a hint. Resolve by the
+    // signed chain/domain/route identity, never by a possibly reused alias.
     w.mu.Lock()
-    route:=w.routes[vote.Route]
-    if route==nil {
-        for _,candidate:=range w.routes {
-            src,dst:=w.destinations[candidate.SourceNetwork],w.destinations[candidate.Destination]
-            if src!=nil&&dst!=nil&&candidate.RouteID==payload.RouteID&&
-               src.Domain==payload.SourceDomain&&dst.Domain==payload.DestinationDomain {
-                route=candidate;break
-            }
+    var route *evmInterchain.CheckpointRoute
+    for _,candidate:=range w.routes {
+        src,dst:=w.destinations[candidate.SourceNetwork],w.destinations[candidate.Destination]
+        if src==nil||dst==nil {continue}
+        if candidate.RouteID==payload.RouteID &&
+            src.ChainID==payload.SourceChainID &&
+            src.Domain==payload.SourceDomain &&
+            dst.Domain==payload.DestinationDomain {
+            if route!=nil {w.mu.Unlock();return fmt.Errorf("ambiguous canonical XITA Direct-BLS route")}
+            route=candidate
         }
     }
     w.mu.Unlock()
