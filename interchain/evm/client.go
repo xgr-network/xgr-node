@@ -3,7 +3,6 @@ package evm
 import (
 	"encoding/hex"
 	"fmt"
- "encoding/hex"
 	"math/big"
 	"reflect"
 	"strings"
