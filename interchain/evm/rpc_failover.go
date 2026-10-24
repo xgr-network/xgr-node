@@ -4,7 +4,6 @@ import (
  "fmt"
  "sync"
  "time"
- "github.com/umbracle/ethgo"
  "github.com/umbracle/ethgo/jsonrpc"
 )
 
@@ -56,7 +55,7 @@ func rpcDialVerified(d *Destination,url string)(*jsonrpc.Client,error){
 func newVerifiedRPCClient(d *Destination)(*jsonrpc.Client,error){
  endpoints:=rpcEndpoints(d)
  if len(endpoints)==0{return nil,fmt.Errorf("interchain RPC endpoint missing")}
- if len(endpoints)==1{return rpcDialVerified(d,endpoints[0])}
+ if len(endpoints)==1{return jsonrpc.NewClient(endpoints[0])}
  state:=rpcState(d)
  state.mu.Lock()
  defer state.mu.Unlock()
@@ -113,4 +112,3 @@ func selectVerifiedRPCURL(d *Destination)(string,error){
  if idx<0||idx>=len(urls){return "",fmt.Errorf("invalid selected interchain RPC index")}
  return urls[idx],nil
 }
-var _ = ethgo.Latest
