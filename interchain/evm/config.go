@@ -52,7 +52,7 @@ func makeDestination(p policy.ChainPolicy) (*Destination,error) {
 }
 
 // Load reads no ENV: it may describe an undeployed chain but cannot enable
-// signing without fully verified contract bindings from the future v3.3.3.
+// signing without the receipt-pinned contract bindings in v3.3.2.
 func Load(name string) (*Destination,error) {
  p,err:=policy.Policy(name)
  if err!=nil{return nil,err}
