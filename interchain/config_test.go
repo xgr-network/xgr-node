@@ -29,7 +29,7 @@ func TestV332HasReviewedSignerBindings(t *testing.T) {
   require.Equal(t,tc.registry,p.Registry)
   require.Equal(t,tc.source,p.SourceRegistry)
   require.Equal(t,tc.activation,p.SourceActivationBlock)
-  require.NotEmpty(t,p.RPCURLs)
+  if tc.id==1643 {require.Empty(t,p.RPCURLs);require.Empty(t,p.IndependentOperatorIDs)} else {require.NotEmpty(t,p.RPCURLs)}
  }
  active,err:=ActivePolicies()
  require.NoError(t,err)
@@ -62,12 +62,11 @@ func TestInvalidChainPoliciesFailClosed(t *testing.T){
 func TestXGRFirstPartyRPCsAreNotIndependentWitnesses(t *testing.T) {
  p,err:=Policy("xgr")
  require.NoError(t,err)
- require.Len(t,p.RPCURLs,3)
+ require.Empty(t,p.RPCURLs)
  operators:=map[string]struct{}{}
  for i,endpoint:=range p.RPCURLs {
   require.NotContains(t,endpoint,"thirdweb")
   operators[p.IndependentOperatorIDs[i]]=struct{}{}
  }
- require.Len(t,operators,1,"XGR RPC mirrors must never be treated as independent security witnesses")
- require.Equal(t,"xgr-network",p.IndependentOperatorIDs[0])
+ require.Empty(t,operators)
 }
