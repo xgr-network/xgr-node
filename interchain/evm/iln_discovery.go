@@ -37,10 +37,9 @@ func GetILNRegistryActivationBlock(source *Destination)(uint64,error){
 // RouteAdded events. Every discovered route MUST additionally pass a canonical
 // getRoute read and Gateway binding before the worker activates it.
 func GetConfirmedILNRouteAdds(source *Destination, fromBlock, toBlock uint64) ([]ILNRouteAdded,error) {
- client,err:=ilnSourceClient(source)
+ client,confirmed,err:=newVerifiedRPCClientWithHead(source)
  if err!=nil{return nil,err}
- confirmed,err:=confirmedILNHead(client,source)
- if err!=nil{return nil,err}
+ defer client.Close()
  if fromBlock==0||toBlock<fromBlock||toBlock>confirmed||toBlock-fromBlock+1>maxILNLogRange {
   return nil,fmt.Errorf("invalid confirmed ILN discovery log range")
  }
