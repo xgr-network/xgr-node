@@ -97,10 +97,10 @@ func GetDirectILNOperation(
     defer client.Close()
     if sourceBlock>head{return nil,nil,nil,fmt.Errorf("source block beyond safe head")}
     snapshot,err:=getILNRouteAtBlock(client,source,destinationDomain,route.RouteID,sourceBlock,true)
-    if err!=nil{return nil,nil,nil,err}
+    if err!=nil{recordInterchainRPCReadError(source,source.RPCURL,err);return nil,nil,nil,err}
     ops,err:=confirmedILNOperationsOnClient(client,source,snapshot.Route.Gateway,
         route.RouteID,destinationDomain,sourceBlock,sourceBlock,head)
-    if err!=nil{return nil,nil,nil,err}
+    if err!=nil{recordInterchainRPCReadError(source,source.RPCURL,err);return nil,nil,nil,err}
     var operation *ILNOperation
     for i:=range ops {
         if ops[i].MessageID!=messageID{continue}
