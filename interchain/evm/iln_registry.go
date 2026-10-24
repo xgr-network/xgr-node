@@ -429,41 +429,20 @@ func parseILNOperationLog(log *ethgo.Log) (ILNOperation, error) {
 // GetILNMessageDelivered queries the canonical destination router's Mailbox.
 // Unknown delivery state fails closed: it must never trigger replacement signing.
 func GetILNMessageDelivered(destination *Destination, destinationRouter types.Address, messageID types.Hash) (bool, error) {
-	if destination == nil || destinationRouter == types.ZeroAddress || messageID == types.ZeroHash {
-		return false, fmt.Errorf("invalid ILN delivery-status query")
-	}
-	if err := destination.ValidateMembershipRead(); err != nil {
-		return false, err
-	}
-	client, err := newVerifiedRPCClient(destination)
-	if err != nil {
-		return false, fmt.Errorf("create ILN destination RPC client: %w", err)
-	}
-	chainID, err := client.Eth().ChainID()
-	if err != nil || chainID == nil || !chainID.IsUint64() || chainID.Uint64() != destination.ChainID {
-		return false, fmt.Errorf("destination chain ID mismatch or RPC failure: %v", err)
-	}
-	mailbox, err := callILNAddressGetter(client, destinationRouter, "mailbox()", ethgo.Latest)
-	if err != nil {
-		recordInterchainRPCReadFailure(destination)
-		return false, fmt.Errorf("resolve destination Mailbox: %w", err)
-	}
-	selector := crypto.Keccak256([]byte("delivered(bytes32)"))
-	data := append(append([]byte(nil), selector[:4]...), messageID.Bytes()...)
-	raw, err := callILNView(client, mailbox, data, ethgo.Latest)
-	if err != nil {
-		return false, fmt.Errorf("query destination Mailbox.delivered: %w", err)
-	}
-	if len(raw) != 32 {
-		return false, fmt.Errorf("invalid delivered result length %d", len(raw))
-	}
-	for _, b := range raw[:31] {
-		if b != 0 { return false, fmt.Errorf("noncanonical delivered boolean encoding") }
-	}
-	if raw[31] != 0 && raw[31] != 1 {
-		return false, fmt.Errorf("invalid delivered boolean value")
-	}
-	return raw[31] == 1, nil
+ if destination==nil||destinationRouter==types.ZeroAddress||messageID==types.ZeroHash{
+  return false,fmt.Errorf("invalid delivery status query")
+ }
+ view:=func(to types.Address,data []byte)([]byte,error){return DestinationCall(destination,to,data)}
+ mailbox,err:=viewILNAddress(view,destinationRouter,"mailbox()")
+ if err!=nil{return false,fmt.Errorf("resolve Mailbox: %w",err)}
+ selector:=crypto.Keccak256([]byte("delivered(bytes32)"))
+ calldata:=append(append([]byte(nil),selector[:4]...),messageID.Bytes()...)
+ raw,err:=view(mailbox,calldata)
+ if err!=nil{return false,fmt.Errorf("query Mailbox.delivered: %w",err)}
+ if len(raw)!=32{return false,fmt.Errorf("invalid delivered response")}
+ for _,b:=range raw[:31]{if b!=0{return false,fmt.Errorf("invalid bool encoding")}}
+ if raw[31]!=0&&raw[31]!=1{return false,fmt.Errorf("invalid delivery boolean")}
+ return raw[31]==1,nil
 }
 
 // callILNAddressGetter reads immutable/current contract bindings.
