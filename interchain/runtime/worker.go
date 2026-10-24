@@ -410,15 +410,20 @@ func (w *Worker) tick() {
         activeRoutes:=make([]*evmInterchain.CheckpointRoute,0,len(w.routes))
         for _,route:=range w.routes{activeRoutes=append(activeRoutes,route)}
         w.mu.Unlock()
-        // The only background message source is the confirmed, fee-qualified
-        // Gateway operation; no Merkle state or quorum-request trigger.
+        // One source-chain observation for all catalog-backed routes. The
+        // common Gateway log stream is only a discovery hint; BLS signing
+        // still independently verifies complete source receipts and fees.
+        ready:=make([]*evmInterchain.CheckpointRoute,0,len(activeRoutes))
         for _,route:=range activeRoutes{
-            if !w.directILNScanMayRun(route,now){continue}
-            err:=w.scanDirectILNOperations(route)
+            if w.directILNScanMayRun(route,now){ready=append(ready,route)}
+        }
+        failures:=w.scanILNObserverRoutes(ready)
+        for _,route:=range ready{
+            err:=failures[route.Name]
             w.directILNScanFinished(route,time.Now(),err)
-            if err!=nil{
+            if err!=nil {
                 w.recordILNDirectScanFailure(route,err)
-                w.logger.Debug("Direct BLS source operation scan pending",
+                w.logger.Debug("Direct BLS source observation pending",
                     "route",route.Name,"err",err)
             }
         }
