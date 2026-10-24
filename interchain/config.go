@@ -18,6 +18,14 @@ const (
 // ChainPolicy MUST NOT contain validator-specific security settings.
 // Addresses below are populated only by a reviewed light release.
 // There is one active ValidatorRegistry per chain; token routes are permissionless.
+// PRE-S03 (decision 2026-10-24): membership signatures do NOT bind the exact
+// destination Registry contract address. Valid 2/3 quorum transitions could be
+// replayed across separately deployed Registries sharing the same chain/domain,
+// set ID and validator keys. This residual risk is explicitly accepted under
+// the ONE-active-Registry-per-chain invariant; it is not a cryptographic fix.
+// Only the receipt-pinned Registry in this policy and its associated ISM may be
+// active. Old Registry deployments must not be configured concurrently.
+// Leave membership wire encoding unchanged; reassess if policy changes.
 type ChainPolicy struct {
  Name string
  ChainID uint64
