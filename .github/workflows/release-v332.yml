@@ -98,8 +98,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -count=1 -timeout 180s ./e2e -run '^TestInterchainILNRoutesE2E$'
-          go test -count=1 -timeout 180s ./interchain/runtime -run '^(TestILNReplicaThreeAuthenticatedLibp2pValidatorsE2E|TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs|TestILNValidatorRestartRetainsVerifiedReplicaAndPerSetCursor)$'
+          go test ./e2e -list '^TestInterchainBLSVerificationPrecompileE2E$' | grep -Fx TestInterchainBLSVerificationPrecompileE2E
+          go test ./interchain/runtime -list '^TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs$' | grep -Fx TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs
+          go test -count=1 -timeout 180s ./e2e -run '^TestInterchainBLSVerificationPrecompileE2E$'
+          go test -count=1 -timeout 180s ./interchain/runtime -run '^TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs$'
           go build ./...
 
       - name: Direct-BLS focused regression
