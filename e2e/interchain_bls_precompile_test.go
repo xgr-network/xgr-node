@@ -2,16 +2,19 @@ package e2e
 
 import (
 	"math/big"
+ "context"
+ "fmt"
+ "time"
 	"testing"
 
 	"github.com/coinbase/kryptology/pkg/signatures/bls/bls_sig"
 	"github.com/stretchr/testify/require"
-	"github.com/umbracle/ethgo"
-	"github.com/umbracle/ethgo/abi"
+		"github.com/umbracle/ethgo/abi"
 
 	"github.com/xgr-network/xgr-node/contracts"
 	"github.com/xgr-network/xgr-node/crypto"
 	"github.com/xgr-network/xgr-node/e2e/framework"
+ "github.com/xgr-network/xgr-node/internal/ethrpc"
 )
 
 func TestInterchainBLSVerificationPrecompileE2E(t *testing.T) {
@@ -51,11 +54,11 @@ func TestInterchainBLSVerificationPrecompileE2E(t *testing.T) {
 	})
 	server := servers[0]
 
-	target := ethgo.Address(contracts.InterchainBLSVerificationPrecompile)
-	got, err := server.JSONRPC().Eth().Call(
-		&ethgo.CallMsg{To: &target, Data: input},
-		ethgo.Latest,
-	)
+	target := contracts.InterchainBLSVerificationPrecompile
+ ctx,cancel:=context.WithTimeout(context.Background(),15*time.Second)
+ gotBytes,err:=ethrpc.EthCallCtx(ctx,server.HTTPJSONRPCURL(),target,input)
+ cancel()
+ got:="0x"+fmt.Sprintf("%064x",gotBytes)
 	require.NoError(t, err)
 	require.Equal(
 		t,
@@ -68,10 +71,10 @@ func TestInterchainBLSVerificationPrecompileE2E(t *testing.T) {
 	)
 	require.NoError(t, err)
 	badInput := append(append([]byte(nil), selector...), badArgs...)
-	got, err = server.JSONRPC().Eth().Call(
-		&ethgo.CallMsg{To: &target, Data: badInput},
-		ethgo.Latest,
-	)
+	ctx,cancel=context.WithTimeout(context.Background(),15*time.Second)
+ gotBytes,err=ethrpc.EthCallCtx(ctx,server.HTTPJSONRPCURL(),target,badInput)
+ cancel()
+ got="0x"+fmt.Sprintf("%064x",gotBytes)
 	require.NoError(t, err)
 	require.Equal(
 		t,
