@@ -41,8 +41,17 @@ const ilnRouteDiscoveryScanChunk uint64 = 1000
 var getConfirmedILNRouteAdds = evmInterchain.GetConfirmedILNRouteAdds
 var getILNRegistryActivationBlock = evmInterchain.GetILNRegistryActivationBlock
 
+// A new source registry is a new contract generation. Never read a former
+// registry's routes when the chain name remains unchanged after a hard reset.
 func (w *Worker) ilnRouteCatalogDir(source *evmInterchain.Destination) string {
- return filepath.Join(w.ilnDir(),"route-catalog",source.Name)
+ return filepath.Join(w.ilnDir(),"route-catalog",source.Name,
+  strings.ToLower(source.ILNRegistryAddress))
+}
+
+// The discovery cursor is RPC-native AND bound to the exact source Registry.
+// This avoids accidentally skipping new RouteAdded events after redeployment.
+func ilnDiscoveryCursorName(source *evmInterchain.Destination) string {
+ return "_discovery_"+source.Name+"_"+strings.TrimPrefix(strings.ToLower(source.ILNRegistryAddress),"0x")
 }
 
 func (w *Worker) ensureILNRouteCatalogVersion(source *evmInterchain.Destination) error {
@@ -53,7 +62,7 @@ func (w *Worker) ensureILNRouteCatalogVersion(source *evmInterchain.Destination)
  // Older v3.1.4 builds advanced the discovery cursor without storing the
  // route list, and silently skipped unknown destinations. Backfill ONCE from
  // the on-chain registry deployment rather than trusting that old cursor.
- cursor:=w.ilnCursorPath("_discovery_"+source.Name)
+ cursor:=w.ilnCursorPath(ilnDiscoveryCursorName(source))
  if err:=os.Remove(cursor);err!=nil&&!os.IsNotExist(err){return err}
  return os.WriteFile(marker,[]byte("route-event-catalog-v1\n"),0o660)
 }
@@ -67,7 +76,7 @@ func (w *Worker) ensureILNRPCDiscoveryCursorVersion(source *evmInterchain.Destin
  if err:=os.MkdirAll(dir,0o770);err!=nil{return err}
  marker:=filepath.Join(dir,".rpc-native-v324")
  if _,err:=os.Stat(marker);err==nil{return nil}else if !os.IsNotExist(err){return err}
- if err:=os.Remove(w.ilnCursorPath("_discovery_"+source.Name));err!=nil&&!os.IsNotExist(err){return err}
+ if err:=os.Remove(w.ilnCursorPath(ilnDiscoveryCursorName(source)));err!=nil&&!os.IsNotExist(err){return err}
  return os.WriteFile(marker,[]byte("source-rpc-height-v1\n"),0o660)
 }
 
@@ -204,7 +213,7 @@ func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) 
  if err:=w.ensureILNRouteCatalogVersion(source);err!=nil{return err}
  if err:=w.ensureILNRPCDiscoveryCursorVersion(source);err!=nil{return err}
  if err:=w.restoreILNDiscoveredRoutes(source,head);err!=nil{return err}
- cursorName:="_discovery_"+source.Name
+ cursorName:=ilnDiscoveryCursorName(source)
  cursor,exists,err:=w.readILNCursor(cursorName)
  if err!=nil{return err}
  if !exists {

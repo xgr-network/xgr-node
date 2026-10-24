@@ -1,0 +1,122 @@
+name: Release Light (XGR v3.3.1 Direct BLS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: "Reviewed full XGR3.0 commit SHA (40 lowercase hex)"
+        required: true
+        type: string
+      confirmation:
+        description: "Type RELEASE-v3.3.1 to authorize light release"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xgr-v331-direct-light-release
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    if: ${{ github.ref == 'refs/heads/XGR3.0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pin reviewed commit, scope, tag and manual approval
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRMATION" = 'RELEASE-v3.3.1'
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$GITHUB_REF" = 'refs/heads/XGR3.0'
+          test "$(git rev-parse v3.3.0)" = 'd8a1c20570735578903eb618e14aa66585fb6b42'
+          if git rev-parse -q --verify refs/tags/v3.3.1 >/dev/null || gh api "repos/${{ github.repository }}/git/ref/tags/v3.3.1" >/dev/null 2>&1; then
+            echo 'Immutable v3.3.1 release already exists' >&2
+            exit 1
+          fi
+          git diff --name-only v3.3.0 HEAD > /tmp/xgr-light-scope.txt
+          test -s /tmp/xgr-light-scope.txt
+          if grep -Ev '^((interchain/|consensus/ibft/interchain/|jsonrpc/xgr_iln_|jsonrpc/xgr_interchain|e2e/interchain_routes_test.go|\.github/workflows/(release-light-v331)\.yml))' /tmp/xgr-light-scope.txt; then
+            echo 'Release includes non-Interchain source modifications' >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+
+      - name: Verify direct BLS invariant and removed Merkle source
+        run: |
+          set -euo pipefail
+          test -f consensus/ibft/interchain/xita_direct_message.go
+          test -f interchain/evm/iln_direct_operation.go
+          test -f interchain/runtime/iln_direct_signing.go
+          test ! -e interchain/evm/iln_merkle.go
+          test ! -e interchain/runtime/iln_replica_network.go
+          test ! -e jsonrpc/xgr_iln_replica_proof.go
+          test ! -e interchain/evm/xita_direct_source.go
+          grep -q 'XITA_DIRECT_MESSAGE_V1' consensus/ibft/interchain/xita_direct_message.go
+          grep -q 'verifyDirectILNEvidence' interchain/runtime/iln_direct_signing.go
+          grep -q 'VerifyConfirmedILNFeeAllocation' interchain/evm/iln_direct_operation.go
+
+      - name: Focused direct BLS and ILN unit tests
+        run: |
+          set -euo pipefail
+          go test -count=1 -timeout 12m ./consensus/ibft/interchain ./interchain/evm ./interchain/runtime ./jsonrpc
+          go test -count=3 ./consensus/ibft/interchain -run '^TestXITADirectMessage'
+          go test -count=3 ./interchain/evm -run '^TestDirect'
+          go test -count=3 ./jsonrpc -run '^TestXGRGetILN'
+
+      - name: Build official v3.3.1 Linux binary and checksums
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VERSION=v3.3.1
+          PKG=github.com/xgr-network/xgrchain/versioning
+          COMMIT="$(git rev-parse --short HEAD)"
+          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          go build -trimpath -o dist/xgrchain-v3.3.1-linux-amd64 \
+            -ldflags "-X ${PKG}.Version=${VERSION} -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=XGR3.0 -X ${PKG}.BuildTime=${TIME}" .
+          chmod 755 dist/xgrchain-v3.3.1-linux-amd64
+          ./dist/xgrchain-v3.3.1-linux-amd64 version
+          printf '%s\n' v3.3.1 > dist/version.txt
+          git rev-parse HEAD > dist/commit.txt
+          (cd dist && sha256sum xgrchain-v3.3.1-linux-amd64 version.txt commit.txt > sha256sums.txt)
+          (cd dist && sha256sum -c sha256sums.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xgr-v3.3.1-direct-bls-light-linux-amd64
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish immutable v3.3.1 light release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v3.3.1
+          name: v3.3.1
+          commit: ${{ github.sha }}
+          allowUpdates: false
+          makeLatest: true
+          generateReleaseNotes: false
+          body: |
+            XGR v3.3.1 Direct-BLS Interchain transport.
+            No general consensus, EVM or state-transition changes.
+            Light release: focused interchain/security tests, no full EEST/ForkGate.
+            Interchain P2P protocol is incompatible with v3.3.0;
+            coordinate validator Interchain rollout before attempting transfers.
+            Deployment of matching new Direct-BLS contracts is required.
+          artifacts: dist/*

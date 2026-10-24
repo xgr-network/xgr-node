@@ -9,7 +9,8 @@ import (
  "github.com/xgr-network/xgr-node/types"
 )
 
-// ILNRouteAdded is emitted only by the quorum-governed source registry.
+// ILNRouteAdded is emitted by the permissionless source Registry. BLS quorum
+// secures message attestations and source-fee changes, never route admission.
 type ILNRouteAdded struct {
  DestinationDomain uint32
  RouteID types.Hash
