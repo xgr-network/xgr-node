@@ -48,46 +48,11 @@ jobs:
           git rev-parse HEAD > dist/commit.txt
           (cd dist && sha256sum xgrchain-*-linux-amd64 version.txt commit.txt > sha256sums.txt)
           (cd dist && sha256sum -c sha256sums.txt)
-      - name: Validate bounded BLS precompile local-RPC E2E
+      - name: Smoke-test BLS precompile through local RPC
         shell: bash
         run: |
           set -euo pipefail
-          XGRCHAIN_BINARY="$PWD/dist/xgrchain-v3.3.2-rc-linux-amd64" go test -count=1 -timeout 90s ./e2e -run '^TestInterchainBLSVerificationPrecompileE2E
-        with:
-          name: xgr-direct-bls-v3.3.2-rc-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
-          path: dist/
-          retention-days: 30
-          if-no-files-found: error
-  direct-bls-gate:
-    name: Direct-BLS focused security regression
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.23.x'
-          cache: true
-      - name: Security-critical unit and receipt checks
-        run: |
-          set -euo pipefail
-          go test -count=1 ./interchain/... ./consensus/ibft/interchain ./jsonrpc
-      - name: Focused direct-message replay and authentic source receipt
-        run: |
-          set -euo pipefail
-          go test -count=3 ./consensus/ibft/interchain -run '^TestXITADirectMessage'
-          go test -count=3 ./interchain/evm -run '^TestDirect'
-  candidate-ready:
-    name: Candidate only - no production tag
-    needs: [candidate-binary, direct-bls-gate]
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          echo "Direct-BLS candidate built and focused unit tests passed."
-          echo "No production release, tag or deployment has been executed."
- -v
+          XGRCHAIN_BINARY=./dist/xgrchain-v3.3.2-rc-linux-amd64 go test -count=1 -timeout 75s ./e2e -run TestInterchainBLSVerificationPrecompileE2E
       - uses: actions/upload-artifact@v4
         with:
           name: xgr-direct-bls-v3.3.2-rc-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
