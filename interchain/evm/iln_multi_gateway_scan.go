@@ -116,3 +116,53 @@ func ScanILNMultiGatewayWindow(
  if err!=nil{recordInterchainRPCReadFailure(source)}
  return
 }
+
+// ScanNativeXGRMultiGatewayWindow walks each locally committed IBFT
+// block/receipt just once regardless of number of token routes.
+func ScanNativeXGRMultiGatewayWindow(reader NativeXGRReader,source *Destination,
+ gateways []types.Address,cursor,window uint64,
+)(head,from,to uint64,events []ILNObservedGatewayOperation,err error){
+ if reader==nil||source==nil||source.ChainID!=1643||window==0||window>maxILNLogRange{
+  return 0,0,0,nil,fmt.Errorf("invalid native multi-Gateway scan")
+ }
+ head,err=reader.NativeXGRHead()
+ if err!=nil{return}
+ if cursor>head{return head,0,0,nil,fmt.Errorf("native observer cursor ahead of IBFT head")}
+ if cursor==head{return head,0,0,nil,nil}
+ from=cursor+1
+ to=cursor+window
+ if to<cursor||to>head{to=head}
+ watched:=make(map[types.Address]struct{},len(gateways))
+ for _,gateway:=range gateways{
+  if gateway==types.ZeroAddress{return head,0,0,nil,fmt.Errorf("invalid zero gateway")}
+  watched[gateway]=struct{}{}
+ }
+ topic:=types.Hash(crypto.Keccak256Hash([]byte(ilnOperationEventSignature)))
+ for number:=from;number<=to;number++{
+  block,e:=reader.NativeXGRBlock(number)
+  if e!=nil{return head,0,0,nil,e}
+  if block==nil||block.Hash==types.ZeroHash||len(block.Transactions)!=len(block.Receipts){
+   return head,0,0,nil,fmt.Errorf("missing canonical native block receipts")}
+  var logIndex uint64
+  for i,receipt:=range block.Receipts{
+   if receipt==nil||receipt.Status==nil||block.Transactions[i]==nil{
+    return head,0,0,nil,fmt.Errorf("missing native receipt status")}
+   for _,entry:=range receipt.Logs{
+    if entry==nil{return head,0,0,nil,fmt.Errorf("nil native log")}
+    if _,ok:=watched[entry.Address];ok&&len(entry.Topics)>0&&entry.Topics[0]==topic{
+     if *receipt.Status!=types.ReceiptSuccess{
+      return head,0,0,nil,fmt.Errorf("reverted native Gateway operation")}
+     log:=&ethgo.Log{Address:ethgo.Address(entry.Address),BlockNumber:number,
+       TransactionHash:ethgo.Hash(block.Transactions[i].Hash),LogIndex:logIndex,
+       Data:append([]byte(nil),entry.Data...)}
+     for _,topic:=range entry.Topics{log.Topics=append(log.Topics,ethgo.Hash(topic))}
+     operation,e:=parseILNOperationLog(log)
+     if e!=nil{return head,0,0,nil,e}
+     events=append(events,ILNObservedGatewayOperation{Gateway:entry.Address,Operation:operation})
+    }
+    logIndex++
+   }
+  }
+ }
+ return
+}
