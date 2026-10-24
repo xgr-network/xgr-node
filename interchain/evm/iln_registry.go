@@ -84,23 +84,15 @@ func ilnSourceClient(source *Destination) (*jsonrpc.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create ILN source RPC client: %w", err)
 	}
-	gotChainID, err := client.Eth().ChainID()
-	if err != nil {
-		return nil, fmt.Errorf("query ILN source chain id: %w", err)
-	}
-	if gotChainID == nil || !gotChainID.IsUint64() || gotChainID.Uint64() != source.ChainID {
-		return nil, fmt.Errorf("ILN source chain id mismatch")
-	}
 	return client, nil
 }
 
 // GetConfirmedILNHead returns the native finality-qualified source height. It is used as the upper bound for Gateway event scans.
 func GetConfirmedILNHead(source *Destination) (uint64, error) {
-	client, err := ilnSourceClient(source)
-	if err != nil {
-		return 0, err
-	}
-	return confirmedILNHead(client, source)
+	client, head, err := newVerifiedRPCClientWithHead(source)
+	if err != nil { return 0, err }
+	defer client.Close()
+	return head, nil
 }
 
 func confirmedILNHead(client *jsonrpc.Client, source *Destination) (uint64,error) {
