@@ -18,13 +18,11 @@ The node provides:
 - Online State Trie Sweeper / State Growth Control,
 - genesis and chain-configuration tooling.
 
-Current public release:
+Current interchain runtime baseline (tagged release):
 
-    v3.1.1
+    v3.2.3
 
-Release commit:
-
-    1a4844b311fb856cb8c2303a40fa8aa69b560544
+For v3.2.3 architecture, chain configuration, operator CLI, JSON-RPC, Merkle-replica management and independent delivery, see [Interchain v3.2.3 operator reference](docs/ILN_V323_OPERATOR_REFERENCE.md). Historical v3.2.3 installation/release checksums further down are retained strictly as a historical example.
 
 ---
 
@@ -214,7 +212,7 @@ https://github.com/xgr-network/XGR/blob/main/docs/chain/XRC-GAS_Gas_Price_Behavi
 
 ## Interchain BLS verification
 
-`v3.1.1` includes a native BLS12-381 Interchain verification precompile at:
+`v3.2.3` includes a native BLS12-381 Interchain verification precompile at:
 
     0x0000000000000000000000000000000000002040
 
@@ -232,7 +230,7 @@ It does not itself define:
 
 Interchain infrastructure is maintained separately in:
 
-https://github.com/xgr-network/xgr-hyperlane
+https://github.com/xgr-network/xgr-interchain
 
 ---
 
@@ -242,7 +240,7 @@ https://github.com/xgr-network/xgr-hyperlane
 
 `xgr-node` includes an online state-trie garbage collector called the Online State Trie Sweeper.
 
-The feature was introduced in `v2.1.0` and remains part of `v3.1.1`.
+The feature was introduced in `v2.1.0` and remains part of `v3.2.3`.
 
 It can reclaim unreachable historical:
 
@@ -308,58 +306,22 @@ Private embedded-engine builds can replace that stub in their own development en
 
 ---
 
-# Current release
+# Official v3.2.3 release and installation
 
-## `v3.1.1`
+Release: https://github.com/xgr-network/xgr-node/releases/tag/v3.2.3
 
-Release:
+- Commit: `6cef5899a8dc6829fb8fbd9cd1bda79cb4fcd066`
+- Linux AMD64 artifact: `xgrchain-v3.2.3-linux-amd64`
+- Published asset SHA-256: `7b1b7cd3fac11046e7b00430e33f3ae403a72ae920ebc482a24df4f5b511a4a7`
 
-https://github.com/xgr-network/xgr-node/releases/tag/v3.1.1
+```sh
+curl -fL https://github.com/xgr-network/xgr-node/releases/download/v3.2.3/xgrchain-v3.2.3-linux-amd64 -o xgrchain
+printf '%s  %s\n' 7b1b7cd3fac11046e7b00430e33f3ae403a72ae920ebc482a24df4f5b511a4a7 xgrchain | sha256sum -c -
+chmod +x xgrchain
+./xgrchain version
+```
 
-Release commit:
-
-    1a4844b311fb856cb8c2303a40fa8aa69b560544
-
-Published Linux AMD64 binary:
-
-    xgrchain-v3.1.1-linux-amd64
-
-SHA-256:
-
-    429d18db37e9cdb6eb82b33583880c407701fcf070f1d8f6398ca8c4c7a0c88d
-
-The release also publishes:
-
-- `sha256sums.txt`
-- `version.txt`
-
----
-
-# Install release binary
-
-Example for Linux AMD64:
-
-    curl -fL \
-      https://github.com/xgr-network/xgr-node/releases/download/v3.1.1/xgrchain-v3.1.1-linux-amd64 \
-      -o xgrchain
-
-Verify:
-
-    echo \
-    "429d18db37e9cdb6eb82b33583880c407701fcf070f1d8f6398ca8c4c7a0c88d  xgrchain" \
-    | sha256sum -c -
-
-Expected:
-
-    xgrchain: OK
-
-Make executable:
-
-    chmod +x xgrchain
-
-Check version:
-
-    ./xgrchain version
+Before deploying on a validator, compare the downloaded checksums to the actual tagged release's `sha256sums.txt`, preserve data-dir/secrets backups, and roll validators individually. Node release replacement is **not** a reason to redeploy the Solidity Interchain contracts.
 
 ---
 
@@ -386,20 +348,14 @@ A normal Linux build environment should include:
     cd xgr-node
 
     git fetch --all --tags
-    git checkout v3.1.1
+    git checkout v3.2.3
 
 Verify:
 
     git describe --tags --exact-match
     git rev-parse HEAD
 
-Expected:
-
-    v3.1.1
-
-and:
-
-    1a4844b311fb856cb8c2303a40fa8aa69b560544
+Expected: `v3.2.3` and commit `6cef5899a8dc6829fb8fbd9cd1bda79cb4fcd066`.
 
 ---
 
@@ -567,7 +523,7 @@ https://github.com/xgr-network/XGR/blob/main/docs/chain/XGRCHAIN_Staking_PoS_End
 
 ## Interchain attestation RPC
 
-`v3.1.1` also includes read-only XGR Interchain attestation methods including:
+The legacy `v3.2.3` APIs include read-only XGR Interchain attestation methods. Current `v3.2.3` adds the v3.2.x ILN quorum, replica proof and indexer status APIs documented in [the operator reference](docs/ILN_V323_OPERATOR_REFERENCE.md):
 
     xgr_getInterchainAttestation
     xgr_getInterchainAttestationByCheckpoint
@@ -669,7 +625,7 @@ Router deployments, cross-chain validators, relayers and destination security mo
 
 Repository:
 
-https://github.com/xgr-network/xgr-hyperlane
+https://github.com/xgr-network/xgr-interchain
 
 The first implemented XGR asset route between XGRChain and Base has been validated end-to-end in both directions on mainnet.
 
@@ -814,7 +770,7 @@ Do not commit or publish:
 - XGRChain node releases: https://github.com/xgr-network/xgr-node/releases
 - Explorer: https://explorer.xgr.network
 - Testnet faucet: https://faucet.xgr.network
-- Interchain implementation: https://github.com/xgr-network/xgr-hyperlane
+- Interchain implementation: https://github.com/xgr-network/xgr-interchain
 - MCP implementation: https://github.com/xgr-network/xgr-mcp
 
 ---
@@ -836,12 +792,9 @@ Do not remove or alter third-party legal attribution without appropriate review.
 
 # Current status
 
-Current public XGRChain node baseline:
+Current tagged Interchain node runtime baseline: `xgr-node v3.2.3`.
 
-    xgr-node v3.1.1
+Historical v3.2.3 release documentation above is archival. The current source of truth is the tagged v3.2.3 code, `interchain/` and `jsonrpc/`, plus [the v3.2.3 operator reference](docs/ILN_V323_OPERATOR_REFERENCE.md).
 
-Commit:
-
-    1a4844b311fb856cb8c2303a40fa8aa69b560544
 
 The public release provides the standalone open-source foundation for XGRChain mainnet node operation, delegated PoS consensus participation, EVM execution, RPC access and XGR-specific protocol functionality.
