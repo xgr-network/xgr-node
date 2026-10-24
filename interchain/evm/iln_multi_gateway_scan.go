@@ -49,21 +49,26 @@ func confirmedILNMultiGatewayLogsOnClient(
  }
  if len(gateways)==0{return nil,nil}
  seenGateway:=make(map[types.Address]bool,len(gateways))
- addresses:=make([]ethgo.Address,0,len(gateways))
+ addresses:=make([]string,0,len(gateways))
  for _,gateway:=range gateways{
   if gateway==types.ZeroAddress{return nil,fmt.Errorf("zero gateway address")}
   if !seenGateway[gateway]{
    seenGateway[gateway]=true
-   addresses=append(addresses,ethgo.Address(gateway))
+   addresses=append(addresses,gateway.String())
   }
  }
  topic:=ethgo.Hash(crypto.Keccak256Hash([]byte(ilnOperationEventSignature)))
- filter:=&ethgo.LogFilter{
-  Address:addresses,Topics:[][]*ethgo.Hash{{&topic}},
+ // IMPORTANT: ethgo.LogFilter.MarshalJSON silently omits the Address
+ // slice with this ethgo version. Use an explicit JSON-RPC argument instead
+ // and verify the returned emitter against our bounded address allowlist.
+ filter:=map[string]interface{}{
+  "address":addresses,
+  "fromBlock":fmt.Sprintf("0x%x",fromBlock),
+  "toBlock":fmt.Sprintf("0x%x",toBlock),
+  "topics":[]interface{}{topic.String()},
  }
- filter.SetFromUint64(fromBlock)
- filter.SetToUint64(toBlock)
- logs,err:=client.Eth().GetLogs(filter)
+ var logs []*ethgo.Log
+ err:=client.Call("eth_getLogs",&logs,filter)
  if err!=nil{return nil,fmt.Errorf("multi-Gateway eth_getLogs: %w",err)}
  events:=make([]ILNObservedGatewayOperation,0,len(logs))
  seenEvent:=make(map[struct{block uint64; tx types.Hash; index uint64}]bool,len(logs))
