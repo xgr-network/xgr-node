@@ -101,10 +101,9 @@ func confirmedILNHead(client *jsonrpc.Client, source *Destination) (uint64,error
 
 // GetConfirmedILNGovernanceNonce reads the single source-chain fee nonce.
 func GetConfirmedILNGovernanceNonce(source *Destination) (uint64, error) {
- client,_,err:=newVerifiedRPCClientWithHead(source);if err!=nil{return 0,err}
- defer client.Close()
- // An ILN fee nonce is current governance state, not a historical checkpoint.
- raw,err:=callILNSignatureView(client,types.StringToAddress(source.ILNRegistryAddress),"sourceFeeNonce()",ethgo.Latest)
+ // ILN fee nonce is canonical current governance state.
+ selector:=crypto.Keccak256([]byte("sourceFeeNonce()"))
+ raw,err:=DestinationCall(source,types.StringToAddress(source.ILNRegistryAddress),selector[:4])
  if err!=nil{return 0,fmt.Errorf("read source fee nonce: %w",err)}
  if len(raw)!=32{return 0,fmt.Errorf("invalid source fee nonce response")}
  value:=new(big.Int).SetBytes(raw); if !value.IsUint64(){return 0,fmt.Errorf("source fee nonce out of range")}
