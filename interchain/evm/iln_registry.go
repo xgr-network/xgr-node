@@ -142,6 +142,14 @@ func getILNRouteAtBlock(
 	blockNumber uint64,
 	allowHistoricalDisabled bool,
 ) (*ILNRouteSnapshot, error) {
+    return getILNRouteAtBlockWithView(rpcILNView(client),source,destinationDomain,routeID,blockNumber,allowHistoricalDisabled)
+}
+
+func getILNRouteAtBlockWithView(
+    view ILNView, source *Destination, destinationDomain uint32,
+    routeID types.Hash, blockNumber uint64, allowHistoricalDisabled bool,
+) (*ILNRouteSnapshot,error) {
+    if view==nil||source==nil{return nil,fmt.Errorf("missing verified ILN contract reader")}
 	if destinationDomain == 0 {
 		return nil, fmt.Errorf("ILN destination domain must be non-zero")
 	}
@@ -169,11 +177,11 @@ func getILNRouteAtBlock(
 	// receipt proves the route was registered and enabled when the source
 	// transfer executed. Historical eth_call is not available on pruned nodes.
 	// The gateway and router bindings are immutable across all source chains.
-	factory, err := callILNAddressGetter(client, registry, "factory()", ethgo.Latest)
+	factory, err := viewILNAddress(view, registry, "factory()")
 	if err != nil || factory == types.ZeroAddress {
 		return nil, fmt.Errorf("archive-free ILN route proof requires an append-only V315 registry: %v", err)
 	}
-	raw, err := callILNView(client, registry, append(method.ID(), input...), ethgo.Latest)
+	raw, err := view(registry, append(method.ID(), input...))
 	if err != nil {
 		return nil, fmt.Errorf("call ILN getRoute: %w", err)
 	}
@@ -256,7 +264,7 @@ func getILNRouteAtBlock(
 	if err := protocol.ValidateILNRoute(validationRoute); err != nil {
 		return nil, fmt.Errorf("invalid canonical ILN route record: %w", err)
 	}
-	if err := verifyILNGatewayBinding(client, registry, route, ethgo.Latest); err != nil {
+	if err := verifyILNGatewayBindingWithView(view, registry, route); err != nil {
 		return nil, err
 	}
 	return &ILNRouteSnapshot{Registry: registry, Route: route, BlockNumber: blockNumber}, nil
@@ -273,14 +281,21 @@ func verifyILNGatewayBinding(
 	route protocol.ILNRoute,
 	block ethgo.BlockNumber,
 ) error {
-	gatewayRegistry, err := callILNAddressGetter(client, route.Gateway, "ilnRegistry()", block)
+    return verifyILNGatewayBindingWithView(func(addr types.Address,data []byte)([]byte,error){
+        return callILNView(client,addr,data,block)
+    },registry,route)
+}
+
+func verifyILNGatewayBindingWithView(view ILNView, registry types.Address, route protocol.ILNRoute) error {
+    if view==nil{return fmt.Errorf("missing verified gateway reader")}
+	gatewayRegistry, err := viewILNAddress(view, route.Gateway, "ilnRegistry()")
 	if err != nil {
 		return fmt.Errorf("verify ILN gateway registry: %w", err)
 	}
 	if gatewayRegistry != registry {
 		return fmt.Errorf("ILN gateway registry mismatch")
 	}
-	warpRouter, err := callILNAddressGetter(client, route.Gateway, "warpRouter()", block)
+	warpRouter, err := viewILNAddress(view, route.Gateway, "warpRouter()")
 	if err != nil {
 		return fmt.Errorf("verify ILN gateway warp router: %w", err)
 	}
@@ -292,14 +307,14 @@ func verifyILNGatewayBinding(
 	// and router here; the same-tx canonical Mailbox.Dispatch proof provides
 	// the remaining binding to the source message.
 	if !route.Enabled { return nil }
-	gatewayMailbox, err := callILNAddressGetter(client, route.Gateway, "mailbox()", block)
+	gatewayMailbox, err := viewILNAddress(view, route.Gateway, "mailbox()")
 	if err != nil {
 		return fmt.Errorf("verify ILN gateway mailbox: %w", err)
 	}
 	if gatewayMailbox != route.Mailbox {
 		return fmt.Errorf("ILN gateway mailbox mismatch")
 	}
-	gatewayHook, err := callILNAddressGetter(client, route.Gateway, "dispatchHook()", block)
+	gatewayHook, err := viewILNAddress(view, route.Gateway, "dispatchHook()")
 	if err != nil {
 		return fmt.Errorf("verify ILN gateway hook: %w", err)
 	}
