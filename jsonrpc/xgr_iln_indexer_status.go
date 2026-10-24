@@ -16,6 +16,9 @@ type ilnIndexerRouteStatusRPC struct{
  SourceHead uint64 `json:"sourceHead"`
  ScanCursor uint64 `json:"scanCursor"`
  BlockLag uint64 `json:"blockLag"`
+ SourceHeadKnown bool `json:"sourceHeadKnown"`
+ ScanCursorKnown bool `json:"scanCursorKnown"`
+ LastSuccessfulScanUnix int64 `json:"lastSuccessfulScanUnix,omitempty"`
  UpdatedUnix int64 `json:"updatedUnix"`
  Error string `json:"error,omitempty"`
 }
