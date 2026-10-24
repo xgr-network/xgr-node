@@ -30,6 +30,7 @@ type Destination struct {
  MembershipValiditySeconds uint64
  ExecutorStepDelaySeconds uint64
  VerifierFormat string
+ NativeXGR NativeXGRAccess
 }
 
 func makeDestination(p policy.ChainPolicy) (*Destination,error) {
