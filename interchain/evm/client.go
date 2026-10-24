@@ -53,9 +53,8 @@ func VerifyDestinationChainID(destination *Destination) error {
 	if destination == nil {
 		return fmt.Errorf("destination is nil")
 	}
-	if err := destination.ValidateMembershipRead(); err != nil {
-		return err
-	}
+	if err := destination.ValidateMembershipRead(); err != nil {return err}
+    if destination.ChainID==1643 {_,err:=destination.nativeAccess();return err}
 
 	client, err := newVerifiedRPCClient(destination)
 	if err != nil {
@@ -67,6 +66,11 @@ func VerifyDestinationChainID(destination *Destination) error {
 
 func GetDestinationGasBalance(destination *Destination, address ethgo.Address) (*big.Int,error) {
  if err:=destination.ValidateMembershipRead();err!=nil{return nil,err}
+ if destination.ChainID==1643{
+  backend,err:=destination.nativeAccess()
+  if err!=nil{return nil,err}
+  return backend.NativeXGRBalance(types.Address(address))
+ }
  client,err:=newVerifiedRPCClient(destination)
  if err!=nil{return nil,err}
  defer client.Close()
