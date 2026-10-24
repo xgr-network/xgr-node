@@ -3,6 +3,7 @@ package ibft
 import (
 	"fmt"
  "math/big"
+ "github.com/umbracle/ethgo"
 	"path/filepath"
 	"time"
 
@@ -110,6 +111,51 @@ func (s *ibftInterchainState) NativeXGRBlock(n uint64)(*evmInterchain.NativeXGRB
   Transactions:block.Transactions,Receipts:receipts,View:view},nil
 }
 
+// NativeXGRRead executes a read-only view at the current committed state root.
+func (s *ibftInterchainState) NativeXGRRead(to types.Address,data []byte)([]byte,error){
+ head,err:=s.NativeXGRHead();if err!=nil{return nil,err}
+ block,err:=s.NativeXGRBlock(head);if err!=nil{return nil,err}
+ if block.View==nil{return nil,fmt.Errorf("local EVM view unavailable")}
+ return block.View(to,data)
+}
+func (s *ibftInterchainState) NativeXGRBalance(address types.Address)(*big.Int,error){
+ _,err:=s.NativeXGRHead();if err!=nil{return nil,err}
+ h:=s.ibft.blockchain.Header()
+ txn,err:=s.ibft.executor.BeginTxn(h.StateRoot,h,types.ZeroAddress)
+ if err!=nil{return nil,err}
+ return new(big.Int).Set(txn.GetBalance(address)),nil
+}
+func (s *ibftInterchainState) NativeXGREstimateCost(from,to types.Address,data []byte,value *big.Int)(*big.Int,error){
+ _,err:=s.NativeXGRHead();if err!=nil{return nil,err}
+ h:=s.ibft.blockchain.Header()
+ txn,err:=s.ibft.executor.BeginTxn(h.StateRoot,h,types.ZeroAddress)
+ if err!=nil{return nil,err}
+ txn.SetNonPayable(true)
+ call:=&types.Transaction{Type:types.LegacyTx,From:from,To:&to,
+  Gas:h.GasLimit,GasPrice:big.NewInt(0),Value:new(big.Int).Set(value),Input:append([]byte(nil),data...)}
+ result,err:=txn.Call(call)
+ if err!=nil||result==nil||result.Failed(){return nil,fmt.Errorf("native gas simulation rejected: %v",err)}
+ price:=new(big.Int).SetUint64(h.BaseFee)
+ if price.Sign()==0{price.SetUint64(1879048192)}
+ price.Mul(price,big.NewInt(2))
+ return new(big.Int).Mul(new(big.Int).SetUint64(result.GasUsed),price),nil
+}
+func (s *ibftInterchainState) NativeXGRVerifyReceipt(receipt *ethgo.Receipt)error{
+ if receipt==nil||receipt.Status!=uint64(types.ReceiptSuccess){return fmt.Errorf("missing successful native receipt")}
+ _,err:=s.NativeXGRHead();if err!=nil{return err}
+ blockHash,exists:=s.ibft.blockchain.ReadTxLookup(types.Hash(receipt.TransactionHash))
+ if !exists||blockHash!=types.Hash(receipt.BlockHash){return fmt.Errorf("native receipt not canonical")}
+ b,ok:=s.ibft.blockchain.GetBlockByHash(blockHash,true)
+ if !ok||b==nil||b.Number()!=receipt.BlockNumber{return fmt.Errorf("native receipt block not committed")}
+ entries,err:=s.ibft.blockchain.GetReceiptsByHash(blockHash)
+ if err!=nil{return err}
+ for i,tx:=range b.Transactions{
+  if tx!=nil&&tx.Hash==types.Hash(receipt.TransactionHash)&&i<len(entries)&&entries[i]!=nil&&
+   entries[i].Status!=nil&&*entries[i].Status==types.ReceiptSuccess{return nil}
+ }
+ return fmt.Errorf("native receipt absent or reverted")
+}
+
 // startInterchainRuntime is deliberately outside every consensus-critical hook.
 // Destination failures disable only interchain processing; they must never stop
 // XGR block production, validation, finalization, or syncing.
@@ -131,7 +177,8 @@ func (i *backendIBFT) startInterchainRuntime() {
 		return
 	}
 
-	dataDir := filepath.Dir(i.config.Path)
+	for _,destination:=range destinations {if destination.ChainID==1643 {destination.NativeXGR=stateReader}}
+ dataDir := filepath.Dir(i.config.Path)
 	worker, err := interchainRuntime.New(
 		i.logger,
 		stateReader,
