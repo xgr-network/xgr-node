@@ -49,7 +49,7 @@ jobs:
 
           git diff --name-only v3.3.1 HEAD > /tmp/xgr-v332-scope.txt
           test -s /tmp/xgr-v332-scope.txt
-          if grep -Ev '^(interchain/|consensus/ibft/interchain_runtime.go|consensus/ibft/interchain/iln_protocol.go|jsonrpc/xgr_interchain_validators_test.go|merkle-tree/|docs/XGR_INTERCHAIN_V332.md|\.github/workflows/(release-v332|release-direct-bls-candidate)\.yml)$' /tmp/xgr-v332-scope.txt; then
+          if grep -Ev '^(interchain/.*|consensus/ibft/interchain_runtime.go|consensus/ibft/interchain/iln_protocol.go|jsonrpc/xgr_interchain_validators_test.go|merkle-tree/.*|docs/XGR_INTERCHAIN_V332.md|\.github/workflows/(release-v332|release-direct-bls-candidate)\.yml)' /tmp/xgr-v332-scope.txt; then
             echo "Forbidden out-of-scope change for v3.3.2" >&2
             exit 1
           fi
