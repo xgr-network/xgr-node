@@ -22,6 +22,7 @@ type Destination struct {
  ILNRegistryAddress string
  ILNRegistryActivationBlock uint64
  RPCURL string
+ RPCURLs []string
  // FinalityRule is copied from the immutable release policy. Runtime checks
  // always re-resolve the rule by ChainID, never from this mutable field.
  FinalityRule policy.FinalityRule
@@ -35,12 +36,14 @@ func makeDestination(p policy.ChainPolicy) (*Destination,error) {
   Name:p.Name,ChainID:p.ChainID,Domain:p.Domain,
   RegistryAddress:p.Registry,ILNRegistryAddress:p.SourceRegistry,
   ILNRegistryActivationBlock:p.SourceActivationBlock,
-  RPCURL:p.RPCURL,FinalityRule:p.Finality,VerifierFormat:p.VerifierFormat,
+  RPCURL:p.RPCURLs[0],RPCURLs:append([]string(nil),p.RPCURLs...),FinalityRule:p.Finality,VerifierFormat:p.VerifierFormat,
   MembershipValiditySeconds:300,ExecutorStepDelaySeconds:10,
  }
- url,err:=url.Parse(d.RPCURL)
- if err!=nil||(url.Scheme!="https"&&url.Scheme!="http")||url.Host=="" {
-  return nil,fmt.Errorf("invalid compiled RPC URL for %s",d.Name)
+ for _,endpoint:=range d.RPCURLs{
+  parsed,err:=url.Parse(endpoint)
+  if err!=nil||parsed.Scheme!="https"||parsed.Host==""{
+   return nil,fmt.Errorf("invalid compiled RPC URL for %s",d.Name)
+  }
  }
  for _,v:=range []string{d.RegistryAddress,d.ILNRegistryAddress}{
   if v==""{continue}
