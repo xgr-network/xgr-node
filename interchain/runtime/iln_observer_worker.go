@@ -26,7 +26,7 @@ func (w *Worker) knownObserverRoute(source *evm.Destination,route *evm.Checkpoin
  if err=json.Unmarshal(raw,&record);err!=nil{return observerRoute{},err}
  if record.SourceNetwork!=source.Name||record.SourceDomain!=source.Domain||
   record.DestinationDomain!=dest.Domain||!strings.EqualFold(record.RouteID,route.RouteID.String())||
-  !types.IsValidAddressString(record.Gateway){
+  types.IsValidAddress(record.Gateway)!=nil{
   return observerRoute{},fmt.Errorf("mismatched observer Registry catalog route")
  }
  gateway:=types.StringToAddress(record.Gateway)
@@ -57,10 +57,6 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
  }
  // The configured route set is immutable for this poll; newly discovered
  // routes enter at the next tick with their independent historical cursor.
- read:=func(cur uint64,exists bool,window uint64)(uint64,uint64,uint64,[]evm.ILNOperation,error){
-  return 0,0,0,nil,fmt.Errorf("not used: observer has gateway provenance")
- }
- _=read
  var native evm.NativeXGRReader
  if source.ChainID==1643{
   r,err:=w.nativeReader(source)
