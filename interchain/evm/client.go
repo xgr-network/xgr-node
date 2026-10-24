@@ -91,6 +91,7 @@ func GetValidatorSet(destination *Destination) (*ValidatorSet, error) {
 	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
 	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: method.ID()}, ethgo.Latest)
 	if err != nil {
+		recordInterchainRPCReadFailure(destination)
 		return nil, fmt.Errorf("call getValidatorSet: %w", err)
 	}
 	decodedRaw, err := decodeRPCHex(raw)
@@ -166,6 +167,7 @@ func GetValidator(destination *Destination, validator types.Address) (*Validator
 	}
 	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: append(method.ID(), input...)}, ethgo.Latest)
 	if err != nil {
+		recordInterchainRPCReadFailure(destination)
 		return nil, fmt.Errorf("call getValidator: %w", err)
 	}
 	decodedRaw, err := decodeRPCHex(raw)
@@ -226,6 +228,7 @@ func MinimumDeactivationReserve(destination *Destination) (*big.Int, error) {
 	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
 	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: method.ID()}, ethgo.Latest)
 	if err != nil {
+		recordInterchainRPCReadFailure(destination)
 		return nil, fmt.Errorf("call minimumDeactivationReserveWei: %w", err)
 	}
 	b, err := decodeRPCHex(raw)
@@ -269,6 +272,7 @@ func MaximumExecutorReimbursement(destination *Destination) (*big.Int, error) {
 	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
 	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: method.ID()}, ethgo.Latest)
 	if err != nil {
+		recordInterchainRPCReadFailure(destination)
 		return nil, fmt.Errorf("call maxExecutorReimbursementWei: %w", err)
 	}
 	b, err := decodeRPCHex(raw)
