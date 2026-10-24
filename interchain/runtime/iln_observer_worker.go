@@ -34,6 +34,14 @@ func (w *Worker) knownObserverRoute(source *evm.Destination,route *evm.Checkpoin
  return observerRoute{Route:route,Gateway:gateway,DestinationDomain:dest.Domain},nil
 }
 
+// Injectable seams are used by deterministic multi-route cursor and request
+// count tests; production always binds the canonical scan/signing functions.
+var observerRemoteWindow = evm.ScanILNMultiGatewayWindow
+var observerNativeWindow = evm.ScanNativeXGRMultiGatewayWindow
+var observerSignMessage = func(w *Worker,r *evm.CheckpointRoute,id types.Hash,n uint64)error{
+ return w.signDirectILNMessage(r,id,n)
+}
+
 // scanSharedILNSource safely migrates on the fly using existing durable
 // per-route cursors. A new route begins at its registry activation block;
 // the group always starts at the minimum cursor and only advances after all
@@ -74,9 +82,9 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   var events []evm.ILNObservedGatewayOperation
   var err error
   if source.ChainID==1643{
-   head,from,to,events,err=evm.ScanNativeXGRMultiGatewayWindow(native,source,gateways,cursor,window)
+   head,from,to,events,err=observerNativeWindow(native,source,gateways,cursor,window)
   }else{
-   head,from,to,events,err=evm.ScanILNMultiGatewayWindow(source,gateways,cursor,window)
+   head,from,to,events,err=observerRemoteWindow(source,gateways,cursor,window)
   }
   if err!=nil{return err}
   if head<cursor{return fmt.Errorf("observer confirmed head regressed")}
@@ -97,7 +105,7 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   if err!=nil{return err}
   for _,event:=range dispatched{
    if event.Operation.BlockNumber<=cursors[event.Route.Name]{continue}
-   err:=w.signDirectILNMessage(event.Route,event.Operation.MessageID,event.Operation.BlockNumber)
+   err:=observerSignMessage(w,event.Route,event.Operation.MessageID,event.Operation.BlockNumber)
    if err!=nil&&err.Error()!="Interchain message already delivered"{return err}
   }
   // Update every route cursor after all proof checks complete. A failure
