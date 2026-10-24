@@ -78,3 +78,45 @@ func TestSharedILNObserverRejectsUnverifiedWorkWithoutAdvancingCursor(t *testing
  require.NoError(t,e)
  require.False(t,exists,"failed full BLS verification must not advance any source cursor")
 }
+
+func TestSharedILNObserverLateRouteBackfillsWithoutRepeatingExistingVotes(t *testing.T){
+ idOld:=types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+ idNew:=types.StringToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+ tx:=types.StringToHash("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+ msg:=types.StringToHash("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+ gwOld:=types.StringToAddress("0x1111111111111111111111111111111111111111")
+ gwNew:=types.StringToAddress("0x2222222222222222222222222222222222222222")
+ src:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryActivationBlock:100}
+ oldRoute:=&evm.CheckpointRoute{Name:"old",RouteID:idOld}
+ newRoute:=&evm.CheckpointRoute{Name:"new",RouteID:idNew}
+ w:=&Worker{dataDir:t.TempDir()}
+ require.NoError(t,w.writeILNCursor("_direct_old",200))
+ originalReader,originalSigner:=observerRemoteWindow,observerSignMessage
+ defer func(){observerRemoteWindow=originalReader;observerSignMessage=originalSigner}()
+ calls,signs:=0,0
+ observerRemoteWindow=func(_ *evm.Destination,_ []types.Address,cursor,window uint64)(
+  uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error){
+  calls++
+  require.Equal(t,uint64(99),cursor)
+  require.Equal(t,uint64(256),window)
+  oldOp:=evm.ILNOperation{RouteID:idOld,MessageID:msg,DestinationDomain:1643,
+   TransactionHash:tx,BlockNumber:150,ValidatorFeeWei:big.NewInt(1),LogIndex:0}
+  newOp:=oldOp;newOp.RouteID=idNew;newOp.LogIndex=1
+  return 200,100,200,[]evm.ILNObservedGatewayOperation{
+   {Gateway:gwOld,Operation:oldOp},{Gateway:gwNew,Operation:newOp},
+  },nil
+ }
+ observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64)error{
+  signs++;require.Equal(t,"new",r.Name);return nil
+ }
+ require.NoError(t,w.scanSharedILNSource(src,[]observerRoute{
+  {Route:oldRoute,Gateway:gwOld,DestinationDomain:1643},
+  {Route:newRoute,Gateway:gwNew,DestinationDomain:1643},
+ }))
+ require.Equal(t,1,calls)
+ require.Equal(t,1,signs,"late route backfill may not re-sign already scanned events")
+ for _,name:=range []string{"old","new"}{
+  cursor,exists,err:=w.readILNCursor("_direct_"+name)
+  require.NoError(t,err);require.True(t,exists);require.Equal(t,uint64(200),cursor)
+ }
+}
