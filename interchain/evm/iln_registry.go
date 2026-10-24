@@ -562,7 +562,7 @@ func ScanDirectILNOperationWindow(
     var snapshot *ILNRouteSnapshot
     snapshot,err=getILNRouteAtBlock(client,source,destinationDomain,routeID,head,false)
     if err!=nil{
-        recordInterchainRPCReadError(source,rpcEndpoints(source)[0],err)
+        if rpcTransientFailure(err){recordInterchainRPCReadFailure(source)}
         return
     }
     operations,err=confirmedILNOperationsOnClient(client,source,snapshot.Route.Gateway,
