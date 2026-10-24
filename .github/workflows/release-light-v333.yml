@@ -62,6 +62,13 @@ jobs:
           set -euo pipefail
           go test -count=3 -timeout 12m ./interchain ./interchain/evm ./interchain/runtime ./consensus/ibft/interchain ./jsonrpc
           go test -count=5 ./interchain/evm -run '^Test(TwoIndependentOperatorsWithFailover|OneOperatorAndConflictingProvidersFailClosed|IndependentSourceWitness)'
+      - name: Validate native XGR reader integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'VerifyNativeXGROperation' interchain/runtime/iln_direct_signing.go
+          grep -q 'NativeXGRBlock' consensus/ibft/interchain_runtime.go
+          ! grep -q 'rpc.thirdweb.com' interchain/config.go
       - name: Validate live source RPC operator availability
         shell: bash
         run: |
@@ -69,7 +76,9 @@ jobs:
           python3 - <<'PY'
           import re,json,urllib.request,urllib.error
           source=open('interchain/config.go',encoding='utf-8').read()
-          for name,chain_id in [('xgr',1643),('base',8453),('arbitrum',42161)]:
+          # XGR 1643 uses each validator's local committed IBFT blockchain and receipts.
+          # Only L2 sources require two independent remote RPC operators.
+          for name,chain_id in [('base',8453),('arbitrum',42161)]:
               m=re.search(r'\{Name:"'+name+r'".*?RPCURLs:\[\]string\{([^}]+)\},\s*IndependentOperatorIDs:\[\]string\{([^}]+)\}',source,re.S)
               if not m: raise SystemExit('RPC policy missing: '+name)
               urls=re.findall(r'"([^"]+)"',m.group(1));ops=re.findall(r'"([^"]+)"',m.group(2))
