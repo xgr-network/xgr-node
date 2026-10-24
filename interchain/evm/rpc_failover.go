@@ -79,9 +79,16 @@ func InterchainRPCProviderStats() []RPCProviderStats {
     return out
 }
 
+// Sticky fallback is tied to the exact endpoint policy, not just the chain
+// and registry. A new endpoint set must never inherit a stale fallback index
+// or primary probe timer from an older configuration. This also makes repeated
+// go test -count runs independent when httptest providers use new ports.
+func rpcStateKey(d *Destination)string{
+    return fmt.Sprintf("%d/%s/%s",d.ChainID,d.RegistryAddress,
+        strings.Join(rpcEndpoints(d),"\x00"))
+}
 func rpcState(d *Destination)*rpcHealth{
-    key:=fmt.Sprintf("%d/%s",d.ChainID,d.RegistryAddress)
-    state,_:=rpcHealthByChain.LoadOrStore(key,&rpcHealth{})
+    state,_:=rpcHealthByChain.LoadOrStore(rpcStateKey(d),&rpcHealth{})
     return state.(*rpcHealth)
 }
 func rpcEndpoints(d *Destination)[]string{
