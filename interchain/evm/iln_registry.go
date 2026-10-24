@@ -61,9 +61,9 @@ func (d *Destination) ValidateILNRead() error {
 	if d.ChainID == 0 || d.Domain == 0 {
 		return fmt.Errorf("ILN network chain id and domain are required")
 	}
-	if strings.TrimSpace(d.RPCURL) == "" {
-		return fmt.Errorf("ILN network RPC is required")
-	}
+	if d.ChainID != 1643 && strings.TrimSpace(d.RPCURL) == "" {
+        return fmt.Errorf("external ILN network RPC is required")
+    }
 	if strings.TrimSpace(d.ILNRegistryAddress) == "" {
 		return fmt.Errorf("ILN registry address is required")
 	}
@@ -101,10 +101,22 @@ func confirmedILNHead(client *jsonrpc.Client, source *Destination) (uint64,error
 
 // GetConfirmedILNGovernanceNonce reads the single source-chain fee nonce.
 func GetConfirmedILNGovernanceNonce(source *Destination) (uint64, error) {
- client,_,err:=newVerifiedRPCClientWithHead(source);if err!=nil{return 0,err}
- defer client.Close()
- // An ILN fee nonce is current governance state, not a historical checkpoint.
- raw,err:=callILNSignatureView(client,types.StringToAddress(source.ILNRegistryAddress),"sourceFeeNonce()",ethgo.Latest)
+ if err:=source.ValidateILNRead();err!=nil{return 0,err}
+ // A source ILN registry is independent from the destination ValidatorRegistry.
+ // Do not require a membership deployment for governance nonce reads.
+ selector:=crypto.Keccak256([]byte("sourceFeeNonce()"))
+ var raw []byte
+ var err error
+ if source.ChainID==1643 {
+    reader,accessErr:=source.nativeAccess()
+    if accessErr!=nil{return 0,accessErr}
+    raw,err=reader.NativeXGRRead(types.StringToAddress(source.ILNRegistryAddress),selector[:4])
+ } else {
+    client,accessErr:=newVerifiedRPCClient(source)
+    if accessErr!=nil{return 0,accessErr}
+    defer client.Close()
+    raw,err=callILNView(client,types.StringToAddress(source.ILNRegistryAddress),selector[:4],ethgo.Latest)
+ }
  if err!=nil{return 0,fmt.Errorf("read source fee nonce: %w",err)}
  if len(raw)!=32{return 0,fmt.Errorf("invalid source fee nonce response")}
  value:=new(big.Int).SetBytes(raw); if !value.IsUint64(){return 0,fmt.Errorf("source fee nonce out of range")}
@@ -142,6 +154,14 @@ func getILNRouteAtBlock(
 	blockNumber uint64,
 	allowHistoricalDisabled bool,
 ) (*ILNRouteSnapshot, error) {
+    return getILNRouteAtBlockWithView(rpcILNView(client),source,destinationDomain,routeID,blockNumber,allowHistoricalDisabled)
+}
+
+func getILNRouteAtBlockWithView(
+    view ILNView, source *Destination, destinationDomain uint32,
+    routeID types.Hash, blockNumber uint64, allowHistoricalDisabled bool,
+) (*ILNRouteSnapshot,error) {
+    if view==nil||source==nil{return nil,fmt.Errorf("missing verified ILN contract reader")}
 	if destinationDomain == 0 {
 		return nil, fmt.Errorf("ILN destination domain must be non-zero")
 	}
@@ -169,11 +189,11 @@ func getILNRouteAtBlock(
 	// receipt proves the route was registered and enabled when the source
 	// transfer executed. Historical eth_call is not available on pruned nodes.
 	// The gateway and router bindings are immutable across all source chains.
-	factory, err := callILNAddressGetter(client, registry, "factory()", ethgo.Latest)
+	factory, err := viewILNAddress(view, registry, "factory()")
 	if err != nil || factory == types.ZeroAddress {
 		return nil, fmt.Errorf("archive-free ILN route proof requires an append-only V315 registry: %v", err)
 	}
-	raw, err := callILNView(client, registry, append(method.ID(), input...), ethgo.Latest)
+	raw, err := view(registry, append(method.ID(), input...))
 	if err != nil {
 		return nil, fmt.Errorf("call ILN getRoute: %w", err)
 	}
@@ -256,7 +276,7 @@ func getILNRouteAtBlock(
 	if err := protocol.ValidateILNRoute(validationRoute); err != nil {
 		return nil, fmt.Errorf("invalid canonical ILN route record: %w", err)
 	}
-	if err := verifyILNGatewayBinding(client, registry, route, ethgo.Latest); err != nil {
+	if err := verifyILNGatewayBindingWithView(view, registry, route); err != nil {
 		return nil, err
 	}
 	return &ILNRouteSnapshot{Registry: registry, Route: route, BlockNumber: blockNumber}, nil
@@ -273,14 +293,21 @@ func verifyILNGatewayBinding(
 	route protocol.ILNRoute,
 	block ethgo.BlockNumber,
 ) error {
-	gatewayRegistry, err := callILNAddressGetter(client, route.Gateway, "ilnRegistry()", block)
+    return verifyILNGatewayBindingWithView(func(addr types.Address,data []byte)([]byte,error){
+        return callILNView(client,addr,data,block)
+    },registry,route)
+}
+
+func verifyILNGatewayBindingWithView(view ILNView, registry types.Address, route protocol.ILNRoute) error {
+    if view==nil{return fmt.Errorf("missing verified gateway reader")}
+	gatewayRegistry, err := viewILNAddress(view, route.Gateway, "ilnRegistry()")
 	if err != nil {
 		return fmt.Errorf("verify ILN gateway registry: %w", err)
 	}
 	if gatewayRegistry != registry {
 		return fmt.Errorf("ILN gateway registry mismatch")
 	}
-	warpRouter, err := callILNAddressGetter(client, route.Gateway, "warpRouter()", block)
+	warpRouter, err := viewILNAddress(view, route.Gateway, "warpRouter()")
 	if err != nil {
 		return fmt.Errorf("verify ILN gateway warp router: %w", err)
 	}
@@ -292,14 +319,14 @@ func verifyILNGatewayBinding(
 	// and router here; the same-tx canonical Mailbox.Dispatch proof provides
 	// the remaining binding to the source message.
 	if !route.Enabled { return nil }
-	gatewayMailbox, err := callILNAddressGetter(client, route.Gateway, "mailbox()", block)
+	gatewayMailbox, err := viewILNAddress(view, route.Gateway, "mailbox()")
 	if err != nil {
 		return fmt.Errorf("verify ILN gateway mailbox: %w", err)
 	}
 	if gatewayMailbox != route.Mailbox {
 		return fmt.Errorf("ILN gateway mailbox mismatch")
 	}
-	gatewayHook, err := callILNAddressGetter(client, route.Gateway, "dispatchHook()", block)
+	gatewayHook, err := viewILNAddress(view, route.Gateway, "dispatchHook()")
 	if err != nil {
 		return fmt.Errorf("verify ILN gateway hook: %w", err)
 	}
@@ -414,41 +441,20 @@ func parseILNOperationLog(log *ethgo.Log) (ILNOperation, error) {
 // GetILNMessageDelivered queries the canonical destination router's Mailbox.
 // Unknown delivery state fails closed: it must never trigger replacement signing.
 func GetILNMessageDelivered(destination *Destination, destinationRouter types.Address, messageID types.Hash) (bool, error) {
-	if destination == nil || destinationRouter == types.ZeroAddress || messageID == types.ZeroHash {
-		return false, fmt.Errorf("invalid ILN delivery-status query")
-	}
-	if err := destination.ValidateMembershipRead(); err != nil {
-		return false, err
-	}
-	client, err := newVerifiedRPCClient(destination)
-	if err != nil {
-		return false, fmt.Errorf("create ILN destination RPC client: %w", err)
-	}
-	chainID, err := client.Eth().ChainID()
-	if err != nil || chainID == nil || !chainID.IsUint64() || chainID.Uint64() != destination.ChainID {
-		return false, fmt.Errorf("destination chain ID mismatch or RPC failure: %v", err)
-	}
-	mailbox, err := callILNAddressGetter(client, destinationRouter, "mailbox()", ethgo.Latest)
-	if err != nil {
-		recordInterchainRPCReadFailure(destination)
-		return false, fmt.Errorf("resolve destination Mailbox: %w", err)
-	}
-	selector := crypto.Keccak256([]byte("delivered(bytes32)"))
-	data := append(append([]byte(nil), selector[:4]...), messageID.Bytes()...)
-	raw, err := callILNView(client, mailbox, data, ethgo.Latest)
-	if err != nil {
-		return false, fmt.Errorf("query destination Mailbox.delivered: %w", err)
-	}
-	if len(raw) != 32 {
-		return false, fmt.Errorf("invalid delivered result length %d", len(raw))
-	}
-	for _, b := range raw[:31] {
-		if b != 0 { return false, fmt.Errorf("noncanonical delivered boolean encoding") }
-	}
-	if raw[31] != 0 && raw[31] != 1 {
-		return false, fmt.Errorf("invalid delivered boolean value")
-	}
-	return raw[31] == 1, nil
+ if destination==nil||destinationRouter==types.ZeroAddress||messageID==types.ZeroHash{
+  return false,fmt.Errorf("invalid delivery status query")
+ }
+ view:=func(to types.Address,data []byte)([]byte,error){return DestinationCall(destination,to,data)}
+ mailbox,err:=viewILNAddress(view,destinationRouter,"mailbox()")
+ if err!=nil{return false,fmt.Errorf("resolve Mailbox: %w",err)}
+ selector:=crypto.Keccak256([]byte("delivered(bytes32)"))
+ calldata:=append(append([]byte(nil),selector[:4]...),messageID.Bytes()...)
+ raw,err:=view(mailbox,calldata)
+ if err!=nil{return false,fmt.Errorf("query Mailbox.delivered: %w",err)}
+ if len(raw)!=32{return false,fmt.Errorf("invalid delivered response")}
+ for _,b:=range raw[:31]{if b!=0{return false,fmt.Errorf("invalid bool encoding")}}
+ if raw[31]!=0&&raw[31]!=1{return false,fmt.Errorf("invalid delivery boolean")}
+ return raw[31]==1,nil
 }
 
 // callILNAddressGetter reads immutable/current contract bindings.

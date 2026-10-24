@@ -118,7 +118,7 @@ func (w *Worker) attachILNDiscoveredRoute(source *evmInterchain.Destination,reco
   if candidate!=nil&&candidate.Domain==record.DestinationDomain {destination=candidate;break}
  }
  if destination==nil{return nil} // Persisted for a later chain onboarding.
- snapshot,err:=getILNRouteAtBlock(source,destination.Domain,routeID,confirmedBlock)
+ snapshot,err:=w.sourceILNRouteAtBlock(source,destination.Domain,routeID,confirmedBlock)
  if err!=nil{return fmt.Errorf("validate discovered ILN route %s: %w",record.RouteID,err)}
  if !strings.EqualFold(snapshot.Route.Gateway.String(),record.Gateway) {
   return fmt.Errorf("ILN discovered route gateway mismatch for %s",record.RouteID)
@@ -183,9 +183,9 @@ func (w *Worker) discoverILNHintedRoutes() {
    if candidate!=nil&&candidate.Domain==destinationDomain{destinationConfigured=true;break}
   }
   if !destinationConfigured{continue}
-  head,err:=getConfirmedILNHead(source)
+  head,err:=w.sourceILNHead(source)
   if err!=nil{continue}
-  snapshot,err:=getILNRouteAtBlock(source,destinationDomain,routeID,head)
+  snapshot,err:=w.sourceILNRouteAtBlock(source,destinationDomain,routeID,head)
   if err!=nil||!validILNSourceRouteNotice(source,destinationDomain,routeID,snapshot){continue}
   record:=ilnDiscoveredRoute{SourceNetwork:source.Name,SourceDomain:sourceDomain,
    DestinationDomain:destinationDomain,RouteID:routeID.String(),Gateway:snapshot.Route.Gateway.String()}
@@ -208,7 +208,7 @@ func (w *Worker) discoverILNRoutes() {
 }
 
 func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) error {
- head,err:=getConfirmedILNHead(source)
+ head,err:=w.sourceILNHead(source)
  if err!=nil{return err}
  if err:=w.ensureILNRouteCatalogVersion(source);err!=nil{return err}
  if err:=w.ensureILNRPCDiscoveryCursorVersion(source);err!=nil{return err}
@@ -219,7 +219,7 @@ func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) 
  if !exists {
   if source.ILNRegistryActivationBlock!=0 {
    // Explicit operator configuration is an RPC-native deployment height.
-   activation,err:=getILNRegistryActivationBlock(source)
+   activation,err:=w.sourceILNActivation(source)
    if err!=nil{return err}
    if activation==0||activation>head{return fmt.Errorf("invalid RPC-native ILN registry deployment block")}
    cursor=activation-1
@@ -234,7 +234,7 @@ func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) 
  if cursor==head{return nil}
  from,to:=cursor+1,head
  if to-from+1>ilnRouteDiscoveryScanChunk{to=from+ilnRouteDiscoveryScanChunk-1}
- events,err:=getConfirmedILNRouteAdds(source,from,to)
+ events,err:=w.sourceILNRouteAdds(source,from,to)
  if err!=nil{return err}
  for _,event:=range events {
   // Durable before the discovery cursor advances. Unknown destinations are

@@ -138,33 +138,28 @@ func GetDirectILNDestinationISM(destination *Destination, recipient types.Addres
         return types.ZeroAddress,fmt.Errorf("invalid direct destination identity")
     }
     if err:=destination.ValidateMembershipRead();err!=nil{return types.ZeroAddress,err}
-    client,err:=newVerifiedRPCClient(destination)
-    if err!=nil{return types.ZeroAddress,err}
-    chainID,err:=client.Eth().ChainID()
-    if err!=nil||chainID==nil||!chainID.IsUint64()||
-        chainID.Uint64()!=destination.ChainID {
-        return types.ZeroAddress,fmt.Errorf("unverified destination RPC chain ID")
+    view:=func(to types.Address,call []byte)([]byte,error){
+        return DestinationCall(destination,to,call)
     }
-    mailbox,err:=callILNAddressGetter(client,recipient,"mailbox()",ethgo.Latest)
+    mailbox,err:=viewILNAddress(view,recipient,"mailbox()")
     if err!=nil{return types.ZeroAddress,err}
-    ism,err:=callILNAddressGetter(client,mailbox,"defaultIsm()",ethgo.Latest)
+    ism,err:=viewILNAddress(view,mailbox,"defaultIsm()")
     if err!=nil{return types.ZeroAddress,err}
     // Reject recipients that deliberately install a different effective ISM:
     // Mailbox.process() must exercise the very same module we sign for.
-    if raw,viewErr:=callILNSignatureView(client,recipient,
-        "interchainSecurityModule()",ethgo.Latest);viewErr==nil {
+    if raw,viewErr:=viewILNSignature(view,recipient,"interchainSecurityModule()");viewErr==nil {
         if len(raw)!=32{return types.ZeroAddress,fmt.Errorf("malformed recipient ISM")}
         configured:=types.BytesToAddress(raw[12:])
         if configured!=types.ZeroAddress&&configured!=ism {
             return types.ZeroAddress,fmt.Errorf("recipient overrides canonical Direct-BLS ISM")
         }
     }
-    registry,err:=callILNAddressGetter(client,ism,"registry()",ethgo.Latest)
+    registry,err:=viewILNAddress(view,ism,"registry()")
     if err!=nil{return types.ZeroAddress,err}
     if registry!=types.StringToAddress(destination.RegistryAddress) {
         return types.ZeroAddress,fmt.Errorf("destination ISM registry mismatch")
     }
-    domain,err:=callILNSignatureView(client,ism,"destinationDomain()",ethgo.Latest)
+    domain,err:=viewILNSignature(view,ism,"destinationDomain()")
     if err!=nil||len(domain)!=32||
        new(big.Int).SetBytes(domain).Cmp(new(big.Int).SetUint64(uint64(destination.Domain)))!=0 {
         return types.ZeroAddress,fmt.Errorf("destination ISM domain mismatch")

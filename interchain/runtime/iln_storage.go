@@ -64,7 +64,7 @@ func (w *Worker) pruneILNQuorumCaches() {
    budget--
    // The immutable source registry route tuple includes the canonical
    // destination router. Never trust a local filename or arbitrary caller.
-   snapshot,err:=getConfirmedILNRoute(source,destination.Domain,route.RouteID)
+   snapshot,err:=w.sourceILNRoute(source,destination.Domain,route.RouteID)
    if err!=nil{
     // Disabled routes still have pending historical messages: use the
     // historical source block from a persisted signer-approved attestation.
@@ -72,7 +72,7 @@ func (w *Worker) pruneILNQuorumCaches() {
     if readErr!=nil{continue}
     var a ilnCheckpointAttestation
     if json.Unmarshal(raw,&a)!=nil||!strings.EqualFold(a.AuthorizedMessageID,messageID)||a.SourceBlockNumber==0{continue}
-    snapshot,err=getILNRouteAtBlock(source,destination.Domain,route.RouteID,a.SourceBlockNumber)
+    snapshot,err=w.sourceILNRouteAtBlock(source,destination.Domain,route.RouteID,a.SourceBlockNumber)
     if err!=nil{continue}
    }
    delivered,err:=getILNMessageDelivered(destination,snapshot.Route.DestinationRouter,hash)

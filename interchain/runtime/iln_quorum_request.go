@@ -202,7 +202,7 @@ func (w *Worker) processRequestedILNQuorum(route *evmInterchain.CheckpointRoute,
     }
     source:=w.destinations[route.SourceNetwork]
     if source==nil{return fmt.Errorf("ILN source unavailable")}
-    confirmed,err:=getConfirmedILNHead(source)
+    confirmed,err:=w.sourceILNHead(source)
     if err!=nil{return err}
     if sourceBlock>confirmed{return fmt.Errorf("hint source transaction is not confirmed")}
     return w.signDirectILNMessage(route,messageID,sourceBlock)

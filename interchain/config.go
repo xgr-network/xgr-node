@@ -49,8 +49,9 @@ var compiledChains = []ChainPolicy{
  // NEVER Solidity's L1-origin block.number on an L2.
  // xgrchain receipts: f0156bb3... (ValidatorRegistry), 369ce335... (SourceRegistry).
  {Name:"xgr",ChainID:1643,Domain:1643,Finality:FinalityIBFT,
-  VerifierFormat:"compressed",RPCURLs:[]string{"https://rpc.xgr.network","https://rpc1.xgr.network","https://rpc2.xgr.network","https://1643.rpc.thirdweb.com"},
-  IndependentOperatorIDs:[]string{"xgr-network","xgr-network","xgr-network","thirdweb"},
+  // XGR has NO external Interchain RPC policy. All read-only verification
+  // of its committed IBFT chain is performed directly by the local validator.
+  VerifierFormat:"compressed",
   Registry:"0x9b6b92ef1745611f402341965f7fc649cbe0da8c",
   SourceRegistry:"0xea887a7f2f519f291732aaadf578baf3ff374df6",
   SourceActivationBlock:12053797},
@@ -72,7 +73,16 @@ var compiledChains = []ChainPolicy{
 
 func validatePolicy(p ChainPolicy) error {
  if p.Name==""||p.ChainID==0||p.Domain==0||uint64(p.Domain)!=p.ChainID||
-  len(p.RPCURLs)<3||len(p.IndependentOperatorIDs)!=len(p.RPCURLs)||(p.VerifierFormat!="compressed"&&p.VerifierFormat!="eip2537") {
+  (p.VerifierFormat!="compressed"&&p.VerifierFormat!="eip2537") {
+  return fmt.Errorf("invalid compiled XITA chain identity: %q",p.Name)
+ }
+ // XGR's native verified data source deliberately has no RPC addresses.
+ // L2 chains retain 3+ endpoints and two independent operators.
+ if p.ChainID==1643 {
+  if len(p.RPCURLs)!=0||len(p.IndependentOperatorIDs)!=0 {
+   return fmt.Errorf("XGR native IBFT mode must not contain external RPC endpoints")
+  }
+ }else if len(p.RPCURLs)<3||len(p.IndependentOperatorIDs)!=len(p.RPCURLs){
   return fmt.Errorf("invalid compiled XITA chain identity: %q",p.Name)
  }
  seen:=make(map[string]bool,len(p.RPCURLs))
@@ -91,7 +101,11 @@ func validatePolicy(p ChainPolicy) error {
   }
   seen[endpoint]=true
  }
- if len(operators)<2{return fmt.Errorf("at least two independent Interchain RPC operators required for %s",p.Name)}
+ // On Base/Arbitrum, independent operators are mandatory; on XGR there
+ // are no remote operators because each validator reads its own IBFT chain.
+ if len(operators)<2 && p.ChainID!=1643 {
+  return fmt.Errorf("at least two independent Interchain RPC operators required for %s",p.Name)
+ }
  switch p.ChainID {
  case 1643:
   if p.Name!="xgr"||p.Finality!=FinalityIBFT||p.VerifierFormat!="compressed" {

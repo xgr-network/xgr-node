@@ -52,9 +52,8 @@ func VerifyDestinationChainID(destination *Destination) error {
 	if destination == nil {
 		return fmt.Errorf("destination is nil")
 	}
-	if err := destination.ValidateMembershipRead(); err != nil {
-		return err
-	}
+	if err := destination.ValidateMembershipRead(); err != nil {return err}
+    if destination.ChainID==1643 {_,err:=destination.nativeAccess();return err}
 
 	client, err := newVerifiedRPCClient(destination)
 	if err != nil {
@@ -66,6 +65,11 @@ func VerifyDestinationChainID(destination *Destination) error {
 
 func GetDestinationGasBalance(destination *Destination, address ethgo.Address) (*big.Int,error) {
  if err:=destination.ValidateMembershipRead();err!=nil{return nil,err}
+ if destination.ChainID==1643{
+  backend,err:=destination.nativeAccess()
+  if err!=nil{return nil,err}
+  return backend.NativeXGRBalance(types.Address(address))
+ }
  client,err:=newVerifiedRPCClient(destination)
  if err!=nil{return nil,err}
  defer client.Close()
@@ -81,26 +85,26 @@ func GetValidatorSet(destination *Destination) (*ValidatorSet, error) {
 	if err := destination.ValidateMembershipRead(); err != nil {
         return nil, err
     }
-	client, err := newVerifiedRPCClient(destination)
-	if err != nil {
-		return nil, err
-	}
-    defer client.Close()
-	method := registryABI.Methods["getValidatorSet"]
+		method := registryABI.Methods["getValidatorSet"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing getValidatorSet")
 	}
 
-	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
-	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: method.ID()}, ethgo.Latest)
-	if err != nil {
-		recordInterchainRPCReadFailure(destination)
-		return nil, fmt.Errorf("call getValidatorSet: %w", err)
-	}
-	decodedRaw, err := decodeRPCHex(raw)
-	if err != nil {
-		return nil, err
-	}
+    var decodedRaw []byte
+    var err error
+    if destination.ChainID==1643 {
+        decodedRaw,err=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),method.ID())
+    } else {
+        var client *jsonrpc.Client
+        client,err=newVerifiedRPCClient(destination)
+        if err!=nil{return nil,err}
+        defer client.Close()
+        addr:=ethgo.Address(types.StringToAddress(destination.RegistryAddress))
+        var raw string
+        raw,err=client.Eth().Call(&ethgo.CallMsg{To:&addr,Data:method.ID()},ethgo.Latest)
+        if err==nil{decodedRaw,err=decodeRPCHex(raw)}
+    }
+    if err!=nil{return nil,fmt.Errorf("call getValidatorSet: %w",err)}
 	decoded, err := method.Outputs.Decode(decodedRaw)
 	if err != nil {
 		return nil, fmt.Errorf("decode getValidatorSet: %w", err)
@@ -144,47 +148,26 @@ func GetValidatorSet(destination *Destination) (*ValidatorSet, error) {
 
 func GetValidatorStatusForDestination(destination *Destination, validator types.Address) (*ValidatorStatus, error) {
  if err:=destination.ValidateMembershipRead();err!=nil{return nil,err}
- client,err:=newVerifiedRPCClient(destination)
- if err!=nil{return nil,err}
- defer client.Close()
  input:=encodeGetValidatorStatusCall(validator)
- to:=ethgo.Address(types.StringToAddress(destination.RegistryAddress))
- raw,err:=client.Eth().Call(&ethgo.CallMsg{To:&to,Data:input},ethgo.Latest)
- if err!=nil{
-  recordInterchainRPCReadFailure(destination)
-  return nil,fmt.Errorf("read destination ValidatorRegistry status: %w",err)
- }
- return decodeValidatorStatusResult(raw)
+ raw,err:=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),input)
+ if err!=nil{return nil,fmt.Errorf("read destination ValidatorRegistry status: %w",err)}
+ return decodeValidatorStatusResult("0x"+hex.EncodeToString(raw))
 }
 
 func GetValidator(destination *Destination, validator types.Address) (*ValidatorDetails, error) {
-	if err := VerifyDestinationChainID(destination); err != nil {
-		return nil, err
-	}
-	client, err := newVerifiedRPCClient(destination)
-	if err != nil {
-		return nil, err
-	}
+	if err := destination.ValidateMembershipRead(); err != nil { return nil, err }
 	method := registryABI.Methods["getValidator"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing getValidator")
 	}
-	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
 	input, err := method.Inputs.Encode(map[string]interface{}{
 		"validator": ethgo.Address(validator),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode getValidator: %w", err)
 	}
-	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: append(method.ID(), input...)}, ethgo.Latest)
-	if err != nil {
-		recordInterchainRPCReadFailure(destination)
-		return nil, fmt.Errorf("call getValidator: %w", err)
-	}
-	decodedRaw, err := decodeRPCHex(raw)
-	if err != nil {
-		return nil, err
-	}
+	decodedRaw, err := DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),append(method.ID(),input...))
+    if err!=nil{return nil,fmt.Errorf("call getValidator: %w",err)}
 	decoded, err := method.Outputs.Decode(decodedRaw)
 	if err != nil {
 		return nil, fmt.Errorf("decode getValidator: %w", err)
@@ -225,27 +208,13 @@ func GetValidator(destination *Destination, validator types.Address) (*Validator
 }
 
 func MinimumDeactivationReserve(destination *Destination) (*big.Int, error) {
-	if err := VerifyDestinationChainID(destination); err != nil {
-		return nil, err
-	}
-	client, err := newVerifiedRPCClient(destination)
-	if err != nil {
-		return nil, err
-	}
+	if err := destination.ValidateMembershipRead(); err != nil { return nil, err }
 	method := registryABI.Methods["minimumDeactivationReserveWei"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing minimumDeactivationReserveWei")
 	}
-	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
-	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: method.ID()}, ethgo.Latest)
-	if err != nil {
-		recordInterchainRPCReadFailure(destination)
-		return nil, fmt.Errorf("call minimumDeactivationReserveWei: %w", err)
-	}
-	b, err := decodeRPCHex(raw)
-	if err != nil {
-		return nil, err
-	}
+	b,err:=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),method.ID())
+ if err!=nil{return nil,fmt.Errorf("call minimumDeactivationReserveWei: %w",err)}
 	decoded, err := method.Outputs.Decode(b)
 	if err != nil {
 		return nil, err
@@ -269,27 +238,13 @@ func MinimumDeactivationReserve(destination *Destination) (*big.Int, error) {
 }
 
 func MaximumExecutorReimbursement(destination *Destination) (*big.Int, error) {
-	if err := VerifyDestinationChainID(destination); err != nil {
-		return nil, err
-	}
-	client, err := newVerifiedRPCClient(destination)
-	if err != nil {
-		return nil, err
-	}
+	if err := destination.ValidateMembershipRead(); err != nil { return nil, err }
 	method := registryABI.Methods["maxExecutorReimbursementWei"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing maxExecutorReimbursementWei")
 	}
-	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
-	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: method.ID()}, ethgo.Latest)
-	if err != nil {
-		recordInterchainRPCReadFailure(destination)
-		return nil, fmt.Errorf("call maxExecutorReimbursementWei: %w", err)
-	}
-	b, err := decodeRPCHex(raw)
-	if err != nil {
-		return nil, err
-	}
+	b,err:=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),method.ID())
+ if err!=nil{return nil,fmt.Errorf("call maxExecutorReimbursementWei: %w",err)}
 	decoded, err := method.Outputs.Decode(b)
 	if err != nil {
 		return nil, err
@@ -335,9 +290,9 @@ func SubmitMembership(
 	if err := destination.ValidateSubmission(); err != nil {
 		return nil, err
 	}
-	if err := VerifyDestinationChainID(destination); err != nil {
-		return nil, err
-	}
+	if destination.ChainID!=1643 {
+        if err:=VerifyDestinationChainID(destination);err!=nil{return nil,err}
+    }
 	if payload.DestinationDomain != destination.Domain {
 		return nil, fmt.Errorf("payload destination domain mismatch: payload=%d configured=%d", payload.DestinationDomain, destination.Domain)
 	}
@@ -411,6 +366,37 @@ func SubmitMembership(
 		return nil, fmt.Errorf("encode applyMembership: %w", err)
 	}
 
+    if destination.ChainID==1643 {
+        backend,err:=destination.nativeAccess()
+        if err!=nil{return nil,err}
+        to:=types.StringToAddress(destination.RegistryAddress)
+        calldata:=append(append([]byte(nil),method.ID()...),input...)
+        gasCost,err:=backend.NativeXGREstimateCost(types.Address(key.Address()),to,calldata,value)
+        if err!=nil{return nil,err}
+        if payload.Action==protocol.ActionRemoveValidator {
+            details,err:=GetValidator(destination,payload.Validator)
+            if err!=nil{return nil,err}
+            capWei,err:=MaximumExecutorReimbursement(destination)
+            if err!=nil{return nil,err}
+            available:=new(big.Int).Set(details.ReserveWei)
+            if capWei.Cmp(available)<0{available.Set(capWei)}
+            if gasCost.Cmp(available)>0{return nil,fmt.Errorf("native removal gas cost exceeds reimbursement")}
+        }
+        balance,err:=backend.NativeXGRBalance(types.Address(key.Address()))
+        if err!=nil{return nil,err}
+        required:=new(big.Int).Add(gasCost,value)
+        if balance.Cmp(required)<0{return nil,fmt.Errorf("insufficient native XGR executor funds")}
+        receipt,err:=DestinationSubmit(destination,key,to,calldata,value)
+        if err!=nil{return nil,err}
+        status,err:=GetValidatorStatusForDestination(destination,payload.Validator)
+        if err!=nil{return nil,err}
+        wantActive:=payload.Action==protocol.ActionAddValidator
+        if status.Active!=wantActive||status.SetID!=payload.SetID+1{
+            return nil,fmt.Errorf("native XGR membership post-state mismatch")
+        }
+        return &SubmitResult{TxHash:receipt.TransactionHash.String(),SetID:status.SetID,
+            Active:status.Active,Receipt:receipt},nil
+    }
 	verifiedRPCURL,endpointErr := selectVerifiedRPCURL(destination)
  if endpointErr!=nil{return nil,endpointErr}
  relayer, err := txrelayer.NewTxRelayer(

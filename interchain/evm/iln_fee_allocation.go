@@ -5,7 +5,6 @@ import (
     "errors"
     "math/big"
 
-    "github.com/umbracle/ethgo"
     "github.com/umbracle/ethgo/jsonrpc"
     "github.com/xgr-network/xgr-node/crypto"
     "github.com/xgr-network/xgr-node/types"
@@ -53,7 +52,13 @@ func verifyConfirmedILNFeeAllocationOnClient(
     client *jsonrpc.Client, source *Destination, snapshot *ILNRouteSnapshot,
     messageID types.Hash, checkpointBlock, confirmed uint64,
 ) error {
-    if source == nil || client == nil || snapshot == nil || messageID == types.ZeroHash ||
+    return verifyFeeAllocationWithView(rpcILNView(client),source,snapshot,messageID,checkpointBlock,confirmed)
+}
+
+func verifyFeeAllocationWithView(view ILNView, source *Destination, snapshot *ILNRouteSnapshot,
+    messageID types.Hash, checkpointBlock, confirmed uint64) error {
+    if view==nil{return fmt.Errorf("nil fee-allocation reader")}
+    if source == nil || snapshot == nil || messageID == types.ZeroHash ||
         checkpointBlock == 0 || snapshot.Registry == types.ZeroAddress ||
         snapshot.Route.Gateway == types.ZeroAddress ||
         snapshot.Route.Key.RouteID == types.ZeroHash ||
@@ -68,28 +73,28 @@ func verifyConfirmedILNFeeAllocationOnClient(
 
     // These addresses are immutable in the verified source contracts; reading
     // their most recent value does not require historical RPC state.
-    vault, err := callILNAddressGetter(client, snapshot.Route.Gateway, "feeVault()", ethgo.Latest)
+    vault, err := viewILNAddress(view, snapshot.Route.Gateway, "feeVault()")
     if err != nil || vault == types.ZeroAddress {
         return fmt.Errorf("ILN route gateway FeeVault unavailable: %v", err)
     }
-    gateway, err := callILNAddressGetter(client, vault, "gateway()", ethgo.Latest)
+    gateway, err := viewILNAddress(view, vault, "gateway()")
     if err != nil || gateway != snapshot.Route.Gateway {
         return fmt.Errorf("ILN FeeVault immutable gateway does not match source route: %v", err)
     }
-    raw, err := callILNSignatureView(client, vault, "routeId()", ethgo.Latest)
+    raw, err := viewILNSignature(view, vault, "routeId()")
     if err != nil || len(raw) != 32 || types.BytesToHash(raw) != snapshot.Route.Key.RouteID {
         return fmt.Errorf("ILN FeeVault routeId mismatch: %v", err)
     }
-    raw, err = callILNSignatureView(client, vault, "destinationDomain()", ethgo.Latest)
+    raw, err = viewILNSignature(view, vault, "destinationDomain()")
     if err != nil || len(raw) != 32 ||
         new(big.Int).SetBytes(raw).Cmp(new(big.Int).SetUint64(uint64(snapshot.Route.Key.DestinationDomain))) != 0 {
         return fmt.Errorf("ILN FeeVault destinationDomain mismatch: %v", err)
     }
-    governance, err := callILNAddressGetter(client, snapshot.Registry, "governanceRegistry()", ethgo.Latest)
+    governance, err := viewILNAddress(view, snapshot.Registry, "governanceRegistry()")
     if err != nil || governance == types.ZeroAddress {
         return fmt.Errorf("ILN source governance registry unavailable: %v", err)
     }
-    vaultGovernance, err := callILNAddressGetter(client, vault, "validatorRegistry()", ethgo.Latest)
+    vaultGovernance, err := viewILNAddress(view, vault, "validatorRegistry()")
     if err != nil || vaultGovernance != governance {
         return fmt.Errorf("ILN FeeVault governance authority mismatch: %v", err)
     }
@@ -98,7 +103,7 @@ func verifyConfirmedILNFeeAllocationOnClient(
     data := make([]byte, 4+32)
     copy(data[:4],selector[:4])
     copy(data[4:],messageID.Bytes())
-    allocated, err := callILNView(client, vault, data, ethgo.Latest)
+    allocated, err := view(vault, data)
     if err != nil || len(allocated) != 32 {
         return fmt.Errorf("ILN allocatedOperation at confirmed checkpoint unavailable: %v", err)
     }
@@ -107,7 +112,7 @@ func verifyConfirmedILNFeeAllocationOnClient(
     }
     selector = crypto.Keccak256Hash([]byte("allocatedSetId(bytes32)"))
     copy(data[:4],selector[:4])
-    set, err := callILNView(client, vault, data, ethgo.Latest)
+    set, err := view(vault, data)
     if err != nil || len(set) != 32 {
         return fmt.Errorf("ILN allocated validator set at checkpoint unavailable: %v", err)
     }

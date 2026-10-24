@@ -87,7 +87,7 @@ func SubmitILNGovernance(
     if key == nil { return nil, fmt.Errorf("ILN governance executor key is missing") }
     if err := source.ValidateILNRead(); err != nil { return nil, err }
     if err := source.ValidateMembershipRead(); err != nil { return nil, err }
-    if err := VerifyDestinationChainID(source); err != nil { return nil, err }
+    if source.ChainID!=1643 { if err:=VerifyDestinationChainID(source);err!=nil{return nil,err} }
     if proposal.Registry != types.StringToAddress(source.ILNRegistryAddress) ||
        proposal.SourceChainID != source.ChainID ||
        proposal.SourceDomain != source.Domain {
@@ -116,6 +116,17 @@ func SubmitILNGovernance(
     }
     calldata, err := EncodeILNGovernanceCalldata(proposal, bitmap, compressedSignature, source.VerifierFormat)
     if err != nil { return nil, err }
+    if source.ChainID==1643 {
+        to:=proposal.Registry
+        receipt,err:=DestinationSubmit(source,key,to,calldata,big.NewInt(0))
+        if err!=nil{return nil,err}
+        if receipt==nil{return nil,fmt.Errorf("native XGR governance receipt missing")}
+        actualNonce,err:=GetConfirmedILNGovernanceNonce(source)
+        if err!=nil{return nil,err}
+        if actualNonce!=proposal.Nonce{return nil,fmt.Errorf("native XGR governance post-state nonce mismatch")}
+        return &ILNGovernanceSubmitResult{TxHash:receipt.TransactionHash.String(),
+            Nonce:actualNonce,SetID:set.SetID},nil
+    }
     verifiedRPCURL,endpointErr := selectVerifiedRPCURL(source)
     if endpointErr!=nil{return nil,endpointErr}
     relayer, err := txrelayer.NewTxRelayer(
