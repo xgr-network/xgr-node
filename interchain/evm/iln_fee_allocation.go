@@ -5,7 +5,6 @@ import (
     "errors"
     "math/big"
 
-    "github.com/umbracle/ethgo"
     "github.com/umbracle/ethgo/jsonrpc"
     "github.com/xgr-network/xgr-node/crypto"
     "github.com/xgr-network/xgr-node/types"
