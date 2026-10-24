@@ -37,11 +37,12 @@ func makeDestination(p policy.ChainPolicy) (*Destination,error) {
   Name:p.Name,ChainID:p.ChainID,Domain:p.Domain,
   RegistryAddress:p.Registry,ILNRegistryAddress:p.SourceRegistry,
   ILNRegistryActivationBlock:p.SourceActivationBlock,
-  RPCURL:p.RPCURLs[0],RPCURLs:append([]string(nil),p.RPCURLs...),
+  RPCURLs:append([]string(nil),p.RPCURLs...),
   IndependentOperatorIDs:append([]string(nil),p.IndependentOperatorIDs...),
   FinalityRule:p.Finality,VerifierFormat:p.VerifierFormat,
   MembershipValiditySeconds:300,ExecutorStepDelaySeconds:10,
  }
+ if len(d.RPCURLs)>0{d.RPCURL=d.RPCURLs[0]}
  for _,endpoint:=range d.RPCURLs{
   parsed,err:=url.Parse(endpoint)
   if err!=nil||parsed.Scheme!="https"||parsed.Host==""{
@@ -80,7 +81,7 @@ func LoadAll() ([]*Destination,error) {
 
 func (d *Destination) ValidateMembershipRead() error {
  if d==nil||d.ChainID==0||d.Domain==0||strings.TrimSpace(d.RegistryAddress)==""||
-  strings.TrimSpace(d.RPCURL)==""{
+  (d.ChainID!=1643&&strings.TrimSpace(d.RPCURL)==""){
   return fmt.Errorf("verified destination Registry deployment required")
  }
  if d.VerifierFormat!=VerifierFormatEIP2537&&d.VerifierFormat!=VerifierFormatCompressed{
