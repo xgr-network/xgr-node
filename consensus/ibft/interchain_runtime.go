@@ -3,6 +3,7 @@ package ibft
 import (
 	"fmt"
  "math/big"
+    "sync"
  "github.com/umbracle/ethgo"
  "github.com/umbracle/ethgo/wallet"
 	"path/filepath"
@@ -16,6 +17,9 @@ import (
 
 type ibftInterchainState struct {
 	ibft *backendIBFT
+    // Serialize local ILN submissions per validator executor to avoid
+    // duplicate pool nonces while preserving consensus/TxPool independence.
+    submitMu sync.Mutex
 }
 
 func (s *ibftInterchainState) OriginChainID() uint64 {
@@ -163,16 +167,29 @@ func (s *ibftInterchainState) NativeXGRVerifyReceipt(receipt *ethgo.Receipt)erro
 
 func (s *ibftInterchainState) NativeXGRSubmit(key ethgo.Key,to types.Address,data []byte,value *big.Int)(*ethgo.Receipt,error){
  if key==nil||to==types.ZeroAddress||value==nil||value.Sign()<0{return nil,fmt.Errorf("invalid native transaction")}
+ // Only the signing/admission phase is serialized. Receipt waiting must
+ // never hold the lock, so other validator operations can progress.
+ submit:=func()(*types.Transaction,error){
+  s.submitMu.Lock()
+  defer s.submitMu.Unlock()
  head,err:=s.NativeXGRHead();if err!=nil{return nil,err}
  h:=s.ibft.blockchain.Header()
  if h==nil||h.Number!=head{return nil,fmt.Errorf("native XGR head changed")}
  sim,err:=s.ibft.executor.BeginTxn(h.StateRoot,h,types.ZeroAddress)
  if err!=nil{return nil,err}
  sender:=types.Address(key.Address())
- nonce:=sim.GetNonce(sender)
+ // Pending pool nonce accounts for previously submitted but unconfirmed
+ // validator operations. Confirmed state nonce alone is unsafe here.
+ submitter,ok:=s.ibft.txpool.(interface{
+  AddTx(*types.Transaction)error
+  GetNonce(types.Address)uint64
+ })
+ if !ok{return nil,fmt.Errorf("native XGR TxPool does not support submission and pending nonce reads")}
+ nonce:=submitter.GetNonce(sender)
  gasPrice:=new(big.Int).SetUint64(h.BaseFee)
  if gasPrice.Sign()==0{gasPrice.SetUint64(1879048192)}
  gasPrice.Mul(gasPrice,big.NewInt(2))
+ if !gasPrice.IsUint64(){return nil,fmt.Errorf("native XGR gas price exceeds uint64")}
  simulator,err:=s.ibft.executor.BeginTxn(h.StateRoot,h,types.ZeroAddress)
  if err!=nil{return nil,err}
  simulator.SetNonPayable(true)
@@ -193,9 +210,11 @@ func (s *ibftInterchainState) NativeXGRSubmit(key ethgo.Key,to types.Address,dat
  if err!=nil{return nil,err}
  local:=new(types.Transaction)
  if err:=local.UnmarshalRLP(encoded);err!=nil{return nil,err}
- submitter,ok:=s.ibft.txpool.(interface{AddTx(*types.Transaction)error})
- if !ok{return nil,fmt.Errorf("native XGR TxPool submission interface unavailable")}
  if err:=submitter.AddTx(local);err!=nil{return nil,fmt.Errorf("native TxPool rejected transaction: %w",err)}
+ return local,nil
+ }
+ local,err:=submit()
+ if err!=nil{return nil,err}
  deadline:=time.Now().Add(2*time.Minute)
  for time.Now().Before(deadline){
   if !s.IsSynchronized(){return nil,fmt.Errorf("node unsynchronized after native transaction submission")}
