@@ -46,7 +46,7 @@ func TestMultiGatewayScanOneRPCForThreeGateways(t *testing.T){
  require.Empty(t,events)
  require.Equal(t,1,rpcCalls)
  addresses,ok:=filter["address"].([]interface{})
- require.True(t,ok)
+ require.True(t,ok,"actual eth_getLogs filter: %#v",filter)
  require.Len(t,addresses,3,"deduplicate gateway filters before RPC")
  require.Equal(t,"0x64",filter["fromBlock"])
  require.Equal(t,"0x78",filter["toBlock"])
