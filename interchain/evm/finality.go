@@ -56,7 +56,7 @@ func waitForFinality(destination *Destination,receipt *ethgo.Receipt)error {
  if receipt==nil{return fmt.Errorf("missing destination receipt")}
  if err:=destination.ValidateSubmission();err!=nil{return err}
  if err:=VerifyDestinationChainID(destination);err!=nil{return err}
- client,err:=jsonrpc.NewClient(destination.RPCURL)
+ client,err:=newVerifiedRPCClient(destination)
  if err!=nil{return err}
  defer client.Close()
  deadline:=time.Now().Add(5*time.Minute)
