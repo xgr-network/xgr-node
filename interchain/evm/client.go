@@ -3,6 +3,7 @@ package evm
 import (
 	"encoding/hex"
 	"fmt"
+ "encoding/hex"
 	"math/big"
 	"reflect"
 	"strings"
@@ -81,26 +82,26 @@ func GetValidatorSet(destination *Destination) (*ValidatorSet, error) {
 	if err := destination.ValidateMembershipRead(); err != nil {
         return nil, err
     }
-	client, err := newVerifiedRPCClient(destination)
-	if err != nil {
-		return nil, err
-	}
-    defer client.Close()
-	method := registryABI.Methods["getValidatorSet"]
+		method := registryABI.Methods["getValidatorSet"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing getValidatorSet")
 	}
 
-	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
-	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: method.ID()}, ethgo.Latest)
-	if err != nil {
-		recordInterchainRPCReadFailure(destination)
-		return nil, fmt.Errorf("call getValidatorSet: %w", err)
-	}
-	decodedRaw, err := decodeRPCHex(raw)
-	if err != nil {
-		return nil, err
-	}
+    var decodedRaw []byte
+    var err error
+    if destination.ChainID==1643 {
+        decodedRaw,err=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),method.ID())
+    } else {
+        var client *jsonrpc.Client
+        client,err=newVerifiedRPCClient(destination)
+        if err!=nil{return nil,err}
+        defer client.Close()
+        addr:=ethgo.Address(types.StringToAddress(destination.RegistryAddress))
+        var raw string
+        raw,err=client.Eth().Call(&ethgo.CallMsg{To:&addr,Data:method.ID()},ethgo.Latest)
+        if err==nil{decodedRaw,err=decodeRPCHex(raw)}
+    }
+    if err!=nil{return nil,fmt.Errorf("call getValidatorSet: %w",err)}
 	decoded, err := method.Outputs.Decode(decodedRaw)
 	if err != nil {
 		return nil, fmt.Errorf("decode getValidatorSet: %w", err)
@@ -144,17 +145,10 @@ func GetValidatorSet(destination *Destination) (*ValidatorSet, error) {
 
 func GetValidatorStatusForDestination(destination *Destination, validator types.Address) (*ValidatorStatus, error) {
  if err:=destination.ValidateMembershipRead();err!=nil{return nil,err}
- client,err:=newVerifiedRPCClient(destination)
- if err!=nil{return nil,err}
- defer client.Close()
  input:=encodeGetValidatorStatusCall(validator)
- to:=ethgo.Address(types.StringToAddress(destination.RegistryAddress))
- raw,err:=client.Eth().Call(&ethgo.CallMsg{To:&to,Data:input},ethgo.Latest)
- if err!=nil{
-  recordInterchainRPCReadFailure(destination)
-  return nil,fmt.Errorf("read destination ValidatorRegistry status: %w",err)
- }
- return decodeValidatorStatusResult(raw)
+ raw,err:=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),input)
+ if err!=nil{return nil,fmt.Errorf("read destination ValidatorRegistry status: %w",err)}
+ return decodeValidatorStatusResult("0x"+hex.EncodeToString(raw))
 }
 
 func GetValidator(destination *Destination, validator types.Address) (*ValidatorDetails, error) {
