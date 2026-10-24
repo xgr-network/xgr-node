@@ -49,7 +49,7 @@ jobs:
 
           git diff --name-only v3.3.1 HEAD > /tmp/xgr-v332-scope.txt
           test -s /tmp/xgr-v332-scope.txt
-          if grep -Ev '^(interchain/.*|consensus/ibft/interchain_runtime.go|consensus/ibft/interchain/iln_protocol.go|jsonrpc/xgr_interchain_validators_test.go|merkle-tree/.*|docs/XGR_INTERCHAIN_V332.md|\.github/workflows/(release-v332|release-direct-bls-candidate)\.yml)' /tmp/xgr-v332-scope.txt; then
+          if grep -Ev '^(interchain/.*|e2e/interchain_bls_precompile_test\.go|consensus/ibft/interchain_runtime.go|consensus/ibft/interchain/iln_protocol.go|jsonrpc/xgr_interchain_validators_test.go|merkle-tree/.*|docs/XGR_INTERCHAIN_V332.md|\.github/workflows/(release-v332|release-direct-bls-candidate)\.yml)' /tmp/xgr-v332-scope.txt; then
             echo "Forbidden out-of-scope change for v3.3.2" >&2
             exit 1
           fi
@@ -100,7 +100,9 @@ jobs:
           set -euo pipefail
           go test ./e2e -list '^TestInterchainBLSVerificationPrecompileE2E$' | grep -Fx TestInterchainBLSVerificationPrecompileE2E
           go test ./interchain/runtime -list '^TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs$' | grep -Fx TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs
-          go test -count=1 -timeout 180s ./e2e -run '^TestInterchainBLSVerificationPrecompileE2E$'
+          # E2E spawns its own node; pin the binary built from this release commit.
+          go build -o "$RUNNER_TEMP/xgr-v332-e2e-node" .
+          XGRCHAIN_BINARY="$RUNNER_TEMP/xgr-v332-e2e-node" go test -count=1 -timeout 90s ./e2e -run '^TestInterchainBLSVerificationPrecompileE2E$'
           go test -count=1 -timeout 180s ./interchain/runtime -run '^TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs$'
           go build ./...
 
