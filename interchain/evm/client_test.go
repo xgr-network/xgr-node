@@ -48,7 +48,7 @@ func TestVerifyDestinationChainID(t *testing.T) {
 	d.ChainID = 1
 	err := VerifyDestinationChainID(d)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "mismatch")
+	require.Contains(t, err.Error(), "chain identity failed")
 }
 
 func TestSubmissionValidationReserve(t *testing.T) {
