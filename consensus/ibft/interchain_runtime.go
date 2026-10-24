@@ -87,11 +87,9 @@ func (i *backendIBFT) startInterchainRuntime() {
 	if len(destinations) == 0 {
 		return
 	}
-	routes, err := evmInterchain.LoadCheckpointRoutes(destinations)
-	if err != nil {
-		i.logger.Warn("interchain disabled: invalid checkpoint route configuration", "err", err)
-		return
-	}
+	// v3.3.2: no static route ENV. Once v3.3.3 binds verified contracts,
+	// the worker discovers routes permissionlessly from source Registry logs.
+	var routes []*evmInterchain.CheckpointRoute
 	stateReader := &ibftInterchainState{ibft: i}
 	if stateReader.OriginChainID() == 0 {
 		i.logger.Warn("interchain disabled: invalid XGR origin chain ID")
