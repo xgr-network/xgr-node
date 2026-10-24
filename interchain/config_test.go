@@ -58,3 +58,16 @@ func TestInvalidChainPoliciesFailClosed(t *testing.T){
  p.RPCURLs=[]string{"https://one.example.invalid","https://one.example.invalid"}
  require.Error(t,validatePolicy(p))
 }
+
+func TestXGRFirstPartyRPCsAreNotIndependentWitnesses(t *testing.T) {
+ p,err:=Policy("xgr")
+ require.NoError(t,err)
+ require.Len(t,p.RPCURLs,3)
+ operators:=map[string]struct{}{}
+ for i,endpoint:=range p.RPCURLs {
+  require.NotContains(t,endpoint,"thirdweb")
+  operators[p.IndependentOperatorIDs[i]]=struct{}{}
+ }
+ require.Len(t,operators,1,"XGR RPC mirrors must never be treated as independent security witnesses")
+ require.Equal(t,"xgr-network",p.IndependentOperatorIDs[0])
+}
