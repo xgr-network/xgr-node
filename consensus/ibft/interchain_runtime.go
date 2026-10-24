@@ -2,6 +2,7 @@ package ibft
 
 import (
 	"fmt"
+ "math/big"
 	"path/filepath"
 	"time"
 
@@ -73,6 +74,40 @@ func (s *ibftInterchainState) ValidatorInfo(addr types.Address) (*stakingcontrac
 		return nil, fmt.Errorf("read XGR validator %s at head %d: %w", addr, header.Number, err)
 	}
 	return info, nil
+}
+
+func (s *ibftInterchainState) NativeXGRHead()(uint64,error){
+ if !s.IsSynchronized(){return 0,fmt.Errorf("native XGR validator not synchronized")}
+ h:=s.ibft.blockchain.Header()
+ if h==nil||h.Number==0||h.Hash==types.ZeroHash{return 0,fmt.Errorf("no local committed XGR head")}
+ return h.Number,nil
+}
+
+func (s *ibftInterchainState) NativeXGRBlock(n uint64)(*evmInterchain.NativeXGRBlock,error){
+ head,err:=s.NativeXGRHead()
+ if err!=nil{return nil,err}
+ if n==0||n>head{return nil,fmt.Errorf("block outside committed head")}
+ block,ok:=s.ibft.blockchain.GetBlockByNumber(n,true)
+ if !ok||block==nil||block.Header==nil||block.Header.Hash==types.ZeroHash{return nil,fmt.Errorf("canonical block missing")}
+ canonical,ok:=s.ibft.blockchain.GetHeaderByNumber(n)
+ if !ok||canonical==nil||canonical.Hash!=block.Header.Hash{return nil,fmt.Errorf("block hash not canonical")}
+ receipts,err:=s.ibft.blockchain.GetReceiptsByHash(block.Header.Hash)
+ if err!=nil||len(receipts)!=len(block.Transactions){return nil,fmt.Errorf("missing canonical receipts: %v",err)}
+ view:=func(to types.Address,data []byte)([]byte,error){
+  if !s.IsSynchronized(){return nil,fmt.Errorf("local IBFT head stale")}
+  h:=s.ibft.blockchain.Header()
+  if h==nil||h.Number<n{return nil,fmt.Errorf("local head behind evidence")}
+  txn,err:=s.ibft.executor.BeginTxn(h.StateRoot,h,types.ZeroAddress)
+  if err!=nil{return nil,err}
+  txn.SetNonPayable(true)
+  call:=&types.Transaction{Type:types.LegacyTx,From:types.ZeroAddress,To:&to,Gas:h.GasLimit,
+   GasPrice:big.NewInt(0),Value:big.NewInt(0),Input:append([]byte(nil),data...)}
+  result,err:=txn.Call(call)
+  if err!=nil||result==nil||result.Failed(){return nil,fmt.Errorf("native XGR view rejected: %v",err)}
+  return append([]byte(nil),result.ReturnValue...),nil
+ }
+ return &evmInterchain.NativeXGRBlock{Number:n,Hash:block.Header.Hash,
+  Transactions:block.Transactions,Receipts:receipts,View:view},nil
 }
 
 // startInterchainRuntime is deliberately outside every consensus-critical hook.
