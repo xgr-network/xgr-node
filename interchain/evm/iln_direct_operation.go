@@ -4,8 +4,6 @@ import (
     "fmt"
     "math/big"
 
-    "github.com/umbracle/ethgo/jsonrpc"
-
     "github.com/umbracle/ethgo"
     "github.com/xgr-network/xgr-node/crypto"
     "github.com/xgr-network/xgr-node/types"
