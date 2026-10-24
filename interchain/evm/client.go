@@ -56,7 +56,7 @@ func VerifyDestinationChainID(destination *Destination) error {
 		return err
 	}
 
-	client, err := jsonrpc.NewClient(destination.RPCURL)
+	client, err := newVerifiedRPCClient(destination)
 	if err != nil {
 		return fmt.Errorf("create destination RPC client: %w", err)
 	}
@@ -79,7 +79,7 @@ func GetValidatorSet(destination *Destination) (*ValidatorSet, error) {
 		return nil, err
 	}
 
-	client, err := jsonrpc.NewClient(destination.RPCURL)
+	client, err := newVerifiedRPCClient(destination)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +149,7 @@ func GetValidator(destination *Destination, validator types.Address) (*Validator
 	if err := VerifyDestinationChainID(destination); err != nil {
 		return nil, err
 	}
-	client, err := jsonrpc.NewClient(destination.RPCURL)
+	client, err := newVerifiedRPCClient(destination)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +215,7 @@ func MinimumDeactivationReserve(destination *Destination) (*big.Int, error) {
 	if err := VerifyDestinationChainID(destination); err != nil {
 		return nil, err
 	}
-	client, err := jsonrpc.NewClient(destination.RPCURL)
+	client, err := newVerifiedRPCClient(destination)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +258,7 @@ func MaximumExecutorReimbursement(destination *Destination) (*big.Int, error) {
 	if err := VerifyDestinationChainID(destination); err != nil {
 		return nil, err
 	}
-	client, err := jsonrpc.NewClient(destination.RPCURL)
+	client, err := newVerifiedRPCClient(destination)
 	if err != nil {
 		return nil, err
 	}
@@ -396,8 +396,10 @@ func SubmitMembership(
 		return nil, fmt.Errorf("encode applyMembership: %w", err)
 	}
 
-	relayer, err := txrelayer.NewTxRelayer(
-		txrelayer.WithIPAddress(destination.RPCURL),
+	verifiedRPCURL,endpointErr := selectVerifiedRPCURL(destination)
+ if endpointErr!=nil{return nil,endpointErr}
+ relayer, err := txrelayer.NewTxRelayer(
+		txrelayer.WithIPAddress(verifiedRPCURL),
 		txrelayer.WithReceiptTimeout(500*time.Millisecond),
 	)
 	if err != nil {
