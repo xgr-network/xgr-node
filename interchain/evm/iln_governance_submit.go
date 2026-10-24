@@ -116,8 +116,10 @@ func SubmitILNGovernance(
     }
     calldata, err := EncodeILNGovernanceCalldata(proposal, bitmap, compressedSignature, source.VerifierFormat)
     if err != nil { return nil, err }
+    verifiedRPCURL,endpointErr := selectVerifiedRPCURL(source)
+    if endpointErr!=nil{return nil,endpointErr}
     relayer, err := txrelayer.NewTxRelayer(
-        txrelayer.WithIPAddress(source.RPCURL),
+        txrelayer.WithIPAddress(verifiedRPCURL),
         txrelayer.WithReceiptTimeout(500*time.Millisecond),
     )
     if err != nil { return nil, err }
