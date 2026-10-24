@@ -9,6 +9,7 @@ import (
  "sync/atomic"
  "testing"
  "github.com/stretchr/testify/require"
+    "github.com/xgr-network/xgr-node/types"
 )
 
 func testRPCProvider(chain uint64,supportSafe bool,calls *atomic.Int32)*httptest.Server{
@@ -101,4 +102,23 @@ func TestRPCProviderCooldownSkipsBlockedPrimary(t *testing.T) {
     client.Close()
     require.Equal(t,int32(0),primaryCalls.Load())
     require.Positive(t,fallbackCalls.Load())
+}
+
+func TestCaughtUpDirectScanDoesNotReadRouteOrLogs(t *testing.T) {
+    var calls atomic.Int32
+    server:=testRPCProvider(8453,true,&calls)
+    defer server.Close()
+    source:=&Destination{Name:"base",ChainID:8453,Domain:8453,
+        RegistryAddress:"0x9999999999999999999999999999999999999999",
+        RPCURL:server.URL,
+        ILNRegistryAddress:"0x1111111111111111111111111111111111111111"}
+    routeID:=types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    head,from,to,ops,err:=ScanDirectILNOperationWindow(source,1643,routeID,138,true,80)
+    require.NoError(t,err)
+    require.Equal(t,uint64(138),head)
+    require.Zero(t,from)
+    require.Zero(t,to)
+    require.Empty(t,ops)
+    // Exactly one chainId, one safe block and one numeric hash comparison.
+    require.Equal(t,int32(3),calls.Load())
 }
