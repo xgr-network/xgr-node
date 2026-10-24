@@ -48,9 +48,7 @@ func possessionKeyHash(payload protocol.MembershipPayload) (types.Hash, error) {
 // readPossessionVerified never treats unavailable ABI or RPC reads as false
 // proof authorization. A missing V3 mapping is an integration error.
 func readPossessionVerified(destination *Destination, payload protocol.MembershipPayload) (bool, error) {
-	if err := VerifyDestinationChainID(destination); err != nil {
-		return false, err
-	}
+	if destination.ChainID!=1643 { if err:=VerifyDestinationChainID(destination);err!=nil{return false,err} }
 	hash, err := possessionKeyHash(payload)
 	if err != nil {
 		return false, err
@@ -65,20 +63,8 @@ func readPossessionVerified(destination *Destination, payload protocol.Membershi
 	if err != nil {
 		return false, fmt.Errorf("encode V3 possession getter: %w", err)
 	}
-	client, err := newVerifiedRPCClient(destination)
-	if err != nil {
-		return false, err
-	}
-	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
-	callData := append(method.ID(), encoded...)
-	raw, err := client.Eth().Call(&ethgo.CallMsg{To: &to, Data: callData}, ethgo.Latest)
-	if err != nil {
-		return false, fmt.Errorf("query V3 possession: %w", err)
-	}
-	decoded, err := decodeRPCHex(raw)
-	if err != nil {
-		return false, err
-	}
+	decoded,err:=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),append(method.ID(),encoded...))
+ if err!=nil{return false,fmt.Errorf("query V3 possession: %w",err)}
 	if len(decoded) != 32 || !bytes.Equal(decoded[:31], make([]byte, 31)) || decoded[31] > 1 {
 		return false, fmt.Errorf("malformed V3 possession flag")
 	}
@@ -138,6 +124,16 @@ func EnsureValidatorPossession(destination *Destination, txKey ethgo.Key, payloa
 	if err != nil {
 		return fmt.Errorf("encode V3 possession: %w", err)
 	}
+    if destination.ChainID==1643 {
+        to:=types.StringToAddress(destination.RegistryAddress)
+        receipt,err:=DestinationSubmit(destination,txKey,to,append(method.ID(),encoded...),big.NewInt(0))
+        if err!=nil{return err}
+        if receipt==nil{return fmt.Errorf("native XGR possession receipt unavailable")}
+        verified,err=readPossessionVerified(destination,payload)
+        if err!=nil{return err}
+        if !verified{return fmt.Errorf("native XGR possession not recorded")}
+        return nil
+    }
 	verifiedRPCURL,endpointErr := selectVerifiedRPCURL(destination)
  if endpointErr!=nil{return endpointErr}
  relayer, err := txrelayer.NewTxRelayer(
