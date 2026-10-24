@@ -87,8 +87,8 @@ func (i *backendIBFT) startInterchainRuntime() {
 	if len(destinations) == 0 {
 		return
 	}
-	// v3.3.2: no static route ENV. Once v3.3.3 binds verified contracts,
-	// the worker discovers routes permissionlessly from source Registry logs.
+	// v3.3.2: receipt-pinned chains, no static route ENV.
+	// The worker discovers permissionless routes from source Registry logs.
 	var routes []*evmInterchain.CheckpointRoute
 	stateReader := &ibftInterchainState{ibft: i}
 	if stateReader.OriginChainID() == 0 {
