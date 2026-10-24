@@ -287,9 +287,9 @@ func SubmitMembership(
 	if err := destination.ValidateSubmission(); err != nil {
 		return nil, err
 	}
-	if err := VerifyDestinationChainID(destination); err != nil {
-		return nil, err
-	}
+	if destination.ChainID!=1643 {
+        if err:=VerifyDestinationChainID(destination);err!=nil{return nil,err}
+    }
 	if payload.DestinationDomain != destination.Domain {
 		return nil, fmt.Errorf("payload destination domain mismatch: payload=%d configured=%d", payload.DestinationDomain, destination.Domain)
 	}
@@ -363,6 +363,37 @@ func SubmitMembership(
 		return nil, fmt.Errorf("encode applyMembership: %w", err)
 	}
 
+    if destination.ChainID==1643 {
+        backend,err:=destination.nativeAccess()
+        if err!=nil{return nil,err}
+        to:=types.StringToAddress(destination.RegistryAddress)
+        calldata:=append(append([]byte(nil),method.ID()...),input...)
+        gasCost,err:=backend.NativeXGREstimateCost(types.Address(key.Address()),to,calldata,value)
+        if err!=nil{return nil,err}
+        if payload.Action==protocol.ActionRemoveValidator {
+            details,err:=GetValidator(destination,payload.Validator)
+            if err!=nil{return nil,err}
+            capWei,err:=MaximumExecutorReimbursement(destination)
+            if err!=nil{return nil,err}
+            available:=new(big.Int).Set(details.ReserveWei)
+            if capWei.Cmp(available)<0{available.Set(capWei)}
+            if gasCost.Cmp(available)>0{return nil,fmt.Errorf("native removal gas cost exceeds reimbursement")}
+        }
+        balance,err:=backend.NativeXGRBalance(types.Address(key.Address()))
+        if err!=nil{return nil,err}
+        required:=new(big.Int).Add(gasCost,value)
+        if balance.Cmp(required)<0{return nil,fmt.Errorf("insufficient native XGR executor funds")}
+        receipt,err:=DestinationSubmit(destination,key,to,calldata,value)
+        if err!=nil{return nil,err}
+        status,err:=GetValidatorStatusForDestination(destination,payload.Validator)
+        if err!=nil{return nil,err}
+        wantActive:=payload.Action==protocol.ActionAddValidator
+        if status.Active!=wantActive||status.SetID!=payload.SetID+1{
+            return nil,fmt.Errorf("native XGR membership post-state mismatch")
+        }
+        return &SubmitResult{TxHash:receipt.TransactionHash.String(),SetID:status.SetID,
+            Active:status.Active,Receipt:receipt},nil
+    }
 	verifiedRPCURL,endpointErr := selectVerifiedRPCURL(destination)
  if endpointErr!=nil{return nil,endpointErr}
  relayer, err := txrelayer.NewTxRelayer(
