@@ -140,10 +140,18 @@ func GetValidatorSet(destination *Destination) (*ValidatorSet, error) {
 }
 
 func GetValidatorStatusForDestination(destination *Destination, validator types.Address) (*ValidatorStatus, error) {
-	if err := VerifyDestinationChainID(destination); err != nil {
-		return nil, err
-	}
-	return GetValidatorStatus(destination.RPCURL, destination.RegistryAddress, validator)
+ if err:=destination.ValidateMembershipRead();err!=nil{return nil,err}
+ client,err:=newVerifiedRPCClient(destination)
+ if err!=nil{return nil,err}
+ defer client.Close()
+ input:=encodeGetValidatorStatusCall(validator)
+ to:=ethgo.Address(types.StringToAddress(destination.RegistryAddress))
+ raw,err:=client.Eth().Call(&ethgo.CallMsg{To:&to,Data:input},ethgo.Latest)
+ if err!=nil{
+  recordInterchainRPCReadFailure(destination)
+  return nil,fmt.Errorf("read destination ValidatorRegistry status: %w",err)
+ }
+ return decodeValidatorStatusResult(raw)
 }
 
 func GetValidator(destination *Destination, validator types.Address) (*ValidatorDetails, error) {
