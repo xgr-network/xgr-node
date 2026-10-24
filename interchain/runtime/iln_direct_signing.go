@@ -135,45 +135,38 @@ func (w *Worker) signDirectILNMessage(
     return w.publish(wireEnvelope{Type:"iln_checkpoint_vote",ILNCheckpointVote:&vote})
 }
 
-// One bounded eth_getLogs scan of at most 80 blocks avoids 8 successive
-// head/dial/log checks per active route every 30 seconds.
-const directILNScanBatchBlocks = uint64(80)
-
-// Independent background discovery of fee-qualified Gateway operations.
-// The cursor is a SOURCE RPC block locator only, never a Merkle progress
-// measure. RPCs are bounded, 30-second paced, and an error never advances it.
+// Direct-BLS discovery is bounded and adaptive. Discovered events are hints;
+// signDirectILNMessage still verifies complete independent source evidence.
 func (w *Worker) scanDirectILNOperations(route *evm.CheckpointRoute) error {
-    if route==nil{return fmt.Errorf("missing Direct-BLS route")}
-    source,destination:=w.destinations[route.SourceNetwork],w.destinations[route.Destination]
-    if source==nil||destination==nil{return fmt.Errorf("unconfigured Direct-BLS chain")}
-    cursorName:="_direct_"+route.Name
-    cursor,exists,err:=w.readILNCursor(cursorName)
-    if err!=nil{return err}
-    var head,from,to uint64
-    var operations []evm.ILNOperation
-    if source.ChainID==1643 {
-        native,e:=w.nativeReader(source)
-        if e!=nil{return e}
-        head,from,to,operations,err=evm.NativeXGRScanWindow(native,source,
-            destination.Domain,route.RouteID,cursor,exists,directILNScanBatchBlocks)
-    } else {
-        head,from,to,operations,err=evm.ScanDirectILNOperationWindow(
-            source,destination.Domain,route.RouteID,cursor,exists,directILNScanBatchBlocks)
-    }
-    if err!=nil{return err}
-    if from!=0 {
-        for _,op:=range operations {
-            err:=w.signDirectILNMessage(route,op.MessageID,op.BlockNumber)
-            if err!=nil{
-                if err.Error()=="Interchain message already delivered"{continue}
-                return err
-            }
-        }
-        if err:=w.writeILNCursor(cursorName,to);err!=nil{return err}
-        cursor=to
-    } else if !exists {
-        cursor=head
-    }
-    w.recordILNDirectScan(route,head,cursor)
-    return nil
+ if route==nil{return fmt.Errorf("missing Direct-BLS route")}
+ source,destination:=w.destinations[route.SourceNetwork],w.destinations[route.Destination]
+ if source==nil||destination==nil{return fmt.Errorf("unconfigured Direct-BLS chain")}
+ cursorName:="_direct_"+route.Name
+ cursor,exists,err:=w.readILNCursor(cursorName)
+ if err!=nil{return err}
+ var native evm.NativeXGRReader
+ if source.ChainID==1643{
+  native,err=w.nativeReader(source)
+  if err!=nil{return err}
+ }
+ read:=func(cur uint64,exists bool,window uint64)(uint64,uint64,uint64,[]evm.ILNOperation,error){
+  if source.ChainID==1643{return evm.NativeXGRScanWindow(native,source,destination.Domain,route.RouteID,cur,exists,window)}
+  return evm.ScanDirectILNOperationWindow(source,destination.Domain,route.RouteID,cur,exists,window)
+ }
+ process:=func(ops []evm.ILNOperation)error{
+  for _,op:=range ops{
+   err:=w.signDirectILNMessage(route,op.MessageID,op.BlockNumber)
+   if err!=nil{
+    if err.Error()=="Interchain message already delivered"{continue}
+    return err
+   }
+  }
+  return nil
+ }
+ head,updated,err:=runDirectILNCatchup(source,cursor,exists,read,process,func(to uint64)error{
+  return w.writeILNCursor(cursorName,to)
+ })
+ if err!=nil{return err}
+ w.recordILNDirectScan(route,head,updated)
+ return nil
 }
