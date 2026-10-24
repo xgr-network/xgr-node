@@ -74,6 +74,19 @@ func VerifyDestinationChainID(destination *Destination) error {
 	return nil
 }
 
+func GetDestinationGasBalance(destination *Destination, address ethgo.Address) (*big.Int,error) {
+ if err:=destination.ValidateMembershipRead();err!=nil{return nil,err}
+ client,err:=newVerifiedRPCClient(destination)
+ if err!=nil{return nil,err}
+ defer client.Close()
+ balance,err:=client.Eth().GetBalance(address,ethgo.Latest)
+ if err!=nil{
+  recordInterchainRPCReadFailure(destination)
+  return nil,fmt.Errorf("destination gas balance RPC failed: %w",err)
+ }
+ return balance,nil
+}
+
 func GetValidatorSet(destination *Destination) (*ValidatorSet, error) {
 	if err := VerifyDestinationChainID(destination); err != nil {
 		return nil, err
