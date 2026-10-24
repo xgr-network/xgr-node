@@ -532,3 +532,41 @@ func decodedBig(values map[string]interface{}, keys ...string) (*big.Int, error)
 	}
 	return new(big.Int).Set(out), nil
 }
+
+
+// ScanDirectILNOperationWindow uses ONE verified source RPC session for
+// finality head, route binding and a bounded Gateway log window. Scan results
+// are discovery hints only: each candidate still requires TWO independent
+// complete receipt/FeeVault proofs before a BLS vote can be signed.
+func ScanDirectILNOperationWindow(
+    source *Destination, destinationDomain uint32, routeID types.Hash,
+    cursor uint64, cursorExists bool, window uint64,
+) (head uint64, from uint64, to uint64, operations []ILNOperation, err error) {
+    if source==nil||window==0||window>maxILNLogRange{
+        err=fmt.Errorf("invalid Direct-BLS scan window")
+        return
+    }
+    var client *jsonrpc.Client
+    client,head,err=newVerifiedRPCClientWithHead(source)
+    if err!=nil{return}
+    defer client.Close()
+    if !cursorExists&&head>128{cursor=head-128}
+    if cursor>head{
+        err=fmt.Errorf("source RPC head behind persisted confirmed operation cursor")
+        return
+    }
+    if cursor==head{return}
+    from=cursor+1
+    to=cursor+window
+    if to<cursor||to>head{to=head}
+    var snapshot *ILNRouteSnapshot
+    snapshot,err=getILNRouteAtBlock(client,source,destinationDomain,routeID,head,false)
+    if err!=nil{
+        recordInterchainRPCReadError(source,rpcEndpoints(source)[0],err)
+        return
+    }
+    operations,err=confirmedILNOperationsOnClient(client,source,snapshot.Route.Gateway,
+        routeID,destinationDomain,from,to,head)
+    if err!=nil{recordInterchainRPCReadError(source,rpcEndpoints(source)[0],err)}
+    return
+}
