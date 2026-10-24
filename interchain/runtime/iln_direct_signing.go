@@ -149,8 +149,17 @@ func (w *Worker) scanDirectILNOperations(route *evm.CheckpointRoute) error {
     cursorName:="_direct_"+route.Name
     cursor,exists,err:=w.readILNCursor(cursorName)
     if err!=nil{return err}
-    head,from,to,operations,err:=evm.ScanDirectILNOperationWindow(
-        source,destination.Domain,route.RouteID,cursor,exists,directILNScanBatchBlocks)
+    var head,from,to uint64
+    var operations []evm.ILNOperation
+    if source.ChainID==1643 {
+        native,e:=w.nativeReader(source)
+        if e!=nil{return e}
+        head,from,to,operations,err=evm.NativeXGRScanWindow(native,source,
+            destination.Domain,route.RouteID,cursor,exists,directILNScanBatchBlocks)
+    } else {
+        head,from,to,operations,err=evm.ScanDirectILNOperationWindow(
+            source,destination.Domain,route.RouteID,cursor,exists,directILNScanBatchBlocks)
+    }
     if err!=nil{return err}
     if from!=0 {
         for _,op:=range operations {
