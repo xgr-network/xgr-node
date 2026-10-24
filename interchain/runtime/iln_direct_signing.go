@@ -32,7 +32,7 @@ func (w *Worker) verifyDirectILNEvidence(
     }
     source,destination:=w.destinations[route.SourceNetwork],w.destinations[route.Destination]
     if source==nil||destination==nil{return nil,fmt.Errorf("unknown source/destination network")}
-    operation,_,snapshot,err:=evm.GetDirectILNOperation(source,route,destination.Domain,messageID,sourceBlock)
+    operation,_,snapshot,err:=evm.GetQuorumVerifiedDirectILNOperation(source,route,destination.Domain,messageID,sourceBlock)
     if err!=nil{return nil,err}
     if snapshot.Route.Key.RouteID!=route.RouteID ||
         snapshot.Route.Key.SourceChainID!=source.ChainID ||
@@ -126,8 +126,10 @@ func (w *Worker) signDirectILNMessage(
     return w.publish(wireEnvelope{Type:"iln_checkpoint_vote",ILNCheckpointVote:&vote})
 }
 
-const directILNScanBatchBlocks = uint64(10)
-const directILNScanMaxBatches = 8
+// One bounded eth_getLogs scan of at most 80 blocks avoids 8 successive
+// head/dial/log checks per active route every 30 seconds.
+const directILNScanBatchBlocks = uint64(80)
+const directILNScanMaxBatches = 1
 
 // Independent background discovery of fee-qualified Gateway operations.
 // The cursor is a SOURCE RPC block locator only, never a Merkle progress
@@ -138,8 +140,6 @@ func (w *Worker) scanDirectILNOperations(route *evm.CheckpointRoute) error {
     if source==nil||destination==nil{return fmt.Errorf("unconfigured Direct-BLS chain")}
     head,err:=getConfirmedILNHead(source)
     if err!=nil{return err}
-    snapshot,err:=getConfirmedILNRoute(source,destination.Domain,route.RouteID)
-    if err!=nil{return err}
     cursorName:="_direct_"+route.Name
     cursor,exists,err:=w.readILNCursor(cursorName)
     if err!=nil{return err}
@@ -149,6 +149,15 @@ func (w *Worker) scanDirectILNOperations(route *evm.CheckpointRoute) error {
         // the original source block; never silently require archive state.
         if head>128 {cursor=head-128}
     }
+    if cursor>head{return fmt.Errorf("source RPC head behind persisted confirmed operation cursor")}
+    if cursor==head{
+        w.recordILNDirectScan(route,head,cursor)
+        return nil
+    }
+    // No route contract calls are needed when the cursor has already caught up.
+    // The signing path always re-verifies the route independently.
+    snapshot,err:=getConfirmedILNRoute(source,destination.Domain,route.RouteID)
+    if err!=nil{return err}
     for batch:=0;batch<directILNScanMaxBatches&&cursor<head;batch++ {
         from,to:=cursor+1,cursor+directILNScanBatchBlocks
         if to>head{to=head}
