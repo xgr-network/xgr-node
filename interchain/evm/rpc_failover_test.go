@@ -9,6 +9,7 @@ import (
  "sync/atomic"
  "testing"
  "github.com/stretchr/testify/require"
+    "github.com/xgr-network/xgr-node/types"
 )
 
 func testRPCProvider(chain uint64,supportSafe bool,calls *atomic.Int32)*httptest.Server{
@@ -60,4 +61,64 @@ func TestInterchainRPCFallbackFailClosedWhenNoSafeProvider(t *testing.T){
  c,err:=newVerifiedRPCClient(d)
  require.ErrorContains(t,err,"all interchain RPC endpoints failed")
  require.Nil(t,c)
+}
+
+func TestRPCProvider429CooldownAndIndependentEndpointRecovery(t *testing.T) {
+    // Explicit 429 cooldown never affects another independent endpoint.
+    d := &Destination{Name:"base",ChainID:8453,Domain:8453,
+        RegistryAddress:"0x7777777777777777777777777777777777777777",
+        RPCURLs:[]string{"https://rate-limit.invalid/rpc","https://healthy.invalid/rpc"}}
+    rpcRecordFailure(d,d.RPCURLs[0],fmt.Errorf("HTTP 429: too many requests"),true)
+    require.ErrorContains(t,rpcCooldown(d,d.RPCURLs[0]),"cooldown")
+    require.NoError(t,rpcCooldown(d,d.RPCURLs[1]))
+    before:=InterchainRPCProviderStats()
+    found:=false
+    for _,item:=range before {
+        if item.ChainID==8453 && item.URL==d.RPCURLs[0] {
+            require.Positive(t,item.RateLimited)
+            require.Positive(t,item.ReadFailures)
+            require.Positive(t,item.CooldownUntilUnix)
+            found=true
+        }
+    }
+    require.True(t,found)
+    rpcRecordReady(d,d.RPCURLs[0])
+    require.NoError(t,rpcCooldown(d,d.RPCURLs[0]))
+}
+
+func TestRPCProviderCooldownSkipsBlockedPrimary(t *testing.T) {
+    var primaryCalls,fallbackCalls atomic.Int32
+    primary:=testRPCProvider(8453,true,&primaryCalls)
+    defer primary.Close()
+    fallback:=testRPCProvider(8453,true,&fallbackCalls)
+    defer fallback.Close()
+    d:=&Destination{Name:"base",ChainID:8453,Domain:8453,
+        RegistryAddress:"0x8888888888888888888888888888888888888888",
+        RPCURLs:[]string{primary.URL,fallback.URL}}
+    rpcRecordFailure(d,primary.URL,fmt.Errorf("429 rate limited"),true)
+    client,head,err:=newVerifiedRPCClientWithHead(d)
+    require.NoError(t,err)
+    require.Equal(t,uint64(138),head)
+    client.Close()
+    require.Equal(t,int32(0),primaryCalls.Load())
+    require.Positive(t,fallbackCalls.Load())
+}
+
+func TestCaughtUpDirectScanDoesNotReadRouteOrLogs(t *testing.T) {
+    var calls atomic.Int32
+    server:=testRPCProvider(8453,true,&calls)
+    defer server.Close()
+    source:=&Destination{Name:"base",ChainID:8453,Domain:8453,
+        RegistryAddress:"0x9999999999999999999999999999999999999999",
+        RPCURL:server.URL,
+        ILNRegistryAddress:"0x1111111111111111111111111111111111111111"}
+    routeID:=types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    head,from,to,ops,err:=ScanDirectILNOperationWindow(source,1643,routeID,138,true,80)
+    require.NoError(t,err)
+    require.Equal(t,uint64(138),head)
+    require.Zero(t,from)
+    require.Zero(t,to)
+    require.Empty(t,ops)
+    // Exactly one chainId, one safe block and one numeric hash comparison.
+    require.Equal(t,int32(3),calls.Load())
 }

@@ -92,36 +92,39 @@ func GetDirectILNOperation(
     if source==nil||route==nil||messageID==types.ZeroHash||sourceBlock==0 {
         return nil,nil,nil,fmt.Errorf("invalid direct source message identity")
     }
-    snapshot,err:=GetILNRouteAtBlock(source,destinationDomain,route.RouteID,sourceBlock)
+    client,head,err:=newVerifiedRPCClientWithHead(source)
     if err!=nil{return nil,nil,nil,err}
-    ops,err:=GetConfirmedILNOperations(source,snapshot.Route.Gateway,
-        route.RouteID,destinationDomain,sourceBlock,sourceBlock)
-    if err!=nil{return nil,nil,nil,err}
+    defer client.Close()
+    if sourceBlock>head{return nil,nil,nil,fmt.Errorf("source block beyond safe head")}
+    snapshot,err:=getILNRouteAtBlock(client,source,destinationDomain,route.RouteID,sourceBlock,true)
+    if err!=nil{recordInterchainRPCReadError(source,source.RPCURL,err);return nil,nil,nil,err}
+    ops,err:=confirmedILNOperationsOnClient(client,source,snapshot.Route.Gateway,
+        route.RouteID,destinationDomain,sourceBlock,sourceBlock,head)
+    if err!=nil{recordInterchainRPCReadError(source,source.RPCURL,err);return nil,nil,nil,err}
     var operation *ILNOperation
     for i:=range ops {
-        if ops[i].MessageID!=messageID {continue}
+        if ops[i].MessageID!=messageID{continue}
         if operation!=nil{return nil,nil,nil,fmt.Errorf("duplicate Gateway operation for direct message")}
         operation=&ops[i]
     }
-    if operation==nil {
-        return nil,nil,nil,fmt.Errorf("direct ILN message not found at source block")
-    }
-    client,err:=ilnSourceClient(source)
-    if err!=nil{return nil,nil,nil,err}
+    if operation==nil{return nil,nil,nil,fmt.Errorf("direct ILN message not found at source block")}
     receipt,err:=client.Eth().GetTransactionReceipt(ethgo.Hash(operation.TransactionHash))
-    if err!=nil{return nil,nil,nil,fmt.Errorf("canonical source transaction receipt unavailable: %w",err)}
-    if receipt==nil||receipt.TransactionHash!=ethgo.Hash(operation.TransactionHash){
-      return nil,nil,nil,fmt.Errorf("canonical source receipt transaction hash mismatch")
+    if err!=nil{
+        recordInterchainRPCReadError(source,source.RPCURL,err)
+        return nil,nil,nil,fmt.Errorf("canonical source transaction receipt unavailable: %w",err)
     }
-    if err:=verifyFinalizedReceipt(client,source,receipt);err!=nil{
-      return nil,nil,nil,fmt.Errorf("source receipt is not canonical and final: %w",err)
+    if receipt==nil||receipt.TransactionHash!=ethgo.Hash(operation.TransactionHash){
+        return nil,nil,nil,fmt.Errorf("canonical source receipt transaction hash mismatch")
+    }
+    if err:=verifyFinalizedReceiptWithHead(client,receipt,head);err!=nil{
+        return nil,nil,nil,fmt.Errorf("source receipt is not canonical and final: %w",err)
     }
     operation.CanonicalBlockHash=types.Hash(receipt.BlockHash)
     raw,err:=VerifyDirectILNReceipt(*operation,receipt,source.Domain,
         snapshot.Route.Gateway,snapshot.Route.Mailbox,snapshot.Route.SourceRouter,
         snapshot.Route.DestinationRouter)
     if err!=nil{return nil,nil,nil,err}
-    if err:=VerifyConfirmedILNFeeAllocation(source,snapshot,messageID,sourceBlock);err!=nil{
+    if err:=verifyConfirmedILNFeeAllocationOnClient(client,source,snapshot,messageID,sourceBlock,head);err!=nil{
         return nil,nil,nil,fmt.Errorf("immutable Gateway FeeVault allocation not proven: %w",err)
     }
     return operation,raw,snapshot,nil

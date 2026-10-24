@@ -6,6 +6,7 @@ import (
     "math/big"
 
     "github.com/umbracle/ethgo"
+    "github.com/umbracle/ethgo/jsonrpc"
     "github.com/xgr-network/xgr-node/crypto"
     "github.com/xgr-network/xgr-node/types"
 )
@@ -40,10 +41,27 @@ func VerifyConfirmedILNFeeAllocation(
         snapshot.Route.Key.SourceDomain != source.Domain {
         return fmt.Errorf("invalid source ILN fee-allocation proof identity")
     }
-    client, err := ilnSourceClient(source)
+    client, head, err := newVerifiedRPCClientWithHead(source)
     if err != nil { return err }
-    confirmed, err := confirmedILNHead(client, source)
-    if err != nil { return err }
+    defer client.Close()
+    return verifyConfirmedILNFeeAllocationOnClient(client, source, snapshot, messageID, checkpointBlock, head)
+}
+
+// verifyConfirmedILNFeeAllocationOnClient stays pinned to the exact provider
+// already selected and finality-verified by the independent source witness.
+func verifyConfirmedILNFeeAllocationOnClient(
+    client *jsonrpc.Client, source *Destination, snapshot *ILNRouteSnapshot,
+    messageID types.Hash, checkpointBlock, confirmed uint64,
+) error {
+    if source == nil || client == nil || snapshot == nil || messageID == types.ZeroHash ||
+        checkpointBlock == 0 || snapshot.Registry == types.ZeroAddress ||
+        snapshot.Route.Gateway == types.ZeroAddress ||
+        snapshot.Route.Key.RouteID == types.ZeroHash ||
+        snapshot.Route.Key.DestinationDomain == 0 ||
+        snapshot.Route.Key.SourceChainID != source.ChainID ||
+        snapshot.Route.Key.SourceDomain != source.Domain {
+        return fmt.Errorf("invalid source ILN fee-allocation proof identity")
+    }
     if checkpointBlock > uint64(1<<63-1) || checkpointBlock>confirmed {
         return fmt.Errorf("ILN allocation source observation exceeds current head")
     }

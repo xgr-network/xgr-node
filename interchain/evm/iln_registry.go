@@ -84,23 +84,15 @@ func ilnSourceClient(source *Destination) (*jsonrpc.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create ILN source RPC client: %w", err)
 	}
-	gotChainID, err := client.Eth().ChainID()
-	if err != nil {
-		return nil, fmt.Errorf("query ILN source chain id: %w", err)
-	}
-	if gotChainID == nil || !gotChainID.IsUint64() || gotChainID.Uint64() != source.ChainID {
-		return nil, fmt.Errorf("ILN source chain id mismatch")
-	}
 	return client, nil
 }
 
 // GetConfirmedILNHead returns the native finality-qualified source height. It is used as the upper bound for Gateway event scans.
 func GetConfirmedILNHead(source *Destination) (uint64, error) {
-	client, err := ilnSourceClient(source)
-	if err != nil {
-		return 0, err
-	}
-	return confirmedILNHead(client, source)
+	client, head, err := newVerifiedRPCClientWithHead(source)
+	if err != nil { return 0, err }
+	defer client.Close()
+	return head, nil
 }
 
 func confirmedILNHead(client *jsonrpc.Client, source *Destination) (uint64,error) {
@@ -109,8 +101,8 @@ func confirmedILNHead(client *jsonrpc.Client, source *Destination) (uint64,error
 
 // GetConfirmedILNGovernanceNonce reads the single source-chain fee nonce.
 func GetConfirmedILNGovernanceNonce(source *Destination) (uint64, error) {
- client,err:=ilnSourceClient(source); if err!=nil{return 0,err}
- _,err=confirmedILNHead(client,source);if err!=nil{return 0,err}
+ client,_,err:=newVerifiedRPCClientWithHead(source);if err!=nil{return 0,err}
+ defer client.Close()
  // An ILN fee nonce is current governance state, not a historical checkpoint.
  raw,err:=callILNSignatureView(client,types.StringToAddress(source.ILNRegistryAddress),"sourceFeeNonce()",ethgo.Latest)
  if err!=nil{return 0,fmt.Errorf("read source fee nonce: %w",err)}
@@ -123,14 +115,9 @@ func GetConfirmedILNGovernanceNonce(source *Destination) (uint64, error) {
 // block. Contract addresses and fee state are protocol truth in the source
 // network ILN registry.
 func GetConfirmedILNRoute(source *Destination, destinationDomain uint32, routeID types.Hash) (*ILNRouteSnapshot, error) {
-	client, err := ilnSourceClient(source)
-	if err != nil {
-		return nil, err
-	}
-	confirmed, err := confirmedILNHead(client, source)
-	if err != nil {
-		return nil, err
-	}
+	client, confirmed, err := newVerifiedRPCClientWithHead(source)
+	if err != nil { return nil, err }
+	defer client.Close()
 	return getILNRouteAtBlock(client, source, destinationDomain, routeID, confirmed, false)
 }
 
@@ -138,14 +125,9 @@ func GetConfirmedILNRoute(source *Destination, destinationDomain uint32, routeID
 // validator vote. The block must already satisfy the configured confirmation
 // policy.
 func GetILNRouteAtBlock(source *Destination, destinationDomain uint32, routeID types.Hash, blockNumber uint64) (*ILNRouteSnapshot, error) {
-	client, err := ilnSourceClient(source)
-	if err != nil {
-		return nil, err
-	}
-	confirmed, err := confirmedILNHead(client, source)
-	if err != nil {
-		return nil, err
-	}
+	client, confirmed, err := newVerifiedRPCClientWithHead(source)
+	if err != nil { return nil, err }
+	defer client.Close()
 	if blockNumber == 0 || blockNumber > confirmed {
 		return nil, fmt.Errorf("ILN source block %d is not sufficiently confirmed", blockNumber)
 	}
@@ -337,14 +319,18 @@ func GetConfirmedILNOperations(
 	fromBlock uint64,
 	toBlock uint64,
 ) ([]ILNOperation, error) {
-	client, err := ilnSourceClient(source)
-	if err != nil {
-		return nil, err
-	}
-	confirmed, err := confirmedILNHead(client, source)
-	if err != nil {
-		return nil, err
-	}
+	client, confirmed, err := newVerifiedRPCClientWithHead(source)
+	if err != nil { return nil, err }
+	defer client.Close()
+	return confirmedILNOperationsOnClient(client,source,gateway,routeID,destinationDomain,fromBlock,toBlock,confirmed)
+}
+
+// confirmedILNOperationsOnClient keeps a bounded log scan on the exact
+// verified provider, sharing its already-checked finality boundary.
+func confirmedILNOperationsOnClient(
+    client *jsonrpc.Client, source *Destination, gateway types.Address,
+    routeID types.Hash, destinationDomain uint32, fromBlock,toBlock,confirmed uint64,
+) ([]ILNOperation,error) {
 	if fromBlock == 0 || toBlock < fromBlock || toBlock > confirmed {
 		return nil, fmt.Errorf("invalid or unconfirmed ILN operation block range")
 	}
@@ -535,4 +521,42 @@ func decodedBig(values map[string]interface{}, keys ...string) (*big.Int, error)
 		return nil, fmt.Errorf("decode ILN getRoute: invalid uint256")
 	}
 	return new(big.Int).Set(out), nil
+}
+
+
+// ScanDirectILNOperationWindow uses ONE verified source RPC session for
+// finality head, route binding and a bounded Gateway log window. Scan results
+// are discovery hints only: each candidate still requires TWO independent
+// complete receipt/FeeVault proofs before a BLS vote can be signed.
+func ScanDirectILNOperationWindow(
+    source *Destination, destinationDomain uint32, routeID types.Hash,
+    cursor uint64, cursorExists bool, window uint64,
+) (head uint64, from uint64, to uint64, operations []ILNOperation, err error) {
+    if source==nil||window==0||window>maxILNLogRange{
+        err=fmt.Errorf("invalid Direct-BLS scan window")
+        return
+    }
+    var client *jsonrpc.Client
+    client,head,err=newVerifiedRPCClientWithHead(source)
+    if err!=nil{return}
+    defer client.Close()
+    if !cursorExists&&head>128{cursor=head-128}
+    if cursor>head{
+        err=fmt.Errorf("source RPC head behind persisted confirmed operation cursor")
+        return
+    }
+    if cursor==head{return}
+    from=cursor+1
+    to=cursor+window
+    if to<cursor||to>head{to=head}
+    var snapshot *ILNRouteSnapshot
+    snapshot,err=getILNRouteAtBlock(client,source,destinationDomain,routeID,head,false)
+    if err!=nil{
+        if rpcTransientFailure(err){recordInterchainRPCReadFailure(source)}
+        return
+    }
+    operations,err=confirmedILNOperationsOnClient(client,source,snapshot.Route.Gateway,
+        routeID,destinationDomain,from,to,head)
+    if err!=nil{recordInterchainRPCReadError(source,rpcEndpoints(source)[0],err)}
+    return
 }

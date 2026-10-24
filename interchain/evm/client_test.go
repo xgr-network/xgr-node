@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+    "strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -21,9 +22,16 @@ func TestVerifyDestinationChainID(t *testing.T) {
 			Method string          `json:"method"`
 		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
-		require.Equal(t, "eth_chainId", req.Method)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x2105"}`, req.ID)
+		switch req.Method {
+        case "eth_chainId":
+            _,_ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x2105"}`, req.ID)
+        case "eth_getBlockByNumber":
+            _,_ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`,req.ID,
+                testFinalityBlock(138,"0x"+strings.Repeat("1",64)))
+        default:
+            t.Errorf("unexpected RPC method %s",req.Method)
+        }
 	}))
 	defer server.Close()
 
@@ -40,7 +48,7 @@ func TestVerifyDestinationChainID(t *testing.T) {
 	d.ChainID = 1
 	err := VerifyDestinationChainID(d)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "mismatch")
+	require.Contains(t, err.Error(), "chain identity failed")
 }
 
 func TestSubmissionValidationReserve(t *testing.T) {

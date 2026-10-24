@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+    "strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -91,6 +92,11 @@ func TestV3PossessionVerifiedRPCLookup(t *testing.T) {
 				switch req.Method {
 				case "eth_chainId":
 					response = tt.chain
+                case "eth_getBlockByNumber":
+                    w.Header().Set("Content-Type","application/json")
+                    _,_ = fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"result":%s}`,req.ID,
+                        testFinalityBlock(138,"0x"+strings.Repeat("1",64)))
+                    return
 				case "eth_call":
 					if len(req.Params) == 0 {
 						t.Error("eth_call without params")
