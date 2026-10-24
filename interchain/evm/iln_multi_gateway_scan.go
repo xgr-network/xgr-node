@@ -94,3 +94,25 @@ func confirmedILNMultiGatewayLogsOnClient(
  })
  return events,nil
 }
+
+// ScanILNMultiGatewayWindow verifies the source's finalized head just ONCE
+// and queries all discovered Gateways on that same verified provider.
+func ScanILNMultiGatewayWindow(
+ source *Destination,gateways []types.Address,cursor,window uint64,
+)(head,from,to uint64,events []ILNObservedGatewayOperation,err error){
+ if source==nil||source.ChainID==1643||window==0||window>maxILNLogRange{
+  return 0,0,0,nil,fmt.Errorf("invalid external observer window")
+ }
+ client,h,e:=newVerifiedRPCClientWithHead(source)
+ if e!=nil{return 0,0,0,nil,e}
+ defer client.Close()
+ head=h
+ if cursor>head{return head,0,0,nil,fmt.Errorf("confirmed source head behind observer cursor")}
+ if cursor==head{return head,0,0,nil,nil}
+ from=cursor+1
+ to=cursor+window
+ if to<cursor||to>head{to=head}
+ events,err=confirmedILNMultiGatewayLogsOnClient(client,gateways,from,to,head)
+ if err!=nil{recordInterchainRPCReadFailure(source)}
+ return
+}
