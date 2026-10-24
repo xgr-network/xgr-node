@@ -32,7 +32,16 @@ func (w *Worker) verifyDirectILNEvidence(
     }
     source,destination:=w.destinations[route.SourceNetwork],w.destinations[route.Destination]
     if source==nil||destination==nil{return nil,fmt.Errorf("unknown source/destination network")}
-    operation,_,snapshot,err:=evm.GetQuorumVerifiedDirectILNOperation(source,route,destination.Domain,messageID,sourceBlock)
+    var operation *evm.ILNOperation
+    var snapshot *evm.ILNRouteSnapshot
+    var err error
+    if source.ChainID==1643 {
+        local,ok:=w.state.(evm.NativeXGRReader)
+        if !ok{return nil,fmt.Errorf("native XGR source reader unavailable")}
+        operation,_,snapshot,err=evm.VerifyNativeXGROperation(local,source,route,destination.Domain,messageID,sourceBlock)
+    } else {
+        operation,_,snapshot,err=evm.GetQuorumVerifiedDirectILNOperation(source,route,destination.Domain,messageID,sourceBlock)
+    }
     if err!=nil{return nil,err}
     if snapshot.Route.Key.RouteID!=route.RouteID ||
         snapshot.Route.Key.SourceChainID!=source.ChainID ||
