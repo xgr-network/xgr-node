@@ -442,7 +442,7 @@ func SubmitMembership(
 	if receipt == nil || receipt.Status != uint64(types.ReceiptSuccess) {
 		return nil, fmt.Errorf("destination membership transition reverted")
 	}
-	if err := waitForConfirmations(destination, receipt); err != nil {
+	if err := waitForFinality(destination, receipt); err != nil {
 		return nil, err
 	}
 
@@ -635,48 +635,6 @@ func decodeRPCHex(value string) ([]byte, error) {
 		return []byte{}, nil
 	}
 	return hex.DecodeString(value)
-}
-
-func waitForConfirmations(destination *Destination, receipt *ethgo.Receipt) error {
-	if destination == nil || destination.Confirmations == 0 || receipt == nil {
-		return fmt.Errorf("destination confirmation policy or receipt is invalid")
-	}
-	if err := VerifyDestinationChainID(destination); err != nil {
-		return err
-	}
-	client, err := jsonrpc.NewClient(destination.RPCURL)
-	if err != nil {
-		return fmt.Errorf("create destination RPC client for confirmations: %w", err)
-	}
-
-	target := receipt.BlockNumber + destination.Confirmations
-	deadline := time.Now().Add(5 * time.Minute)
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		height, err := client.Eth().BlockNumber()
-		if err == nil && height >= target {
-			confirmed, receiptErr := client.Eth().GetTransactionReceipt(receipt.TransactionHash)
-			if receiptErr != nil {
-				return fmt.Errorf("re-read destination receipt after confirmations: %w", receiptErr)
-			}
-			if confirmed == nil || confirmed.Status != uint64(types.ReceiptSuccess) {
-				return fmt.Errorf("destination receipt is no longer canonical after confirmations")
-			}
-			if confirmed.BlockNumber != receipt.BlockNumber {
-				return fmt.Errorf("destination receipt block changed after confirmations: got=%d want=%d", confirmed.BlockNumber, receipt.BlockNumber)
-			}
-			return nil
-		}
-		if time.Now().After(deadline) {
-			if err != nil {
-				return fmt.Errorf("timed out waiting for destination confirmations: %w", err)
-			}
-			return fmt.Errorf("timed out waiting for destination confirmations: have block %d need %d", height, target)
-		}
-		<-ticker.C
-	}
 }
 
 func FormatAggregateSignature(destination *Destination, aggregateSignature []byte) ([]byte, error) {

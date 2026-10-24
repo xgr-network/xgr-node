@@ -150,7 +150,7 @@ func (r ILNRoute) validateActive() error {
 		return fmt.Errorf("ILN mailbox must be non-zero")
 	}
 	if r.DispatchHook == types.ZeroAddress {
-		return fmt.Errorf("ILN merkle tree hook must be non-zero")
+		return fmt.Errorf("ILN dispatch hook must be non-zero")
 	}
 	if r.DestinationRouter == types.ZeroAddress {
 		return fmt.Errorf("ILN destination router must be non-zero")

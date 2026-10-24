@@ -70,9 +70,6 @@ func (d *Destination) ValidateILNRead() error {
 	if types.StringToAddress(d.ILNRegistryAddress) == types.ZeroAddress {
 		return fmt.Errorf("ILN registry address must be non-zero")
 	}
-	if d.Confirmations == 0 {
-		return fmt.Errorf("ILN network confirmations must be non-zero")
-	}
 	return nil
 }
 
@@ -94,8 +91,7 @@ func ilnSourceClient(source *Destination) (*jsonrpc.Client, error) {
 	return client, nil
 }
 
-// GetConfirmedILNHead returns the source height after applying the configured
-// confirmation policy. It is used as the upper bound for Gateway event scans.
+// GetConfirmedILNHead returns the native finality-qualified source height. It is used as the upper bound for Gateway event scans.
 func GetConfirmedILNHead(source *Destination) (uint64, error) {
 	client, err := ilnSourceClient(source)
 	if err != nil {
@@ -104,15 +100,8 @@ func GetConfirmedILNHead(source *Destination) (uint64, error) {
 	return confirmedILNHead(client, source)
 }
 
-func confirmedILNHead(client *jsonrpc.Client, source *Destination) (uint64, error) {
-	head, err := client.Eth().BlockNumber()
-	if err != nil {
-		return 0, fmt.Errorf("query ILN source head: %w", err)
-	}
-	if head < source.Confirmations {
-		return 0, fmt.Errorf("ILN source has insufficient confirmed history")
-	}
-	return head - source.Confirmations, nil
+func confirmedILNHead(client *jsonrpc.Client, source *Destination) (uint64,error) {
+ return finalizedILNHead(client,source)
 }
 
 // GetConfirmedILNGovernanceNonce reads the single source-chain fee nonce.

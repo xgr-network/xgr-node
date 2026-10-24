@@ -44,7 +44,7 @@ func VerifyConfirmedILNFeeAllocation(
     if err != nil { return err }
     confirmed, err := confirmedILNHead(client, source)
     if err != nil { return err }
-    if checkpointBlock > uint64(1<<63-1) || (checkpointBlock>confirmed && checkpointBlock-confirmed>source.Confirmations) {
+    if checkpointBlock > uint64(1<<63-1) || checkpointBlock>confirmed {
         return fmt.Errorf("ILN allocation source observation exceeds current head")
     }
 

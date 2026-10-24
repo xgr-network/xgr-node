@@ -1,235 +1,34 @@
 package evm
-
 import (
-	"testing"
-
-	"github.com/stretchr/testify/require"
+ "testing"
+ "github.com/stretchr/testify/require"
 )
-
-func TestLoadDestination(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_REGISTRY_ADDR", "0x1000000000000000000000000000000000000001")
-	t.Setenv("XGR_INTERCHAIN_BASE_RPC", "https://base.example.invalid")
-	t.Setenv("XGR_INTERCHAIN_BASE_DEACTIVATION_RESERVE_WEI", "12345")
-
-	cfg, err := Load("base")
-	require.NoError(t, err)
-	require.Equal(t, "base", cfg.Name)
-	require.Equal(t, uint64(8453), cfg.ChainID)
-	require.Equal(t, uint32(8453), cfg.Domain)
-	require.Equal(t, "0x1000000000000000000000000000000000000001", cfg.RegistryAddress)
-	require.Equal(t, "12345", cfg.DeactivationReserveWei.String())
-	require.Equal(t, uint64(1), cfg.Confirmations)
-	require.Equal(t, uint64(300), cfg.MembershipValiditySeconds)
-	require.Equal(t, uint64(10), cfg.ExecutorStepDelaySeconds)
-	require.Equal(t, VerifierFormatEIP2537, cfg.VerifierFormat)
-	require.NoError(t, cfg.ValidateMembershipRead())
-	require.NoError(t, cfg.ValidateSubmission())
+func TestV332CompiledDestinationsDoNotStartSigner(t *testing.T){
+ cfg,err:=Load("base")
+ require.NoError(t,err)
+ require.Equal(t,uint64(8453),cfg.ChainID)
+ require.Equal(t,uint32(8453),cfg.Domain)
+ require.Empty(t,cfg.RegistryAddress)
+ require.Error(t,cfg.ValidateSubmission())
+ all,err:=LoadAll()
+ require.NoError(t,err)
+ require.Empty(t,all)
+ _,err=Load("polygon")
+ require.Error(t,err)
 }
-
-func TestLoadAllowsDestinationIdentityBeforeRegistryDeployment(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-
-	cfg, err := Load("base")
-	require.NoError(t, err)
-	require.Equal(t, uint64(8453), cfg.ChainID)
-	require.Equal(t, uint32(8453), cfg.Domain)
-	require.Error(t, cfg.ValidateMembershipRead())
-}
-
-func TestLoadNormalizesDestinationName(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_SEPOLIA_CHAIN_ID", "84532")
-	t.Setenv("XGR_INTERCHAIN_BASE_SEPOLIA_DOMAIN", "84532")
-
-	cfg, err := Load("base-sepolia")
-	require.NoError(t, err)
-	require.Equal(t, uint64(84532), cfg.ChainID)
-	require.Equal(t, uint32(84532), cfg.Domain)
-}
-
-func TestLoadRejectsMissingChainID(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-
-	_, err := Load("base")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "CHAIN_ID")
-}
-
-func TestLoadRejectsMissingDomain(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-
-	_, err := Load("base")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "DOMAIN")
-}
-
-func TestLoadRejectsInvalidAddress(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_REGISTRY_ADDR", "not-an-address")
-
-	_, err := Load("base")
-	require.Error(t, err)
-}
-
-func TestLoadRejectsInvalidName(t *testing.T) {
-	_, err := Load("base/mainnet")
-	require.Error(t, err)
-}
-
-func TestLoadAllDiscoversDestinationConfigs(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_REGISTRY_ADDR", "0x1000000000000000000000000000000000000001")
-	t.Setenv("XGR_INTERCHAIN_BASE_RPC", "https://base.example.invalid")
-
-	cfgs, err := LoadAll()
-	require.NoError(t, err)
-
-	var found *Destination
-	for _, cfg := range cfgs {
-		if cfg.Name == "base" {
-			found = cfg
-			break
-		}
-	}
-	require.NotNil(t, found)
-	require.Equal(t, uint64(8453), found.ChainID)
-}
-
-
-func TestLoadDestinationConfirmations(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_CONFIRMATIONS", "12")
-
-	cfg, err := Load("base")
-	require.NoError(t, err)
-	require.Equal(t, uint64(12), cfg.Confirmations)
-}
-
-
-func TestLoadAllRejectsDuplicateDomains(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_REGISTRY_ADDR", "0x1000000000000000000000000000000000000001")
-	t.Setenv("XGR_INTERCHAIN_BASE_RPC", "https://base.example.invalid")
-
-	t.Setenv("XGR_INTERCHAIN_BASE_ALT_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_ALT_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_ALT_REGISTRY_ADDR", "0x2000000000000000000000000000000000000002")
-	t.Setenv("XGR_INTERCHAIN_BASE_ALT_RPC", "https://base-alt.example.invalid")
-
-	_, err := LoadAll()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "configured more than once")
-}
-
-
-func TestLoadDestinationTimingPolicy(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_MEMBERSHIP_VALIDITY_SECONDS", "540")
-	t.Setenv("XGR_INTERCHAIN_BASE_EXECUTOR_STEP_DELAY_SECONDS", "45")
-
-	cfg, err := Load("base")
-	require.NoError(t, err)
-	require.Equal(t, uint64(540), cfg.MembershipValiditySeconds)
-	require.Equal(t, uint64(45), cfg.ExecutorStepDelaySeconds)
-}
-
-func TestLoadRejectsMembershipValidityAboveProtocolMaximum(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_MEMBERSHIP_VALIDITY_SECONDS", "601")
-
-	_, err := Load("base")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "between 1 and 600")
-}
-
-func TestLoadRejectsExecutorDelayOutsideValidityWindow(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_MEMBERSHIP_VALIDITY_SECONDS", "60")
-	t.Setenv("XGR_INTERCHAIN_BASE_EXECUTOR_STEP_DELAY_SECONDS", "60")
-
-	_, err := Load("base")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "smaller than membership validity")
-}
-
-
-func TestLoadAllIgnoresRouteNetworkFields(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_DESTINATION", "xgr")
-	t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_SOURCE_NETWORK", "base")
-
-	cfgs, err := LoadAll()
-	require.NoError(t, err)
-	require.Len(t, cfgs, 1)
-	require.Equal(t, "base", cfgs[0].Name)
-}
-
-
-func TestLoadDestinationCompressedVerifierFormat(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_XGR_CHAIN_ID", "1643")
-	t.Setenv("XGR_INTERCHAIN_XGR_DOMAIN", "1643")
-	t.Setenv("XGR_INTERCHAIN_XGR_VERIFIER_FORMAT", "compressed")
-
-	cfg, err := Load("xgr")
-	require.NoError(t, err)
-	require.Equal(t, VerifierFormatCompressed, cfg.VerifierFormat)
-}
-
-func TestLoadDestinationRejectsUnknownVerifierFormat(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_XGR_CHAIN_ID", "1643")
-	t.Setenv("XGR_INTERCHAIN_XGR_DOMAIN", "1643")
-	t.Setenv("XGR_INTERCHAIN_XGR_VERIFIER_FORMAT", "something-else")
-
-	_, err := Load("xgr")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "VERIFIER_FORMAT")
-}
-
-func TestLoadNetworkSpecificILNRegistry(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_ILN_REGISTRY_ADDR", "0x3333333333333333333333333333333333333333")
-
-	cfg, err := Load("base")
-	require.NoError(t, err)
-	require.Equal(t, "0x3333333333333333333333333333333333333333", cfg.ILNRegistryAddress)
-}
-
-func TestLoadNetworkSpecificILNRegistryIsOptional(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_XGR_CHAIN_ID", "1643")
-	t.Setenv("XGR_INTERCHAIN_XGR_DOMAIN", "1643")
-
-	cfg, err := Load("xgr")
-	require.NoError(t, err)
-	require.Empty(t, cfg.ILNRegistryAddress)
-}
-
-func TestLoadRejectsInvalidNetworkSpecificILNRegistry(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_ILN_REGISTRY_ADDR", "not-an-address")
-
-	_, err := Load("base")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "XGR_INTERCHAIN_BASE_ILN_REGISTRY_ADDR")
-}
-
-func TestLoadRejectsZeroNetworkSpecificILNRegistry(t *testing.T) {
-	t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN", "8453")
-	t.Setenv("XGR_INTERCHAIN_BASE_ILN_REGISTRY_ADDR", "0x0000000000000000000000000000000000000000")
-
-	_, err := Load("base")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "ILN_REGISTRY_ADDR")
+func TestInterchainEnvironmentCannotOverrideProtocol(t *testing.T){
+ t.Setenv("XGR_INTERCHAIN_BASE_CHAIN_ID","1")
+ t.Setenv("XGR_INTERCHAIN_BASE_DOMAIN","1")
+ t.Setenv("XGR_INTERCHAIN_BASE_CONFIRMATIONS","1")
+ t.Setenv("XGR_INTERCHAIN_BASE_REGISTRY_ADDR","0x1111111111111111111111111111111111111111")
+ t.Setenv("XGR_INTERCHAIN_BASE_RPC","http://bad.example.invalid")
+ t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_DESTINATION","xgr")
+ got,err:=Load("base")
+ require.NoError(t,err)
+ require.Equal(t,uint64(8453),got.ChainID)
+ require.Empty(t,got.RegistryAddress)
+ require.Equal(t,"https://mainnet.base.org",got.RPCURL)
+ all,err:=LoadAll()
+ require.NoError(t,err)
+ require.Empty(t,all)
 }

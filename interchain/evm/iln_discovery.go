@@ -18,46 +18,22 @@ type ILNRouteAdded struct {
  BlockNumber uint64
 }
 
-// GetILNRegistryActivationBlock establishes a bounded, authoritative event
-// backfill start. New registries expose deployment block immutably. Existing
-// registries may use an operator-configured exact deployment height. Neither
-// path grants route mutation rights; every event still comes from the registry.
-func GetILNRegistryActivationBlock(source *Destination) (uint64,error) {
- client,err:=ilnSourceClient(source)
+// GetILNRegistryActivationBlock requires the exact RPC-native deployment
+// height pinned by verified v3.3.3 receipts. Never interpret Solidity's
+// Arbitrum L1-origin block.number as an L2 RPC height.
+func GetILNRegistryActivationBlock(source *Destination)(uint64,error){
+ if source==nil||source.ILNRegistryActivationBlock==0{
+  return 0,fmt.Errorf("receipt-pinned, RPC-native ILN Registry deployment height required")
+ }
+ head,err:=GetConfirmedILNHead(source)
  if err!=nil{return 0,err}
- confirmed,err:=confirmedILNHead(client,source)
- if err!=nil{return 0,err}
- // A configured activation height is explicitly expressed in the RPC
- // chain's numbering domain, unlike Solidity block.number on some rollups.
- // It takes precedence and must never be compared to an L1-origin value.
- if source.ILNRegistryActivationBlock!=0 {
-  if source.ILNRegistryActivationBlock>confirmed {
-   return 0,fmt.Errorf("configured ILN registry activation block is not yet confirmed")
-  }
-  return source.ILNRegistryActivationBlock,nil
- }
- registry:=types.StringToAddress(source.ILNRegistryAddress)
- raw,callErr:=callILNSignatureView(client,registry,"activationBlock()",ethgo.Latest)
- if callErr==nil&&len(raw)==32{
-  block:=new(big.Int).SetBytes(raw)
-  if !block.IsUint64()||block.Sign()<=0||block.Uint64()>confirmed{
-   return 0,fmt.Errorf("invalid or unconfirmed ILN registry activation block")
-  }
-  if source.ILNRegistryActivationBlock!=0&&source.ILNRegistryActivationBlock!=block.Uint64(){
-   return 0,fmt.Errorf("configured ILN registry deployment block conflicts with on-chain activationBlock")
-  }
-  return block.Uint64(),nil
- }
- if source.ILNRegistryActivationBlock==0 {
-  return 0,fmt.Errorf("registry activationBlock() unavailable: supply an exact ILN_REGISTRY_ACTIVATION_BLOCK for legacy registry")
- }
- if source.ILNRegistryActivationBlock>confirmed {
-  return 0,fmt.Errorf("configured ILN registry activation block is not yet confirmed")
+ if source.ILNRegistryActivationBlock>head{
+  return 0,fmt.Errorf("source Registry deployment block not final")
  }
  return source.ILNRegistryActivationBlock,nil
 }
 
-// GetConfirmedILNRouteAdds retrieves bounded, source-confirmed registry
+// // GetConfirmedILNRouteAdds retrieves bounded, source-confirmed registry
 // RouteAdded events. Every discovered route MUST additionally pass a canonical
 // getRoute read and Gateway binding before the worker activates it.
 func GetConfirmedILNRouteAdds(source *Destination, fromBlock, toBlock uint64) ([]ILNRouteAdded,error) {

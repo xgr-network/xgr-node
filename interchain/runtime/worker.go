@@ -731,9 +731,9 @@ func (w *Worker) startLocalRequest(id string, req localRequest) error {
 }
 
 func (w *Worker) checkLocalReserve(destination *evmInterchain.Destination) error {
-	if destination == nil || destination.DeactivationReserveWei == nil {
-		return nil
-	}
+	if destination == nil {return nil}
+    minimum,err:=evmInterchain.MinimumDeactivationReserve(destination)
+    if err!=nil{return fmt.Errorf("read on-chain deactivation minimum: %w",err)}
 	details, err := evmInterchain.GetValidator(destination, w.localAddr)
 	if err != nil {
 		return err
@@ -742,17 +742,17 @@ func (w *Worker) checkLocalReserve(destination *evmInterchain.Destination) error
 		w.reserveWarned[destination.Name] = false
 		return nil
 	}
-	if details.ReserveWei.Cmp(destination.DeactivationReserveWei) >= 0 {
+	if details.ReserveWei.Cmp(minimum) >= 0 {
 		w.reserveWarned[destination.Name] = false
 		return nil
 	}
 	if !w.reserveWarned[destination.Name] {
 		w.logger.Warn(
-			"interchain deactivation reserve below configured target",
+			"interchain deactivation reserve below on-chain minimum",
 			"chain", destination.Name,
 			"validator", w.localAddr.String(),
 			"reserveWei", details.ReserveWei.String(),
-			"targetWei", destination.DeactivationReserveWei.String(),
+			"targetWei", minimum.String(),
 		)
 		w.reserveWarned[destination.Name] = true
 	}
@@ -1143,10 +1143,8 @@ func (w *Worker) trySubmit(hash types.Hash) error {
 
 	reserve := big.NewInt(0)
 	if payload.Action == protocol.ActionAddValidator {
-		reserve = destination.DeactivationReserveWei
-		if reserve == nil {
-			return fmt.Errorf("activation reserve is not configured")
-		}
+		reserve,err = evmInterchain.MinimumDeactivationReserve(destination)
+        if err!=nil{return fmt.Errorf("read on-chain activation reserve: %w",err)}
 		balance, err := destinationBalance(destination, w.txKey.Address())
 		if err != nil {
 			return err

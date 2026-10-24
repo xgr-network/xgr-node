@@ -115,7 +115,7 @@ func TestV3PossessionVerifiedRPCLookup(t *testing.T) {
 			}))
 			defer server.Close()
 			dest := &Destination{Name: "base", ChainID: 8453, Domain: 8453,
-				RegistryAddress: "0x1000000000000000000000000000000000000001", RPCURL: server.URL}
+				RegistryAddress: "0x1000000000000000000000000000000000000001", RPCURL: server.URL, VerifierFormat:VerifierFormatEIP2537}
 			got, err := readPossessionVerified(dest, payload)
 			if tt.fails {
 				require.Error(t, err)

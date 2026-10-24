@@ -34,10 +34,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION=v3.3.0-rc.1
+          VERSION=v3.3.2-rc
           PKG=github.com/xgr-network/xgrchain/versioning
           COMMIT="$(git rev-parse --short HEAD)"
-          BRANCH=redesign/xita-direct-bls-validator
+          BRANCH=XGR3.0
           TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           mkdir -p dist
           go build -trimpath -o "dist/xgrchain-${VERSION}-linux-amd64" \
@@ -50,7 +50,7 @@ jobs:
           (cd dist && sha256sum -c sha256sums.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: xgr-direct-bls-v3.3.0-rc.1-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
+          name: xgr-direct-bls-v3.3.2-rc-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
           path: dist/
           retention-days: 30
           if-no-files-found: error
@@ -69,7 +69,7 @@ jobs:
       - name: Security-critical unit and receipt checks
         run: |
           set -euo pipefail
-          go test -count=1 ./consensus/ibft/interchain ./interchain/evm ./interchain/runtime ./jsonrpc
+          go test -count=1 ./interchain/... ./consensus/ibft/interchain ./jsonrpc
       - name: Focused direct-message replay and authentic source receipt
         run: |
           set -euo pipefail

@@ -46,7 +46,10 @@ func TestILNFeeVaultAllocationIsOnChainAndIndependentFromHistoricLogs(t *testing
         var result string
         switch req.Method {
         case "eth_chainId": result = "0x2105"
-        case "eth_blockNumber": result = "0x96" // 150 - 12 = 138, checkpoint 128
+        case "eth_getBlockByNumber":
+            _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"result":%s}`,req.ID,
+             testFinalityBlock(138,"0x"+strings.Repeat("1",64)))
+            return
         case "eth_getLogs":
             logCalls++
             t.Error("allocation proof must not fetch historical Gateway logs")
@@ -104,7 +107,7 @@ func TestILNFeeVaultAllocationIsOnChainAndIndependentFromHistoricLogs(t *testing
     defer srv.Close()
     source := &Destination{
         Name:"base",ChainID:8453,Domain:8453,RPCURL:srv.URL,
-        ILNRegistryAddress:registry.String(),Confirmations:12,
+        ILNRegistryAddress:registry.String(),
     }
     snapshot := &ILNRouteSnapshot{Registry:registry,Route:protocol.ILNRoute{
         Key:protocol.ILNRouteKey{SourceChainID:8453,SourceDomain:8453,
