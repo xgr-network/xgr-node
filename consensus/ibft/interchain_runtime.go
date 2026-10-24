@@ -95,14 +95,18 @@ func (s *ibftInterchainState) NativeXGRBlock(n uint64)(*evmInterchain.NativeXGRB
  if !ok||canonical==nil||canonical.Hash!=block.Header.Hash{return nil,fmt.Errorf("block hash not canonical")}
  receipts,err:=s.ibft.blockchain.GetReceiptsByHash(block.Header.Hash)
  if err!=nil||len(receipts)!=len(block.Transactions){return nil,fmt.Errorf("missing canonical receipts: %v",err)}
+ // Freeze one committed state root for all calls within this proof.
+ // This is the current committed snapshot, not an assumed archive state.
+ pinned:=s.ibft.blockchain.Header()
+ if pinned==nil||pinned.Number<n||pinned.Hash==types.ZeroHash{
+  return nil,fmt.Errorf("native committed state snapshot unavailable")
+ }
  view:=func(to types.Address,data []byte)([]byte,error){
   if !s.IsSynchronized(){return nil,fmt.Errorf("local IBFT head stale")}
-  h:=s.ibft.blockchain.Header()
-  if h==nil||h.Number<n{return nil,fmt.Errorf("local head behind evidence")}
-  txn,err:=s.ibft.executor.BeginTxn(h.StateRoot,h,types.ZeroAddress)
+  txn,err:=s.ibft.executor.BeginTxn(pinned.StateRoot,pinned,types.ZeroAddress)
   if err!=nil{return nil,err}
   txn.SetNonPayable(true)
-  call:=&types.Transaction{Type:types.LegacyTx,From:types.ZeroAddress,To:&to,Gas:h.GasLimit,
+  call:=&types.Transaction{Type:types.LegacyTx,From:types.ZeroAddress,To:&to,Gas:pinned.GasLimit,
    GasPrice:big.NewInt(0),Value:big.NewInt(0),Input:append([]byte(nil),data...)}
   result,err:=txn.Call(call)
   if err!=nil||result==nil||result.Failed(){return nil,fmt.Errorf("native XGR view rejected: %v",err)}
