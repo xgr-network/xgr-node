@@ -48,6 +48,11 @@ jobs:
           git rev-parse HEAD > dist/commit.txt
           (cd dist && sha256sum xgrchain-*-linux-amd64 version.txt commit.txt > sha256sums.txt)
           (cd dist && sha256sum -c sha256sums.txt)
+      - name: Smoke-test BLS precompile through local RPC
+        shell: bash
+        run: |
+          set -euo pipefail
+          XGRCHAIN_BINARY="$PWD/dist/xgrchain-v3.3.2-rc-linux-amd64" go test -count=1 -timeout 75s ./e2e -run TestInterchainBLSVerificationPrecompileE2E
       - uses: actions/upload-artifact@v4
         with:
           name: xgr-direct-bls-v3.3.2-rc-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
