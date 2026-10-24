@@ -72,6 +72,17 @@ func validatePolicy(p ChainPolicy) error {
  return nil
 }
 
+// PolicyForChainID returns the release-reviewed chain identity and finality.
+func PolicyForChainID(id uint64) (ChainPolicy,error) {
+ for _,p:=range compiledChains {
+  if p.ChainID==id{
+   if err:=validatePolicy(p);err!=nil{return ChainPolicy{},err}
+   return p,nil
+  }
+ }
+ return ChainPolicy{},fmt.Errorf("unsupported chain %d",id)
+}
+
 func Policy(name string) (ChainPolicy,error) {
  name=strings.ToLower(strings.TrimSpace(name))
  if name=="xgrchain" {name="xgr"}

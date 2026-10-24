@@ -112,6 +112,12 @@ func GetDirectILNOperation(
     if err!=nil{return nil,nil,nil,err}
     receipt,err:=client.Eth().GetTransactionReceipt(ethgo.Hash(operation.TransactionHash))
     if err!=nil{return nil,nil,nil,fmt.Errorf("canonical source transaction receipt unavailable: %w",err)}
+    if receipt==nil||receipt.TransactionHash!=ethgo.Hash(operation.TransactionHash){
+      return nil,nil,nil,fmt.Errorf("canonical source receipt transaction hash mismatch")
+    }
+    if err:=verifyFinalizedReceipt(client,source,receipt);err!=nil{
+      return nil,nil,nil,fmt.Errorf("source receipt is not canonical and final: %w",err)
+    }
     raw,err:=VerifyDirectILNReceipt(*operation,receipt,source.Domain,
         snapshot.Route.Gateway,snapshot.Route.Mailbox,snapshot.Route.SourceRouter,
         snapshot.Route.DestinationRouter)

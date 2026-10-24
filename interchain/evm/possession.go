@@ -162,7 +162,7 @@ func EnsureValidatorPossession(destination *Destination, txKey ethgo.Key, payloa
 	if receipt == nil || receipt.Status != uint64(types.ReceiptSuccess) {
 		return fmt.Errorf("V3 possession transaction reverted")
 	}
-	if err := waitForConfirmations(destination, receipt); err != nil {
+	if err := waitForFinality(destination, receipt); err != nil {
 		return err
 	}
 	verified, err = readPossessionVerified(destination, payload)

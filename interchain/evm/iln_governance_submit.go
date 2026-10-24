@@ -87,7 +87,6 @@ func SubmitILNGovernance(
     if key == nil { return nil, fmt.Errorf("ILN governance executor key is missing") }
     if err := source.ValidateILNRead(); err != nil { return nil, err }
     if err := source.ValidateMembershipRead(); err != nil { return nil, err }
-    if source.Confirmations == 0 { return nil, fmt.Errorf("source confirmation policy is required") }
     if err := VerifyDestinationChainID(source); err != nil { return nil, err }
     if proposal.Registry != types.StringToAddress(source.ILNRegistryAddress) ||
        proposal.SourceChainID != source.ChainID ||
@@ -138,7 +137,7 @@ func SubmitILNGovernance(
     if receipt == nil || receipt.Status != uint64(types.ReceiptSuccess) {
         return nil, fmt.Errorf("source-chain ILN governance transaction reverted")
     }
-    if err := waitForConfirmations(source, receipt); err != nil { return nil, err }
+    if err := waitForFinality(source, receipt); err != nil { return nil, err }
     actualNonce, err := GetConfirmedILNGovernanceNonce(source)
     if err != nil { return nil, fmt.Errorf("verify ILN governance nonce after receipt: %w", err) }
     if actualNonce != proposal.Nonce {
