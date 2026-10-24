@@ -42,6 +42,15 @@ func verifyFinalizedReceipt(client *jsonrpc.Client, source *Destination, receipt
  }
  head,err:=finalizedILNHead(client,source)
  if err!=nil{return err}
+ return verifyFinalizedReceiptWithHead(client,receipt,head)
+}
+
+// For a single pinned witness, the head has already been fully checked.
+func verifyFinalizedReceiptWithHead(client *jsonrpc.Client,receipt *ethgo.Receipt,head uint64)error{
+ if client==nil||receipt==nil||receipt.Status!=uint64(types.ReceiptSuccess)||
+    receipt.BlockNumber==0||receipt.BlockHash==(ethgo.Hash{}){
+    return fmt.Errorf("invalid source receipt or missing block hash")
+ }
  if receipt.BlockNumber>head{return fmt.Errorf("source receipt beyond chain finality boundary")}
  if receipt.BlockNumber>uint64(1<<63-1){return fmt.Errorf("invalid receipt block number")}
  current,err:=client.Eth().GetBlockByNumber(ethgo.BlockNumber(receipt.BlockNumber),false)
