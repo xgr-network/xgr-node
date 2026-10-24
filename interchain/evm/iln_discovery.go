@@ -19,7 +19,7 @@ type ILNRouteAdded struct {
 }
 
 // GetILNRegistryActivationBlock requires the exact RPC-native deployment
-// height pinned by verified v3.3.3 receipts. Never interpret Solidity's
+// height pinned by verified v3.3.2 receipts. Never interpret Solidity's
 // Arbitrum L1-origin block.number as an L2 RPC height.
 func GetILNRegistryActivationBlock(source *Destination)(uint64,error){
  if source==nil||source.ILNRegistryActivationBlock==0{
