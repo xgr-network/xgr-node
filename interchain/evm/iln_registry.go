@@ -61,9 +61,9 @@ func (d *Destination) ValidateILNRead() error {
 	if d.ChainID == 0 || d.Domain == 0 {
 		return fmt.Errorf("ILN network chain id and domain are required")
 	}
-	if strings.TrimSpace(d.RPCURL) == "" {
-		return fmt.Errorf("ILN network RPC is required")
-	}
+	if d.ChainID != 1643 && strings.TrimSpace(d.RPCURL) == "" {
+        return fmt.Errorf("external ILN network RPC is required")
+    }
 	if strings.TrimSpace(d.ILNRegistryAddress) == "" {
 		return fmt.Errorf("ILN registry address is required")
 	}
@@ -101,9 +101,22 @@ func confirmedILNHead(client *jsonrpc.Client, source *Destination) (uint64,error
 
 // GetConfirmedILNGovernanceNonce reads the single source-chain fee nonce.
 func GetConfirmedILNGovernanceNonce(source *Destination) (uint64, error) {
- // ILN fee nonce is canonical current governance state.
+ if err:=source.ValidateILNRead();err!=nil{return 0,err}
+ // A source ILN registry is independent from the destination ValidatorRegistry.
+ // Do not require a membership deployment for governance nonce reads.
  selector:=crypto.Keccak256([]byte("sourceFeeNonce()"))
- raw,err:=DestinationCall(source,types.StringToAddress(source.ILNRegistryAddress),selector[:4])
+ var raw []byte
+ var err error
+ if source.ChainID==1643 {
+    reader,accessErr:=source.nativeAccess()
+    if accessErr!=nil{return 0,accessErr}
+    raw,err=reader.NativeXGRRead(types.StringToAddress(source.ILNRegistryAddress),selector[:4])
+ } else {
+    client,accessErr:=newVerifiedRPCClient(source)
+    if accessErr!=nil{return 0,accessErr}
+    defer client.Close()
+    raw,err=callILNView(client,types.StringToAddress(source.ILNRegistryAddress),selector[:4],ethgo.Latest)
+ }
  if err!=nil{return 0,fmt.Errorf("read source fee nonce: %w",err)}
  if len(raw)!=32{return 0,fmt.Errorf("invalid source fee nonce response")}
  value:=new(big.Int).SetBytes(raw); if !value.IsUint64(){return 0,fmt.Errorf("source fee nonce out of range")}
