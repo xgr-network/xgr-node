@@ -18,10 +18,9 @@ type ILNRouteAdded struct {
  BlockNumber uint64
 }
 
-// GetILNRegistryActivationBlock establishes a bounded, authoritative event
-// backfill start. New registries expose deployment block immutably. Existing
-// registries may use an operator-configured exact deployment height. Neither
-// path grants route mutation rights; every event still comes from the registry.
+// GetILNRegistryActivationBlock requires the exact RPC-native deployment
+// height pinned by verified v3.3.3 receipts. Never interpret Solidity's
+// Arbitrum L1-origin block.number as an L2 RPC height.
 func GetILNRegistryActivationBlock(source *Destination)(uint64,error){
  if source==nil||source.ILNRegistryActivationBlock==0{
   return 0,fmt.Errorf("receipt-pinned, RPC-native ILN Registry deployment height required")

@@ -49,16 +49,14 @@ func TestSubmissionValidationReserve(t *testing.T) {
 		Domain:                    8453,
 		RegistryAddress:           "0x1000000000000000000000000000000000000001",
 		RPCURL:                    "https://base.example.invalid",
-		DeactivationReserveWei:    big.NewInt(1),
-		Confirmations:             1,
 		MembershipValiditySeconds: 300,
 		ExecutorStepDelaySeconds:  10,
 	}
 	require.NoError(t, d.ValidateSubmission())
 
-	d.DeactivationReserveWei = nil
+	// The activation reserve is always read from the contract, not ENV.
 	require.NoError(t, d.ValidateSubmission())
-	require.Error(t, d.ValidateActivation())
+	require.NoError(t, d.ValidateActivation())
 }
 
 func TestApplyMembershipTupleABIEncode(t *testing.T) {

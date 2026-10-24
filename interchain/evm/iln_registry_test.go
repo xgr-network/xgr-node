@@ -21,7 +21,7 @@ import (
 func TestValidateILNReadRequiresRegistry(t *testing.T) {
 	cfg := &Destination{
 		Name: "base", ChainID: 8453, Domain: 8453,
-		RPCURL: "https://base.example.invalid", Confirmations: 1,
+		RPCURL: "https://base.example.invalid", 
 	}
 	require.Error(t, cfg.ValidateILNRead())
 	cfg.ILNRegistryAddress = "0x5555555555555555555555555555555555555555"
@@ -45,8 +45,9 @@ func TestGetConfirmedILNGovernanceNonce(t *testing.T) {
 		switch req.Method {
 		case "eth_chainId":
 			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x2105"}`, req.ID)
-		case "eth_blockNumber":
-			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x64"}`, req.ID)
+		case "eth_getBlockByNumber":
+            _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"result":%s}`,req.ID,
+              testFinalityBlock(99,"0x"+strings.Repeat("1",64)))
 		case "eth_call":
 			var call struct {
 				To   string `json:"to"`
@@ -68,7 +69,7 @@ func TestGetConfirmedILNGovernanceNonce(t *testing.T) {
 		ChainID:            8453,
 		Domain:             8453,
 		RPCURL:             server.URL,
-		Confirmations:      1,
+		
 		ILNRegistryAddress: registry.String(),
 	}
 	got, err := GetConfirmedILNGovernanceNonce(source)

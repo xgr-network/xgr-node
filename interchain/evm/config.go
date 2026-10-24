@@ -2,7 +2,6 @@ package evm
 
 import (
  "fmt"
- "math/big"
  "net/url"
  "strings"
 
@@ -26,7 +25,6 @@ type Destination struct {
  // FinalityRule is copied from the immutable release policy. Runtime checks
  // always re-resolve the rule by ChainID, never from this mutable field.
  FinalityRule policy.FinalityRule
- DeactivationReserveWei *big.Int // Deprecated field: no ENV input; Registry value is authoritative.
  MembershipValiditySeconds uint64
  ExecutorStepDelaySeconds uint64
  VerifierFormat string
