@@ -44,20 +44,29 @@ and permissionless token/route registration are NOT changed.
 - Quorum members each check source evidence independently; no central route
   admission authority is introduced.
 
-## v3.3.2 / v3.3.3 deployment separation
+## v3.3.2 receipt-pinned deployment bindings
 
-**v3.3.2 contains ZERO deployed contract addresses.** Every chain policy
-has empty ValidatorRegistry and ILN source Registry bindings. Hence
-`LoadAll()` returns no active destinations, the Interchain worker does not
-start or sign, and XGR PoS/IBFT keeps operating normally.
+This release includes all three reviewed Direct-BLS infrastructure chains
+from XITA GitHub main commit `8b4b078fda4edf5592b6f83510d14c0ef9a88830`:
+XGRChain, Base and Arbitrum. Polygon remains unsupported until independently
+deployed and reviewed.
 
-**v3.3.3 will pin new, audited deployment receipt data**: one ValidatorRegistry
-and one source Registry per chain, together with exact RPC-native deployment
-block heights. Never hard-code addresses in tests and never infer Arbitrum RPC
-block heights from Solidity `block.number` (which may reflect an L1 origin).
+The pinned ValidatorRegistry addresses are per-chain single-active-registry
+bindings (PRE-S03 accepted operational invariant). SourceRegistry addresses
+and RPC-native activation heights are read from immutable deployment receipts:
+XGRChain 12053797, Base 53026521, Arbitrum 517836903. On Arbitrum do NOT
+substitute the L1-origin Solidity block number for its L2 RPC block height.
 
-Contract code and source receipt lineage must be cross-checked before
-re-enabling Interchain. An unset or inconsistent receipt binding fails closed.
+Enabling the three Interchain workers does NOT deploy token routers or routes,
+activate transfers, or approve user funds. A permissionless route is only
+discovered after actual source Registry events and independently verified
+Gateway and destination proofs.
+
+External RPC `safe` availability, chain ID, pinned runtime bytes and
+historical logs must be verified operationally on all three validators prior
+to production signing. Failure remains fail-closed and must never affect
+IBFT/PoS. Do not start the public money flow before three-validator live
+Direct-BLS plus two-hop end-to-end transfer tests succeed.
 
 ## Cleanup
 
