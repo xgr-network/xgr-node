@@ -8,7 +8,6 @@ import (
 
 	"github.com/umbracle/ethgo"
 	"github.com/umbracle/ethgo/abi"
-	"github.com/umbracle/ethgo/jsonrpc"
 
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
 	"github.com/xgr-network/xgr-node/crypto"
@@ -66,7 +65,7 @@ func readPossessionVerified(destination *Destination, payload protocol.Membershi
 	if err != nil {
 		return false, fmt.Errorf("encode V3 possession getter: %w", err)
 	}
-	client, err := jsonrpc.NewClient(destination.RPCURL)
+	client, err := newVerifiedRPCClient(destination)
 	if err != nil {
 		return false, err
 	}
@@ -139,8 +138,10 @@ func EnsureValidatorPossession(destination *Destination, txKey ethgo.Key, payloa
 	if err != nil {
 		return fmt.Errorf("encode V3 possession: %w", err)
 	}
-	relayer, err := txrelayer.NewTxRelayer(
-		txrelayer.WithIPAddress(destination.RPCURL),
+	verifiedRPCURL,endpointErr := selectVerifiedRPCURL(destination)
+ if endpointErr!=nil{return endpointErr}
+ relayer, err := txrelayer.NewTxRelayer(
+		txrelayer.WithIPAddress(verifiedRPCURL),
 		txrelayer.WithReceiptTimeout(500*time.Millisecond),
 	)
 	if err != nil {

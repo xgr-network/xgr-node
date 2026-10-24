@@ -15,7 +15,6 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/umbracle/ethgo"
-	"github.com/umbracle/ethgo/jsonrpc"
 	ethgowallet "github.com/umbracle/ethgo/wallet"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
@@ -1311,18 +1310,7 @@ func indexOf(values []types.Address, value types.Address) int {
 }
 
 func destinationBalance(destination *evmInterchain.Destination, address ethgo.Address) (*big.Int, error) {
-	if err := evmInterchain.VerifyDestinationChainID(destination); err != nil {
-		return nil, err
-	}
-	client, err := jsonrpc.NewClient(destination.RPCURL)
-	if err != nil {
-		return nil, err
-	}
-	balance, err := client.Eth().GetBalance(address, ethgo.Latest)
-	if err != nil {
-		return nil, fmt.Errorf("query destination gas balance: %w", err)
-	}
-	return balance, nil
+ return evmInterchain.GetDestinationGasBalance(destination,address)
 }
 
 func stringsTrim(value string) string {

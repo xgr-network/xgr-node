@@ -4,8 +4,6 @@ import (
     "fmt"
     "math/big"
 
-    "github.com/umbracle/ethgo/jsonrpc"
-
     "github.com/umbracle/ethgo"
     "github.com/xgr-network/xgr-node/crypto"
     "github.com/xgr-network/xgr-node/types"
@@ -136,7 +134,7 @@ func GetDirectILNDestinationISM(destination *Destination, recipient types.Addres
         return types.ZeroAddress,fmt.Errorf("invalid direct destination identity")
     }
     if err:=destination.ValidateMembershipRead();err!=nil{return types.ZeroAddress,err}
-    client,err:=jsonrpc.NewClient(destination.RPCURL)
+    client,err:=newVerifiedRPCClient(destination)
     if err!=nil{return types.ZeroAddress,err}
     chainID,err:=client.Eth().ChainID()
     if err!=nil||chainID==nil||!chainID.IsUint64()||

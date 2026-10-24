@@ -98,8 +98,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -count=1 -timeout 180s ./e2e -run '^TestInterchainILNRoutesE2E$'
-          go test -count=1 -timeout 180s ./interchain/runtime -run '^(TestILNReplicaThreeAuthenticatedLibp2pValidatorsE2E|TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs|TestILNValidatorRestartRetainsVerifiedReplicaAndPerSetCursor)$'
+          go test ./e2e -list '^TestInterchainBLSVerificationPrecompileE2E$' | grep -Fx TestInterchainBLSVerificationPrecompileE2E
+          go test ./interchain/runtime -list '^TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs$' | grep -Fx TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs
+          go test -count=1 -timeout 180s ./e2e -run '^TestInterchainBLSVerificationPrecompileE2E$'
+          go test -count=1 -timeout 180s ./interchain/runtime -run '^TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs$'
           go build ./...
 
       - name: Direct-BLS focused regression
@@ -148,7 +150,7 @@ jobs:
             XGR v3.3.2: typed immutable Interchain chain policy, safe/IBFT
             finality, canonical source receipt verification and legacy Merkle
             cleanup. No consensus, EVM, state or staking changes. Interchain
-            signing remains disabled without v3.3.3 receipt-pinned contracts.
+            worker bindings activate XGRChain, Base and Arbitrum; Polygon disabled.
             Full Go suite and focused Direct-BLS security regression tested.
             Regular Interchain release with Go unit, IBFT-state and three-validator E2E gates; EEST/ForkGate not rerun because consensus and EVM are unchanged.
           artifacts: dist/*

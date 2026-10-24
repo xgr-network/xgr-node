@@ -1,10 +1,13 @@
 // Package interchain is the immutable, release-reviewed XITA network policy.
-// v3.3.2 contains no deployed contract bindings. v3.3.3 will pin receipt-
-// verified addresses and RPC-native activation blocks after deployment.
+// v3.3.2 pins only verified Direct-BLS deployments for XGRChain, Base and
+// Arbitrum (XITA deployment inventory xgr-network/xgr-interchain @
+// 8b4b078fda4edf5592b6f83510d14c0ef9a88830, 2026-10-24).
+// Polygon remains deliberately unsupported until its separate reviewed release.
 package interchain
 
 import (
  "fmt"
+ "net/url"
  "strings"
 )
 
@@ -32,25 +35,48 @@ type ChainPolicy struct {
  Domain uint32
  Finality FinalityRule
  VerifierFormat string
- RPCURL string
+ RPCURLs []string
  Registry string
  SourceRegistry string
  SourceActivationBlock uint64
 }
 
 var compiledChains = []ChainPolicy{
+ // Source activation = Factory-created SourceRegistry receipt.blockNumber,
+ // NEVER Solidity's L1-origin block.number on an L2.
+ // xgrchain receipts: f0156bb3... (ValidatorRegistry), 369ce335... (SourceRegistry).
  {Name:"xgr",ChainID:1643,Domain:1643,Finality:FinalityIBFT,
-  VerifierFormat:"compressed",RPCURL:"https://rpc.xgr.network"},
+  VerifierFormat:"compressed",RPCURLs:[]string{"https://rpc.xgr.network"},
+  Registry:"0x9b6b92ef1745611f402341965f7fc649cbe0da8c",
+  SourceRegistry:"0xea887a7f2f519f291732aaadf578baf3ff374df6",
+  SourceActivationBlock:12053797},
+ // base receipts: c8b2547d... (ValidatorRegistry), da05fb98... (SourceRegistry).
  {Name:"base",ChainID:8453,Domain:8453,Finality:FinalitySafe,
-  VerifierFormat:"eip2537",RPCURL:"https://mainnet.base.org"},
+  VerifierFormat:"eip2537",RPCURLs:[]string{"https://mainnet.base.org","https://gateway.tenderly.co/public/base"},
+  Registry:"0x3dc4cc1912792749d320789a67c2c14b7ee4ee33",
+  SourceRegistry:"0xf243093350b1b4ef8a9e3b0c13be3495297461b0",
+  SourceActivationBlock:53026521},
+ // arbitrum receipts: 879889c2... (ValidatorRegistry), 278fb105... (SourceRegistry).
  {Name:"arbitrum",ChainID:42161,Domain:42161,Finality:FinalitySafe,
-  VerifierFormat:"eip2537",RPCURL:"https://arb1.arbitrum.io/rpc"},
+  VerifierFormat:"eip2537",RPCURLs:[]string{"https://arb1.arbitrum.io/rpc","https://arbitrum-one-rpc.publicnode.com"},
+  Registry:"0x1a6610cc7dd0d0f42e22c3608e025d891065814c",
+  SourceRegistry:"0x51e3b684ed61fc88083497e475825a6cecaf21f5",
+  SourceActivationBlock:517836903},
 }
 
 func validatePolicy(p ChainPolicy) error {
  if p.Name==""||p.ChainID==0||p.Domain==0||uint64(p.Domain)!=p.ChainID||
-  p.RPCURL==""||(p.VerifierFormat!="compressed"&&p.VerifierFormat!="eip2537") {
+  len(p.RPCURLs)==0||(p.VerifierFormat!="compressed"&&p.VerifierFormat!="eip2537") {
   return fmt.Errorf("invalid compiled XITA chain identity: %q",p.Name)
+ }
+ seen:=make(map[string]bool,len(p.RPCURLs))
+ for _,endpoint:=range p.RPCURLs{
+  parsed,err:=url.Parse(endpoint)
+  if err!=nil||parsed.Scheme!="https"||parsed.Host==""||
+   parsed.User!=nil||parsed.Fragment!=""||seen[endpoint] {
+   return fmt.Errorf("invalid or repeated compiled XITA RPC endpoint for %s",p.Name)
+  }
+  seen[endpoint]=true
  }
  switch p.ChainID {
  case 1643:
@@ -103,8 +129,9 @@ func Policy(name string) (ChainPolicy,error) {
  return ChainPolicy{},fmt.Errorf("unsupported XITA chain %q",name)
 }
 
-// ActivePolicies returns only entirely receipt-pinned deployments.
-// In v3.3.2 this is deliberately EMPTY: no signatures until 3.3.3.
+// ActivePolicies returns only fully receipt-pinned Direct-BLS deployments.
+// v3.3.2 activates the three reviewed chains; Polygon has no binding.
+// This config enables validator workers, NOT token routes or user transfers.
 func ActivePolicies() ([]ChainPolicy,error) {
  out:=make([]ChainPolicy,0,len(compiledChains))
  for _,p:=range compiledChains {

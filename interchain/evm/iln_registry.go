@@ -77,7 +77,7 @@ func ilnSourceClient(source *Destination) (*jsonrpc.Client, error) {
 	if err := source.ValidateILNRead(); err != nil {
 		return nil, err
 	}
-	client, err := jsonrpc.NewClient(source.RPCURL)
+	client, err := newVerifiedRPCClient(source)
 	if err != nil {
 		return nil, fmt.Errorf("create ILN source RPC client: %w", err)
 	}
@@ -364,6 +364,7 @@ func GetConfirmedILNOperations(
 	filter.SetToUint64(toBlock)
 	logs, err := client.Eth().GetLogs(filter)
 	if err != nil {
+		recordInterchainRPCReadFailure(source)
 		return nil, fmt.Errorf("query ILN gateway operations: %w", err)
 	}
 
@@ -430,7 +431,7 @@ func GetILNMessageDelivered(destination *Destination, destinationRouter types.Ad
 	if err := destination.ValidateMembershipRead(); err != nil {
 		return false, err
 	}
-	client, err := jsonrpc.NewClient(destination.RPCURL)
+	client, err := newVerifiedRPCClient(destination)
 	if err != nil {
 		return false, fmt.Errorf("create ILN destination RPC client: %w", err)
 	}
@@ -440,6 +441,7 @@ func GetILNMessageDelivered(destination *Destination, destinationRouter types.Ad
 	}
 	mailbox, err := callILNAddressGetter(client, destinationRouter, "mailbox()", ethgo.Latest)
 	if err != nil {
+		recordInterchainRPCReadFailure(destination)
 		return false, fmt.Errorf("resolve destination Mailbox: %w", err)
 	}
 	selector := crypto.Keccak256([]byte("delivered(bytes32)"))

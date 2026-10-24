@@ -3,16 +3,18 @@ import (
  "testing"
  "github.com/stretchr/testify/require"
 )
-func TestV332CompiledDestinationsDoNotStartSigner(t *testing.T){
+func TestV332CompiledDestinationsHaveReceiptBindings(t *testing.T){
  cfg,err:=Load("base")
  require.NoError(t,err)
  require.Equal(t,uint64(8453),cfg.ChainID)
  require.Equal(t,uint32(8453),cfg.Domain)
- require.Empty(t,cfg.RegistryAddress)
- require.Error(t,cfg.ValidateSubmission())
+ require.Equal(t,"0x3dc4cc1912792749d320789a67c2c14b7ee4ee33",cfg.RegistryAddress)
+ require.Equal(t,"0xf243093350b1b4ef8a9e3b0c13be3495297461b0",cfg.ILNRegistryAddress)
+ require.Equal(t,uint64(53026521),cfg.ILNRegistryActivationBlock)
+ require.NoError(t,cfg.ValidateSubmission())
  all,err:=LoadAll()
  require.NoError(t,err)
- require.Empty(t,all)
+ require.Len(t,all,3)
  _,err=Load("polygon")
  require.Error(t,err)
 }
@@ -26,9 +28,9 @@ func TestInterchainEnvironmentCannotOverrideProtocol(t *testing.T){
  got,err:=Load("base")
  require.NoError(t,err)
  require.Equal(t,uint64(8453),got.ChainID)
- require.Empty(t,got.RegistryAddress)
+ require.Equal(t,"0x3dc4cc1912792749d320789a67c2c14b7ee4ee33",got.RegistryAddress)
  require.Equal(t,"https://mainnet.base.org",got.RPCURL)
  all,err:=LoadAll()
  require.NoError(t,err)
- require.Empty(t,all)
+ require.Len(t,all,3)
 }
