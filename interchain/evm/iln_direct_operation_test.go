@@ -96,3 +96,35 @@ func TestDirectReceiptRejectsRevertOrWrongTransaction(t *testing.T){
     _,err=VerifyDirectILNReceipt(op,receipt,8453,gateway,mailbox,router,destination)
     require.Error(t,err)
 }
+
+func TestDirectReceiptRejectsDuplicatedGatewayOrMailboxEvents(t *testing.T){
+    for _,duplicateGateway:=range []bool{true,false}{
+        op,receipt,gateway,mailbox,router,destination:=directSourceReceiptFixture()
+        i:=0
+        if duplicateGateway{i=1}
+        receipt.Logs=append(receipt.Logs,receipt.Logs[i])
+        _,err:=VerifyDirectILNReceipt(op,receipt,8453,gateway,mailbox,router,destination)
+        require.Error(t,err,"a duplicate canonical event must not authorize a second BLS vote")
+    }
+}
+func TestDirectReceiptRejectsUnrelatedOrMalformedGatewayAndMailbox(t *testing.T){
+    for _,invalid:=range []string{"gateway-address","mailbox-address","wrong-log-tx","wrong-domain","missing-fee","wrong-operation-index"}{
+        op,receipt,gateway,mailbox,router,destination:=directSourceReceiptFixture()
+        switch invalid{
+        case "gateway-address":
+            receipt.Logs[1].Address=ethgo.Address(types.StringToAddress("0x9999999999999999999999999999999999999999"))
+        case "mailbox-address":
+            receipt.Logs[0].Address=ethgo.Address(types.StringToAddress("0x9999999999999999999999999999999999999999"))
+        case "wrong-log-tx":
+            receipt.Logs[0].TransactionHash=ethgo.Hash{}
+        case "wrong-domain":
+            op.DestinationDomain=42161
+        case "missing-fee":
+            op.ValidatorFeeWei=big.NewInt(0)
+        case "wrong-operation-index":
+            op.LogIndex=42
+        }
+        _,err:=VerifyDirectILNReceipt(op,receipt,8453,gateway,mailbox,router,destination)
+        require.Error(t,err,invalid)
+    }
+}

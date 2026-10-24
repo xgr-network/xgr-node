@@ -338,7 +338,7 @@ func (w *Worker) writeILNCheckpointAttestation(attestation ilnCheckpointAttestat
 		return err
 	}
 	// Immutable per-validator-set history survives subsequent rotations; the
-	// legacy messageId.json remains the latest compatibility view.
+	// messageId.json remains the latest attestation view.
 	setDir := filepath.Join(routeDir, stringsTrim(attestation.AuthorizedMessageID))
 	if attestation.SetID == 0 { return fmt.Errorf("cannot archive empty ILN validator set") }
 	if err := os.MkdirAll(setDir, 0o770); err != nil { return err }

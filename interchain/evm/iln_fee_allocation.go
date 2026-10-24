@@ -10,7 +10,7 @@ import (
     "github.com/xgr-network/xgr-node/types"
 )
 
-// ErrILNFeeNotAllocated is a conclusive non-route leaf, not an RPC outage.
+// ErrILNFeeNotAllocated means there is no fee-paid source operation, not an RPC outage.
 var ErrILNFeeNotAllocated = errors.New("ILN message not allocated by route FeeVault")
 
 // VerifyConfirmedILNFeeAllocation checks the ORIGINAL protocol-level fee
