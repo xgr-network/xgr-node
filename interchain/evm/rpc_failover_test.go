@@ -127,8 +127,12 @@ func TestCaughtUpDirectScanDoesNotReadRouteOrLogs(t *testing.T) {
 }
 
 func TestGetLogs429SurvivesSuccessfulSafeHeadPreflight(t *testing.T){
+ // Global provider metrics are deliberately process-scoped. An isolated
+ // endpoint makes repeated -count runs independent of previous test state.
+ server:=httptest.NewServer(http.NotFoundHandler())
+ defer server.Close()
  d:=&Destination{Name:"base",ChainID:8453,Domain:8453,
-  RPCURLs:[]string{"https://log-rate-limited.example"}}
+  RPCURLs:[]string{server.URL}}
  url:=d.RPCURLs[0]
  rpcRecordFailure(d,url,fmt.Errorf("Interchain RPC eth_getLogs HTTP 429"),true)
  p:=rpcProviderState(d,url)

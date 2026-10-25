@@ -1,5 +1,5 @@
 name: Release Light (XGR v3.3.6 Base Gateway RPC 429 hotfix)
-# Publish once after merging this workflow into XGR3.0.
+# Publish v3.3.6 after repeat-run regression test isolation; tag remains immutable.
 on:
   push:
     branches: ["XGR3.0"]
