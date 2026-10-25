@@ -317,6 +317,9 @@ func (w *Worker) finalizeILNCheckpointAttestation(
 		w.logger.Warn("ILN quorum completion status persistence failed",
 			"route",route.Name,"err",progressErr)
 	}
+    // Disseminate the verified aggregate itself; lagging nodes must not need
+    // a fresh external source-RPC witness quorum to obtain an existing 2/3 proof.
+    w.publishILNCompletedQuorum(attestation)
 	// Keep locally signed votes until Mailbox.delivered becomes true. A
 	// validator that assembled 2/3 first must continue gossiping its
 	// authenticated vote so that lagging peers can independently assemble
