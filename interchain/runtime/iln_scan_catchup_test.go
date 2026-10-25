@@ -92,3 +92,46 @@ func TestDirectILNCatchupRejectsInvalidRanges(t *testing.T){
  require.ErrorContains(t,err,"invalid Direct-BLS scan range")
  require.Equal(t,uint64(78),cursor)
 }
+
+func TestSharedObserverTransportFailureCountsOncePerSource(t *testing.T) {
+ w:=&Worker{ilnDirectScanRetries:make(map[string]directILNScanRetry)}
+ routes:=[]*evm.CheckpointRoute{
+  {Name:"base-a",SourceNetwork:"base"},
+  {Name:"base-b",SourceNetwork:"base"},
+  {Name:"base-c",SourceNetwork:"base"},
+ }
+ failures:=map[string]error{
+  "base-a":errors.New("RPC HTTP 429"),
+  "base-b":errors.New("RPC HTTP 429"),
+  "base-c":errors.New("RPC HTTP 429"),
+ }
+ now:=time.Now()
+ w.finishILNObserverScanBackoff(routes,failures,now)
+ retry:=w.ilnDirectScanRetries["source:base"]
+ require.Equal(t,uint8(1),retry.failures)
+ require.Equal(t,now.Add(30*time.Second),retry.until)
+ require.Len(t,w.ilnDirectScanRetries,1)
+ w.finishILNObserverScanBackoff(routes,failures,now.Add(31*time.Second))
+ retry=w.ilnDirectScanRetries["source:base"]
+ require.Equal(t,uint8(2),retry.failures)
+ require.Equal(t,now.Add(91*time.Second),retry.until)
+}
+
+func TestSharedObserverSuccessCannotClearSourceFailure(t *testing.T) {
+ w:=&Worker{ilnDirectScanRetries:make(map[string]directILNScanRetry)}
+ routes:=[]*evm.CheckpointRoute{
+  {Name:"base-failed",SourceNetwork:"base"},
+  {Name:"base-ok",SourceNetwork:"base"},
+  {Name:"arb-failed",SourceNetwork:"arbitrum"},
+ }
+ now:=time.Now()
+ w.finishILNObserverScanBackoff(routes,map[string]error{
+  "base-failed":errors.New("HTTP 503"),
+  "arb-failed":errors.New("invalid Registry binding"),
+ },now)
+ require.Equal(t,uint8(1),w.ilnDirectScanRetries["source:base"].failures)
+ require.Equal(t,uint8(1),w.ilnDirectScanRetries["route:arb-failed"].failures)
+ require.Len(t,w.ilnDirectScanRetries,2)
+ w.finishILNObserverScanBackoff(routes,nil,now.Add(31*time.Second))
+ require.Empty(t,w.ilnDirectScanRetries)
+}
