@@ -7,7 +7,7 @@ import (
 
 	"github.com/umbracle/ethgo"
 	"github.com/umbracle/ethgo/abi"
-	"github.com/umbracle/ethgo/jsonrpc"
+	
 
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
 	"github.com/xgr-network/xgr-node/crypto"
@@ -76,7 +76,7 @@ func (d *Destination) ValidateILNRead() error {
 	return nil
 }
 
-func ilnSourceClient(source *Destination) (*jsonrpc.Client, error) {
+func ilnSourceClient(source *Destination) (ilnRPCClient, error) {
 	if err := source.ValidateILNRead(); err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func GetConfirmedILNHead(source *Destination) (uint64, error) {
 	return head, nil
 }
 
-func confirmedILNHead(client *jsonrpc.Client, source *Destination) (uint64,error) {
+func confirmedILNHead(client ilnRPCClient, source *Destination) (uint64,error) {
  return finalizedILNHead(client,source)
 }
 
@@ -147,7 +147,7 @@ func GetILNRouteAtBlock(source *Destination, destinationDomain uint32, routeID t
 }
 
 func getILNRouteAtBlock(
-	client *jsonrpc.Client,
+	client ilnRPCClient,
 	source *Destination,
 	destinationDomain uint32,
 	routeID types.Hash,
@@ -288,7 +288,7 @@ func getILNRouteAtBlockWithView(
 // the Warp router remains the sender. Per-message authorization is therefore
 // proven separately by the ILNOperation(messageId,...) event.
 func verifyILNGatewayBinding(
-	client *jsonrpc.Client,
+	client ilnRPCClient,
 	registry types.Address,
 	route protocol.ILNRoute,
 	block ethgo.BlockNumber,
@@ -355,7 +355,7 @@ func GetConfirmedILNOperations(
 // confirmedILNOperationsOnClient keeps a bounded log scan on the exact
 // verified provider, sharing its already-checked finality boundary.
 func confirmedILNOperationsOnClient(
-    client *jsonrpc.Client, source *Destination, gateway types.Address,
+    client ilnRPCClient, source *Destination, gateway types.Address,
     routeID types.Hash, destinationDomain uint32, fromBlock,toBlock,confirmed uint64,
 ) ([]ILNOperation,error) {
 	if fromBlock == 0 || toBlock < fromBlock || toBlock > confirmed {
@@ -378,7 +378,7 @@ func confirmedILNOperationsOnClient(
 	}
 	filter.SetFromUint64(fromBlock)
 	filter.SetToUint64(toBlock)
-	logs, err := client.Eth().GetLogs(filter)
+	logs, err := ilnRPCLogs(client,filter)
 	if err != nil {
 		recordInterchainRPCReadFailure(source)
 		return nil, fmt.Errorf("query ILN gateway operations: %w", err)
@@ -458,7 +458,7 @@ func GetILNMessageDelivered(destination *Destination, destinationRouter types.Ad
 }
 
 // callILNAddressGetter reads immutable/current contract bindings.
-func callILNAddressGetter(client *jsonrpc.Client, address types.Address, signature string, block ethgo.BlockNumber) (types.Address, error) {
+func callILNAddressGetter(client ilnRPCClient, address types.Address, signature string, block ethgo.BlockNumber) (types.Address, error) {
 	raw, err := callILNSignatureView(client, address, signature, block)
 	if err != nil {
 		return types.ZeroAddress, err
@@ -473,14 +473,14 @@ func callILNAddressGetter(client *jsonrpc.Client, address types.Address, signatu
 	return out, nil
 }
 
-func callILNSignatureView(client *jsonrpc.Client, address types.Address, signature string, block ethgo.BlockNumber) ([]byte, error) {
+func callILNSignatureView(client ilnRPCClient, address types.Address, signature string, block ethgo.BlockNumber) ([]byte, error) {
 	hash := crypto.Keccak256([]byte(signature))
 	return callILNView(client, address, hash[:4], block)
 }
 
-func callILNView(client *jsonrpc.Client, address types.Address, data []byte, block ethgo.BlockNumber) ([]byte, error) {
+func callILNView(client ilnRPCClient, address types.Address, data []byte, block ethgo.BlockNumber) ([]byte, error) {
 	to := ethgo.Address(address)
-	raw, err := client.Eth().Call(
+	raw, err := ilnRPCCall(client,
 		&ethgo.CallMsg{To: &to, Data: append([]byte(nil), data...)},
 		block,
 	)
@@ -542,7 +542,7 @@ func ScanDirectILNOperationWindow(
         err=fmt.Errorf("invalid Direct-BLS scan window")
         return
     }
-    var client *jsonrpc.Client
+    var client ilnRPCClient
     client,head,err=newVerifiedRPCClientWithHead(source)
     if err!=nil{return}
     defer client.Close()

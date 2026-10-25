@@ -31,6 +31,7 @@ type Destination struct {
  ExecutorStepDelaySeconds uint64
  VerifierFormat string
  NativeXGR NativeXGRAccess
+ rpcScope *ilnRPCScope
 }
 
 func makeDestination(p policy.ChainPolicy) (*Destination,error) {

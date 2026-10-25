@@ -108,7 +108,7 @@ func GetDirectILNOperation(
         operation=&ops[i]
     }
     if operation==nil{return nil,nil,nil,fmt.Errorf("direct ILN message not found at source block")}
-    receipt,err:=client.Eth().GetTransactionReceipt(ethgo.Hash(operation.TransactionHash))
+    receipt,err:=ilnRPCReceipt(client,ethgo.Hash(operation.TransactionHash))
     if err!=nil{
         recordInterchainRPCReadError(source,source.RPCURL,err)
         return nil,nil,nil,fmt.Errorf("canonical source transaction receipt unavailable: %w",err)

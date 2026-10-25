@@ -4,7 +4,7 @@ import (
  "fmt"
  "time"
  "github.com/umbracle/ethgo"
- "github.com/umbracle/ethgo/jsonrpc"
+ 
  policy "github.com/xgr-network/xgr-node/interchain"
  "github.com/xgr-network/xgr-node/types"
 )
@@ -12,14 +12,14 @@ import (
 // finalizedILNHead is the authoritative upper bound for ALL source discovery
 // and signing reads. Base and Arbitrum require "safe"; no confirmation depth
 // or fallback to "latest" is ever permitted. XGRChain is IBFT-committed.
-func finalizedILNHead(client *jsonrpc.Client, source *Destination)(uint64,error){
+func finalizedILNHead(client ilnRPCClient, source *Destination)(uint64,error){
  if client==nil||source==nil{return 0,fmt.Errorf("finality client or chain missing")}
  p,err:=policy.PolicyForChainID(source.ChainID)
  if err!=nil{return 0,err}
  if source.Domain!=p.Domain{return 0,fmt.Errorf("finality source chain/domain mismatch")}
  var block *ethgo.Block
  switch p.Finality{
- case policy.FinalityIBFT: block,err=client.Eth().GetBlockByNumber(ethgo.Latest,false)
+ case policy.FinalityIBFT: block,err=ilnRPCBlock(client,ethgo.Latest,false)
  case policy.FinalitySafe: err=client.Call("eth_getBlockByNumber",&block,"safe",false)
  default:return 0,fmt.Errorf("unsupported finality rule for chain %d",source.ChainID)
  }
@@ -27,7 +27,7 @@ func finalizedILNHead(client *jsonrpc.Client, source *Destination)(uint64,error)
  if block==nil||block.Number==0||block.Hash==(ethgo.Hash{})||block.Number>uint64(1<<63-1){
   return 0,fmt.Errorf("missing or invalid finality block on chain %d",source.ChainID)
  }
- current,err:=client.Eth().GetBlockByNumber(ethgo.BlockNumber(block.Number),false)
+ current,err:=ilnRPCBlock(client,ethgo.BlockNumber(block.Number),false)
  if err!=nil||current==nil||current.Number!=block.Number||current.Hash!=block.Hash{
   return 0,fmt.Errorf("finality head block hash conflicts with canonical numeric block")
  }
@@ -35,7 +35,7 @@ func finalizedILNHead(client *jsonrpc.Client, source *Destination)(uint64,error)
 }
 
 // Source receipts must remain canonical at a finality-qualified block.
-func verifyFinalizedReceipt(client *jsonrpc.Client, source *Destination, receipt *ethgo.Receipt) error {
+func verifyFinalizedReceipt(client ilnRPCClient, source *Destination, receipt *ethgo.Receipt) error {
  if receipt==nil||receipt.Status!=uint64(types.ReceiptSuccess)||
    receipt.BlockNumber==0||receipt.BlockHash==(ethgo.Hash{}){
   return fmt.Errorf("invalid source receipt or missing block hash")
@@ -46,14 +46,14 @@ func verifyFinalizedReceipt(client *jsonrpc.Client, source *Destination, receipt
 }
 
 // For a single pinned witness, the head has already been fully checked.
-func verifyFinalizedReceiptWithHead(client *jsonrpc.Client,receipt *ethgo.Receipt,head uint64)error{
+func verifyFinalizedReceiptWithHead(client ilnRPCClient,receipt *ethgo.Receipt,head uint64)error{
  if client==nil||receipt==nil||receipt.Status!=uint64(types.ReceiptSuccess)||
     receipt.BlockNumber==0||receipt.BlockHash==(ethgo.Hash{}){
     return fmt.Errorf("invalid source receipt or missing block hash")
  }
  if receipt.BlockNumber>head{return fmt.Errorf("source receipt beyond chain finality boundary")}
  if receipt.BlockNumber>uint64(1<<63-1){return fmt.Errorf("invalid receipt block number")}
- current,err:=client.Eth().GetBlockByNumber(ethgo.BlockNumber(receipt.BlockNumber),false)
+ current,err:=ilnRPCBlock(client,ethgo.BlockNumber(receipt.BlockNumber),false)
  if err!=nil||current==nil||current.Number!=receipt.BlockNumber||current.Hash!=receipt.BlockHash{
   return fmt.Errorf("source receipt block hash not canonical")
  }
@@ -70,7 +70,7 @@ func waitForFinality(destination *Destination,receipt *ethgo.Receipt)error {
  defer client.Close()
  deadline:=time.Now().Add(5*time.Minute)
  for {
-  fresh,readErr:=client.Eth().GetTransactionReceipt(receipt.TransactionHash)
+  fresh,readErr:=ilnRPCReceipt(client,receipt.TransactionHash)
   if readErr==nil&&fresh!=nil {
    if fresh.BlockHash!=receipt.BlockHash||fresh.BlockNumber!=receipt.BlockNumber||
       fresh.Status!=uint64(types.ReceiptSuccess) {

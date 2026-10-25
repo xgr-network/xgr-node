@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"encoding/hex"
+ "context"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -125,6 +126,7 @@ type Worker struct {
 	closeCh chan struct{}
 	wg      sync.WaitGroup
 
+	rpcCancel context.CancelFunc
 	mu               sync.Mutex
 	requests         map[types.Hash]*requestState
 	reserveWarned    map[string]bool
@@ -315,6 +317,9 @@ func (w *Worker) Start() error {
 		return err
 	}
 
+	rpcContext,rpcCancel:=context.WithCancel(context.Background())
+	w.rpcCancel=rpcCancel
+	for _,destination:=range w.destinations{destination.SetILNRPCScope(rpcContext)}
 	w.wg.Add(5)
     go w.heartbeatLoop()
     go w.quorumHintLoop()
@@ -330,6 +335,7 @@ func (w *Worker) Close() {
 	default:
 		close(w.closeCh)
 	}
+	if w.rpcCancel!=nil{w.rpcCancel()}
 	w.wg.Wait()
 	_ = os.Remove(w.heartbeatPath())
 	if w.topic != nil {
@@ -410,15 +416,20 @@ func (w *Worker) tick() {
         activeRoutes:=make([]*evmInterchain.CheckpointRoute,0,len(w.routes))
         for _,route:=range w.routes{activeRoutes=append(activeRoutes,route)}
         w.mu.Unlock()
-        // The only background message source is the confirmed, fee-qualified
-        // Gateway operation; no Merkle state or quorum-request trigger.
+        // One source-chain observation for all catalog-backed routes. The
+        // common Gateway log stream is only a discovery hint; BLS signing
+        // still independently verifies complete source receipts and fees.
+        ready:=make([]*evmInterchain.CheckpointRoute,0,len(activeRoutes))
         for _,route:=range activeRoutes{
-            if !w.directILNScanMayRun(route,now){continue}
-            err:=w.scanDirectILNOperations(route)
+            if w.directILNScanMayRun(route,now){ready=append(ready,route)}
+        }
+        failures:=w.scanILNObserverRoutes(ready)
+        for _,route:=range ready{
+            err:=failures[route.Name]
             w.directILNScanFinished(route,time.Now(),err)
-            if err!=nil{
+            if err!=nil {
                 w.recordILNDirectScanFailure(route,err)
-                w.logger.Debug("Direct BLS source operation scan pending",
+                w.logger.Debug("Direct BLS source observation pending",
                     "route",route.Name,"err",err)
             }
         }

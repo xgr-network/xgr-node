@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/umbracle/ethgo"
-	"github.com/umbracle/ethgo/jsonrpc"
+	"context"
 
 	"github.com/xgr-network/xgr-node/crypto"
 	"github.com/xgr-network/xgr-node/types"
@@ -40,14 +40,15 @@ func GetValidatorStatus(
 		return nil, fmt.Errorf("interchain registry address must not be zero")
 	}
 
-	client, err := jsonrpc.NewClient(rpcURL)
+	client, err := newBoundedILNRPC(context.Background(),rpcURL)
 	if err != nil {
 		return nil, fmt.Errorf("create destination EVM RPC client: %w", err)
 	}
 
+	defer client.Close()
 	input := encodeGetValidatorStatusCall(validator)
 	to := ethgo.Address(registry)
-	raw, err := client.Eth().Call(&ethgo.CallMsg{
+	raw, err := ilnRPCCall(client,&ethgo.CallMsg{
 		To:   &to,
 		Data: input,
 	}, ethgo.Latest)
