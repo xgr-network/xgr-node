@@ -42,6 +42,29 @@ var observerSignMessage = func(w *Worker,r *evm.CheckpointRoute,id types.Hash,n 
  return w.signDirectILNMessage(r,id,n)
 }
 
+// ensureObserverCatalogRoute bootstraps a previously uncataloged configured
+// route once from the confirmed source Registry. It does NOT perform a
+// route-specific Gateway event scan: once bound, the route joins the shared
+// per-source-chain observer. A failed Registry read leaves its cursor intact
+// and is retried using existing per-route backoff.
+func (w *Worker) ensureObserverCatalogRoute(source *evm.Destination,route *evm.CheckpointRoute,head uint64)(observerRoute,error){
+ binding,err:=w.knownObserverRoute(source,route)
+ if err==nil{return binding,nil}
+ if !os.IsNotExist(err){return observerRoute{},fmt.Errorf("invalid durable observer route catalog for %s: %w",route.Name,err)}
+ destination:=w.destinations[route.Destination]
+ if destination==nil||destination.Domain==0{return observerRoute{},fmt.Errorf("missing observer route destination")}
+ if head==0{return observerRoute{},fmt.Errorf("confirmed source head unavailable for route bootstrap")}
+ snapshot,err:=w.sourceILNRouteAtBlock(source,destination.Domain,route.RouteID,head)
+ if err!=nil{return observerRoute{},fmt.Errorf("verify uncataloged route %s: %w",route.Name,err)}
+ if !validILNSourceRouteNotice(source,destination.Domain,route.RouteID,snapshot){
+  return observerRoute{},fmt.Errorf("uncataloged route lacks independently verified source Registry binding: %s",route.Name)
+ }
+ event:=evm.ILNRouteAdded{DestinationDomain:destination.Domain,RouteID:route.RouteID,
+  Gateway:snapshot.Route.Gateway,BlockNumber:head}
+ if err=w.rememberILNRouteAdded(source,event);err!=nil{return observerRoute{},err}
+ return w.knownObserverRoute(source,route)
+}
+
 // scanSharedILNSource safely migrates on the fly using existing durable
 // per-route cursors. A new route begins at its registry activation block;
 // the group always starts at the minimum cursor and only advances after all
@@ -123,34 +146,53 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
  return nil
 }
 
-// scanILNObserverRoutes processes all routes with a trusted source catalog
-// in one chain-level scan. Legacy/no-catalog routes retain the prior path;
-// no synthetic gateway and no forced migration of existing route cursors.
+// scanILNObserverRoutes always dispatches Gateway events through ONE
+// source-chain observer. A route absent from the verified catalog is enrolled
+// via a bounded, one-time Registry lookup; it NEVER starts an independent
+// per-route event scan. Failed onboarding does not advance its durable cursor.
+// BLS signatures still require full independent source evidence verification.
 func (w *Worker) scanILNObserverRoutes(active []*evm.CheckpointRoute)map[string]error{
  failures:=make(map[string]error)
- grouped:=make(map[string][]observerRoute)
- fallback:=make([]*evm.CheckpointRoute,0)
+ bySource:=make(map[string][]*evm.CheckpointRoute)
  for _,route:=range active{
   if route==nil{continue}
   source:=w.destinations[route.SourceNetwork]
   if source==nil{failures[route.Name]=fmt.Errorf("missing source");continue}
-  binding,err:=w.knownObserverRoute(source,route)
-  if err!=nil{fallback=append(fallback,route);continue}
-  grouped[route.SourceNetwork]=append(grouped[route.SourceNetwork],binding)
+  bySource[source.Name]=append(bySource[source.Name],route)
  }
- names:=make([]string,0,len(grouped))
- for name:=range grouped{names=append(names,name)}
+ names:=make([]string,0,len(bySource))
+ for name:=range bySource{names=append(names,name)}
  sort.Strings(names)
  for _,name:=range names{
-  routes:=grouped[name]
-  if len(routes)==1{fallback=append(fallback,routes[0].Route);continue}
-  err:=w.scanSharedILNSource(w.destinations[name],routes)
-  if err!=nil{
-   for _,route:=range routes{failures[route.Route.Name]=err}
+  source:=w.destinations[name]
+  configured:=bySource[name]
+  sort.Slice(configured,func(i,j int)bool{return configured[i].Name<configured[j].Name})
+  bindings:=make([]observerRoute,0,len(configured))
+  var verifiedHead uint64
+  var headRead bool
+  for _,route:=range configured{
+   // Cache the confirmed head once per source for bootstrap only. Regular
+   // grouped Gateway scanning obtains its own finality-qualified head.
+   _,catalogErr:=w.knownObserverRoute(source,route)
+   if catalogErr!=nil&&os.IsNotExist(catalogErr)&&!headRead{
+    var err error
+    verifiedHead,err=w.sourceILNHead(source)
+    headRead=true
+    if err!=nil{
+     for _,remaining:=range configured{
+      if _,e:=w.knownObserverRoute(source,remaining);os.IsNotExist(e){failures[remaining.Name]=err}
+     }
+     break
+    }
+   }
+   binding,err:=w.ensureObserverCatalogRoute(source,route,verifiedHead)
+   if err!=nil{failures[route.Name]=err;continue}
+   bindings=append(bindings,binding)
   }
- }
- for _,route:=range fallback{
-  if err:=w.scanDirectILNOperations(route);err!=nil{failures[route.Name]=err}
+  if len(bindings)==0{continue}
+  if err:=w.scanSharedILNSource(source,bindings);err!=nil{
+   for _,binding:=range bindings{failures[binding.Route.Name]=err}
+  }
  }
  return failures
 }
