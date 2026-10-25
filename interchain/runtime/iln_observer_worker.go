@@ -126,11 +126,22 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   }
   dispatched,err:=dispatchObservedILNOperations(routes,ops,origins)
   if err!=nil{return err}
+  // A poisoned or temporarily unverifiable message must not prevent the
+  // other, independently authenticated messages in this SAME scanned window
+  // from obtaining their votes. Never commit ANY cursor on a failure: on
+  // retry the original window is replayed idempotently, including failed work.
+  // This is a partial availability isolation only; durable per-message
+  // quarantine/retry is needed before N-01 can be marked fully resolved.
+  var firstFailure error
   for _,event:=range dispatched{
    if event.Operation.BlockNumber<=cursors[event.Route.Name]{continue}
    err:=observerSignMessage(w,event.Route,event.Operation.MessageID,event.Operation.BlockNumber)
-   if err!=nil&&err.Error()!="Interchain message already delivered"{return err}
+   if err!=nil&&err.Error()!="Interchain message already delivered"&&firstFailure==nil{
+    firstFailure=fmt.Errorf("source message %s on %s: %w",
+     event.Operation.MessageID.String(),event.Route.Name,err)
+   }
   }
+  if firstFailure!=nil{return firstFailure}
   // Update every route cursor after all proof checks complete. A failure
   // halfway through cursor commits repeats events, never skips any.
   for _,r:=range routes{
