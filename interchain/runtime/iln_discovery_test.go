@@ -1,11 +1,13 @@
 package runtime
 
 import (
+ "encoding/json"
  "fmt"
  "math/big"
  "testing"
  "os"
  "path/filepath"
+ "time"
 
  "github.com/stretchr/testify/require"
  protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
@@ -280,4 +282,75 @@ func TestILNRPCDiscoveryCursorMigrationRejectsNumericallyPlausibleL1Height(t *te
  require.Equal(t,1,scans)
  require.NoError(t,w.discoverILNRoutesFromSource(source))
  require.Equal(t,1,scans,"migrated cursor must not repeatedly rescan")
+}
+
+func TestILNHintQueueCannotStarveValidRouteBehindEightInvalidNames(t *testing.T){
+ routeID:=types.StringToHash("0x"+fmt.Sprintf("%064x",999999))
+ gateway:=types.StringToAddress("0x1111111111111111111111111111111111111111")
+ registry:=types.StringToAddress("0x5555555555555555555555555555555555555555")
+ source:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryAddress:registry.String()}
+ dst:=&evm.Destination{Name:"xgr",ChainID:1643,Domain:1643}
+ w:=&Worker{dataDir:t.TempDir(),destinations:map[string]*evm.Destination{"base":source,"xgr":dst},routes:make(map[string]*evm.CheckpointRoute)}
+ dir:=filepath.Join(w.ilnDir(),"route-hints")
+ require.NoError(t,os.MkdirAll(dir,0o770))
+ old:=time.Now().Add(-time.Minute)
+ for i:=0;i<12;i++{
+  name:=fmt.Sprintf("iln_0001_1643_%064x.json",i+1)
+  path:=filepath.Join(dir,name)
+  require.NoError(t,os.WriteFile(path,[]byte("{}"),0o660))
+  require.NoError(t,os.Chtimes(path,old,old))
+ }
+ valid:=fmt.Sprintf("iln_8453_1643_%s",routeID.String()[2:])
+ validPath:=filepath.Join(dir,valid+".json")
+ require.NoError(t,os.WriteFile(validPath,[]byte("{}"),0o660))
+ require.NoError(t,os.Chtimes(validPath,time.Now(),time.Now()))
+ oldHead,oldRoute:=getConfirmedILNHead,getILNRouteAtBlock
+ defer func(){getConfirmedILNHead=oldHead;getILNRouteAtBlock=oldRoute}()
+ getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 100,nil}
+ getILNRouteAtBlock=func(_ *evm.Destination,_ uint32,id types.Hash,_ uint64)(*evm.ILNRouteSnapshot,error){
+  require.Equal(t,routeID,id)
+  return &evm.ILNRouteSnapshot{Registry:registry,BlockNumber:100,Route:protocol.ILNRoute{
+   Key:protocol.ILNRouteKey{SourceChainID:8453,SourceDomain:8453,DestinationDomain:1643,RouteID:routeID},
+   Gateway:gateway,SourceRouter:types.StringToAddress("0x2222222222222222222222222222222222222222"),
+   Mailbox:types.StringToAddress("0x3333333333333333333333333333333333333333"),
+   DispatchHook:types.StringToAddress("0x4444444444444444444444444444444444444444"),
+   DestinationRouter:types.StringToAddress("0x6666666666666666666666666666666666666666"),
+   ValidatorFeeWei:big.NewInt(1),Enabled:true,
+  }},nil
+ }
+ w.discoverILNHintedRoutes()
+ require.NotContains(t,w.routes,valid)
+ w.discoverILNHintedRoutes()
+ require.Contains(t,w.routes,valid,"unknown front-queue entries must not starve a valid route")
+ require.NoFileExists(t,validPath)
+}
+
+func TestILNHintQueueTransientRPCFailureRotatesAndPreservesOriginalLease(t *testing.T){
+ source:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryAddress:"0x5555555555555555555555555555555555555555"}
+ dst:=&evm.Destination{Name:"xgr",ChainID:1643,Domain:1643}
+ w:=&Worker{dataDir:t.TempDir(),destinations:map[string]*evm.Destination{"base":source,"xgr":dst}}
+ dir:=filepath.Join(w.ilnDir(),"route-hints")
+ require.NoError(t,os.MkdirAll(dir,0o770))
+ name:=fmt.Sprintf("iln_8453_1643_%064x.json",111)
+ path:=filepath.Join(dir,name)
+ require.NoError(t,os.WriteFile(path,[]byte("{}"),0o660))
+ stale:=time.Now().Add(-20*time.Minute)
+ require.NoError(t,os.Chtimes(path,stale,stale))
+ w.discoverILNHintedRoutes()
+ require.NoFileExists(t,path,"expired hints must not poison discovery indefinitely")
+ require.NoError(t,os.WriteFile(path,[]byte("{}"),0o660))
+ oldHead:=getConfirmedILNHead
+ defer func(){getConfirmedILNHead=oldHead}()
+ getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 0,fmt.Errorf("temporary 429")}
+ w.discoverILNHintedRoutes()
+ raw,err:=os.ReadFile(path);require.NoError(t,err)
+ require.Contains(t,string(raw),"issuedUnix")
+ first:=struct{Issued int64 `json:"issuedUnix"`}{}
+ require.NoError(t,json.Unmarshal(raw,&first))
+ require.Greater(t,first.Issued,int64(0))
+ w.discoverILNHintedRoutes()
+ raw,err=os.ReadFile(path);require.NoError(t,err)
+ second:=struct{Issued int64 `json:"issuedUnix"`}{}
+ require.NoError(t,json.Unmarshal(raw,&second))
+ require.Equal(t,first.Issued,second.Issued,"retry rotation cannot renew a hint lease")
 }

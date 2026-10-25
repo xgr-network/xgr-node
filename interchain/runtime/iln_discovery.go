@@ -6,7 +6,9 @@ import (
  "fmt"
  "os"
  "path/filepath"
+ "sort"
  "strings"
+ "time"
 
  evmInterchain "github.com/xgr-network/xgr-node/interchain/evm"
  "github.com/xgr-network/xgr-node/types"
@@ -156,6 +158,50 @@ func (w *Worker) restoreILNDiscoveredRoutes(source *evmInterchain.Destination,he
  return nil
 }
 
+// An unknown permissionless route hint is untrusted discovery input, NOT a
+// signing authorization. A fixed lifetime bounds unusable hints even when
+// their retry mtime is rotated for fair queue processing.
+const ilnRouteHintLifetime = 15*time.Minute
+const ilnRouteHintsPerTick = 8
+const ilnRouteHintMaxBytes = 512
+
+type ilnRouteHintLease struct{
+ IssuedUnix int64 `json:"issuedUnix"`
+}
+
+// Persist the first-seen timestamp for old pre-lease hints before rotating
+// the file's mtime. Otherwise a repeated transient RPC failure could renew
+// its lease forever. A torn write never unlocks route authorization.
+func readILNRouteHintLease(path string,originalModTime time.Time)(int64,error){
+ raw,err:=os.ReadFile(path)
+ if err!=nil{return 0,err}
+ if len(raw)==0||len(raw)>ilnRouteHintMaxBytes{return 0,fmt.Errorf("invalid route hint size")}
+ var lease ilnRouteHintLease
+ if err=json.Unmarshal(raw,&lease);err!=nil{return 0,fmt.Errorf("invalid route hint encoding: %w",err)}
+ if lease.IssuedUnix!=0{return lease.IssuedUnix,nil}
+ lease.IssuedUnix=originalModTime.Unix()
+ // The deterministic route filename, not user-provided JSON, is the
+ // discovery locator. Old metadata fields are intentionally discarded.
+ encoded,err:=json.Marshal(lease)
+ if err!=nil{return 0,err}
+ dir:=filepath.Dir(path)
+ file,err:=os.CreateTemp(dir,".route-hint-lease-*")
+ if err!=nil{return 0,err}
+ defer os.Remove(file.Name())
+ if err=file.Chmod(0o660);err!=nil{file.Close();return 0,err}
+ if _,err=file.Write(encoded);err!=nil{file.Close();return 0,err}
+ if err=file.Sync();err!=nil{file.Close();return 0,err}
+ if err=file.Close();err!=nil{return 0,err}
+ if err=os.Rename(file.Name(),path);err!=nil{return 0,err}
+ d,err:=os.Open(dir)
+ if err!=nil{return 0,err}
+ syncErr:=d.Sync()
+ closeErr:=d.Close()
+ if syncErr!=nil{return 0,syncErr}
+ if closeErr!=nil{return 0,closeErr}
+ return lease.IssuedUnix,nil
+}
+
 // Resolve bounded user hints against the independently confirmed source
 // registry. No route file or signing cursor is created for an invalid hint.
 // In particular, this path never interprets Solidity block.number as an RPC
@@ -165,35 +211,64 @@ func (w *Worker) discoverILNHintedRoutes() {
  entries,err:=os.ReadDir(dir)
  if os.IsNotExist(err){return}
  if err!=nil{w.logger.Debug("ILN route hint directory unavailable","err",err);return}
- processed:=0
+ // Rotate failed files to the back of this bounded worklist, instead of
+ // repeatedly choosing the same eight alphabetic names forever.
+ type queuedHint struct{name string;modTime time.Time}
+ candidates:=make([]queuedHint,0,len(entries))
  for _,entry:=range entries{
-  if processed>=8{break}
   if entry.IsDir()||!strings.HasSuffix(entry.Name(),".json"){continue}
+  info,e:=entry.Info()
+  if e!=nil{continue}
+  candidates=append(candidates,queuedHint{name:entry.Name(),modTime:info.ModTime()})
+ }
+ sort.Slice(candidates,func(i,j int)bool{
+  if candidates[i].modTime.Equal(candidates[j].modTime){return candidates[i].name<candidates[j].name}
+  return candidates[i].modTime.Before(candidates[j].modTime)
+ })
+ processed:=0
+ now:=time.Now()
+ for _,candidate:=range candidates{
+  if processed>=ilnRouteHintsPerTick{break}
   processed++
-  routeName:=strings.TrimSuffix(entry.Name(),".json")
-  sourceDomain,destinationDomain,routeID,err:=evmInterchain.ParseILNRouteName(routeName)
-  if err!=nil{_ = os.Remove(filepath.Join(dir,entry.Name()));continue}
+  path:=filepath.Join(dir,candidate.name)
+  issued,e:=readILNRouteHintLease(path,candidate.modTime)
+  if e!=nil{
+   // Corrupt hints are not recoverable source evidence.
+   _=os.Remove(path);continue
+  }
+  if issued>now.Add(time.Minute).Unix()||
+   now.Sub(time.Unix(issued,0))>=ilnRouteHintLifetime{
+   _=os.Remove(path);continue
+  }
+  retry:=func(){_ = os.Chtimes(path,now,now)}
+  routeName:=strings.TrimSuffix(candidate.name,".json")
+  sourceDomain,destinationDomain,routeID,e:=evmInterchain.ParseILNRouteName(routeName)
+  if e!=nil{_ = os.Remove(path);continue}
   var source *evmInterchain.Destination
-  for _,candidate:=range w.destinations {
-   if candidate!=nil && candidate.Domain==sourceDomain && strings.TrimSpace(candidate.ILNRegistryAddress)!=""{source=candidate;break}
+  for _,v:=range w.destinations{
+   if v!=nil&&v.Domain==sourceDomain&&strings.TrimSpace(v.ILNRegistryAddress)!=""{source=v;break}
   }
-  if source==nil{continue}
-  destinationConfigured:=false
-  for _,candidate:=range w.destinations{
-   if candidate!=nil&&candidate.Domain==destinationDomain{destinationConfigured=true;break}
+  // Unknown source/destination pairs are not configured here. Remove
+  // permanently invalid hints rather than filling the public queue.
+  var destinationConfigured bool
+  for _,v:=range w.destinations{
+   if v!=nil&&v.Domain==destinationDomain{destinationConfigured=true;break}
   }
-  if !destinationConfigured{continue}
-  head,err:=w.sourceILNHead(source)
-  if err!=nil{continue}
-  snapshot,err:=w.sourceILNRouteAtBlock(source,destinationDomain,routeID,head)
-  if err!=nil||!validILNSourceRouteNotice(source,destinationDomain,routeID,snapshot){continue}
+  if source==nil||!destinationConfigured{_ = os.Remove(path);continue}
+  head,e:=w.sourceILNHead(source)
+  if e!=nil{retry();continue}
+  snapshot,e:=w.sourceILNRouteAtBlock(source,destinationDomain,routeID,head)
+  if e!=nil{retry();continue} // outage is not proof of a bogus route
+  if !validILNSourceRouteNotice(source,destinationDomain,routeID,snapshot){
+   _=os.Remove(path);continue // conclusive noncanonical route
+  }
   record:=ilnDiscoveredRoute{SourceNetwork:source.Name,SourceDomain:sourceDomain,
    DestinationDomain:destinationDomain,RouteID:routeID.String(),Gateway:snapshot.Route.Gateway.String()}
-  if err=w.rememberILNRouteAdded(source,evmInterchain.ILNRouteAdded{
+  if e=w.rememberILNRouteAdded(source,evmInterchain.ILNRouteAdded{
    DestinationDomain:destinationDomain,RouteID:routeID,Gateway:snapshot.Route.Gateway,BlockNumber:head,
-  });err!=nil{continue}
-  if err=w.attachILNDiscoveredRoute(source,record,head);err!=nil{continue}
-  _=os.Remove(filepath.Join(dir,entry.Name()))
+  });e!=nil{retry();continue}
+  if e=w.attachILNDiscoveredRoute(source,record,head);e!=nil{retry();continue}
+  _=os.Remove(path)
  }
 }
 
