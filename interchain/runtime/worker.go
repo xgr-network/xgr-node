@@ -424,9 +424,9 @@ func (w *Worker) tick() {
             if w.directILNScanMayRun(route,now){ready=append(ready,route)}
         }
         failures:=w.scanILNObserverRoutes(ready)
+        w.finishILNObserverScanBackoff(ready,failures,time.Now())
         for _,route:=range ready{
             err:=failures[route.Name]
-            w.directILNScanFinished(route,time.Now(),err)
             if err!=nil {
                 w.recordILNDirectScanFailure(route,err)
                 w.logger.Debug("Direct BLS source observation pending",
