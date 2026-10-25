@@ -67,7 +67,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -count=5 -timeout 12m ./interchain/runtime -run '^Test(SharedObserverTransportFailureCountsOncePerSource|SharedObserverSuccessCannotClearSourceFailure|DirectILNHealthRecoversPersistentCursorWithoutFabricatingHead)
+          go test -count=5 -timeout 12m ./interchain/runtime -run '^Test(SharedObserverTransportFailureCountsOncePerSource|SharedObserverSuccessCannotClearSourceFailure|DirectILNHealthRecoversPersistentCursorWithoutFabricatingHead)'
+      - name: Validate native XGR reader integration
         shell: bash
         run: |
           set -euo pipefail
