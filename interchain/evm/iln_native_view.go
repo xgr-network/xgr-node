@@ -3,7 +3,7 @@ package evm
 import (
  "fmt"
  "github.com/umbracle/ethgo"
- "github.com/umbracle/ethgo/jsonrpc"
+ 
  "github.com/xgr-network/xgr-node/crypto"
  "github.com/xgr-network/xgr-node/types"
 )
@@ -12,7 +12,7 @@ import (
 // reverting contract calls and must never execute state-changing transactions.
 type ILNView func(types.Address,[]byte)([]byte,error)
 
-func rpcILNView(client *jsonrpc.Client) ILNView {
+func rpcILNView(client ilnRPCClient) ILNView {
  return func(address types.Address,data []byte)([]byte,error) {
   return callILNView(client,address,data,ethgo.Latest)
  }
