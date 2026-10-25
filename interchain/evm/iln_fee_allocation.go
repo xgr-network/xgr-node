@@ -5,7 +5,7 @@ import (
     "errors"
     "math/big"
 
-    "github.com/umbracle/ethgo/jsonrpc"
+    
     "github.com/xgr-network/xgr-node/crypto"
     "github.com/xgr-network/xgr-node/types"
 )
@@ -49,7 +49,7 @@ func VerifyConfirmedILNFeeAllocation(
 // verifyConfirmedILNFeeAllocationOnClient stays pinned to the exact provider
 // already selected and finality-verified by the independent source witness.
 func verifyConfirmedILNFeeAllocationOnClient(
-    client *jsonrpc.Client, source *Destination, snapshot *ILNRouteSnapshot,
+    client ilnRPCClient, source *Destination, snapshot *ILNRouteSnapshot,
     messageID types.Hash, checkpointBlock, confirmed uint64,
 ) error {
     return verifyFeeAllocationWithView(rpcILNView(client),source,snapshot,messageID,checkpointBlock,confirmed)
