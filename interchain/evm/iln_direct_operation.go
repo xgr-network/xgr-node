@@ -10,7 +10,7 @@ import (
 )
 
 // VerifyDirectILNReceipt authenticates ONE actual successful Gateway lock/burn
-// and its ONE canonical Mailbox Dispatch in the SAME source receipt.
+// and exactly ONE matching canonical Mailbox Dispatch in the SAME source receipt.
 // No Merkle tree, root, leaf, insertion index, or historical contract state.
 func VerifyDirectILNReceipt(
     operation ILNOperation, receipt *ethgo.Receipt,
@@ -51,14 +51,6 @@ func VerifyDirectILNReceipt(
         }
         if types.Address(log.Address)!=mailbox||len(log.Topics)==0||log.Topics[0]!=dispatchTopic {continue}
         if len(log.Topics)!=4 {return nil,fmt.Errorf("malformed canonical Mailbox Dispatch topics")}
-        if new(big.Int).SetBytes(log.Topics[1][:12]).Sign()!=0||
-           new(big.Int).SetBytes(log.Topics[3][:12]).Sign()!=0||
-           types.BytesToAddress(log.Topics[1][12:])!=sourceRouter||
-           types.BytesToAddress(log.Topics[3][12:])!=destinationRouter||
-           new(big.Int).SetBytes(log.Topics[2][:]).Cmp(
-             new(big.Int).SetUint64(uint64(operation.DestinationDomain)))!=0 {
-            return nil,fmt.Errorf("wrong source router or destination in canonical Mailbox Dispatch")
-        }
         if len(log.Data)<64||new(big.Int).SetBytes(log.Data[:32]).Cmp(big.NewInt(32))!=0 {
             return nil,fmt.Errorf("invalid canonical Mailbox Dispatch ABI")
         }
@@ -68,6 +60,18 @@ func VerifyDirectILNReceipt(
             return nil,fmt.Errorf("invalid bounded Hyperlane message length")
         }
         candidate:=append([]byte(nil),log.Data[64:64+int(n.Uint64())]...)
+        // One successful transaction can legitimately dispatch other messages.
+        // Ignore unrelated canonical dispatches, but require exactly ONE
+        // independently authenticated dispatch for this fee-qualified message.
+        if crypto.Keccak256Hash(candidate)!=operation.MessageID {continue}
+        if new(big.Int).SetBytes(log.Topics[1][:12]).Sign()!=0||
+           new(big.Int).SetBytes(log.Topics[3][:12]).Sign()!=0||
+           types.BytesToAddress(log.Topics[1][12:])!=sourceRouter||
+           types.BytesToAddress(log.Topics[3][12:])!=destinationRouter||
+           new(big.Int).SetBytes(log.Topics[2][:]).Cmp(
+             new(big.Int).SetUint64(uint64(operation.DestinationDomain)))!=0 {
+            return nil,fmt.Errorf("wrong source router or destination in bound Mailbox Dispatch")
+        }
         if err:=VerifyILNMessageBytes(candidate,operation.MessageID,sourceDomain,
             sourceRouter,operation.DestinationDomain,destinationRouter);err!=nil {
             return nil,fmt.Errorf("canonical Mailbox Dispatch message mismatch: %w",err)
@@ -76,7 +80,7 @@ func VerifyDirectILNReceipt(
         dispatches++
     }
     if events!=1||dispatches!=1 {
-        return nil,fmt.Errorf("source receipt must contain exactly one fee-qualified Gateway operation and one bound Mailbox Dispatch")
+        return nil,fmt.Errorf("source receipt must contain exactly one matching Gateway operation and one bound Mailbox Dispatch")
     }
     return message,nil
 }

@@ -128,3 +128,39 @@ func TestDirectReceiptRejectsUnrelatedOrMalformedGatewayAndMailbox(t *testing.T)
         require.Error(t,err,invalid)
     }
 }
+
+func TestDirectReceiptAcceptsUnrelatedCanonicalDispatches(t *testing.T){
+    op,receipt,gateway,mailbox,router,destination:=directSourceReceiptFixture()
+    // A distinct valid message may share the source transaction and route.
+    unrelated:=*receipt.Logs[0]
+    unrelated.Data=append([]byte(nil),unrelated.Data...)
+    unrelated.Data[64+78]^=1
+    unrelated.LogIndex=2
+    receipt.Logs=append(receipt.Logs,&unrelated)
+    raw,err:=VerifyDirectILNReceipt(op,receipt,8453,gateway,mailbox,router,destination)
+    require.NoError(t,err)
+    require.Equal(t,op.MessageID,crypto.Keccak256Hash(raw))
+
+    // The unrelated message can also be dispatched to another recipient.
+    other:=unrelated
+    other.Topics=append([]ethgo.Hash(nil),unrelated.Topics...)
+    var different [32]byte
+    copy(different[12:],types.StringToAddress("0x9999999999999999999999999999999999999999").Bytes())
+    other.Topics[3]=ethgo.Hash(different)
+    other.LogIndex=3
+    receipt.Logs=append(receipt.Logs,&other)
+    raw,err=VerifyDirectILNReceipt(op,receipt,8453,gateway,mailbox,router,destination)
+    require.NoError(t,err)
+    require.Equal(t,op.MessageID,crypto.Keccak256Hash(raw))
+}
+
+func TestDirectReceiptRejectsSameMessageWithConflictingDispatchTopics(t *testing.T){
+    op,receipt,gateway,mailbox,router,destination:=directSourceReceiptFixture()
+    // A matching message ID may not bypass the immutable topic bindings.
+    bad:=*receipt.Logs[0]
+    bad.Topics=append([]ethgo.Hash(nil),bad.Topics...)
+    bad.Topics[3]=ethgo.Hash{}
+    receipt.Logs=[]*ethgo.Log{&bad,receipt.Logs[1]}
+    _,err:=VerifyDirectILNReceipt(op,receipt,8453,gateway,mailbox,router,destination)
+    require.Error(t,err)
+}
