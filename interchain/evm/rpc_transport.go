@@ -40,7 +40,7 @@ type ilnRPCClient interface {
 // Copying Destination never copies a sync.Mutex or loses shutdown context.
 type ilnRPCScope struct{ctx context.Context}
 
-func (d *Destination) setILNRPCScope(ctx context.Context){
+func (d *Destination) SetILNRPCScope(ctx context.Context){
  if d!=nil {d.rpcScope=&ilnRPCScope{ctx:ctx}}
 }
 func (d *Destination) ilnRPCParent()context.Context{
