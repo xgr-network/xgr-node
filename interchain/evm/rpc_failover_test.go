@@ -122,3 +122,27 @@ func TestCaughtUpDirectScanDoesNotReadRouteOrLogs(t *testing.T) {
     // Exactly one chainId, one safe block and one numeric hash comparison.
     require.Equal(t,int32(3),calls.Load())
 }
+
+func TestGetLogs429SurvivesSuccessfulSafeHeadPreflight(t *testing.T){
+ d:=&Destination{Name:"base",ChainID:8453,Domain:8453,
+  RPCURLs:[]string{"https://log-rate-limited.example"}}
+ url:=d.RPCURLs[0]
+ rpcRecordFailure(d,url,fmt.Errorf("Interchain RPC eth_getLogs HTTP 429"),true)
+ p:=rpcProviderState(d,url)
+ p.mu.Lock()
+ first:=p.readConsecutive
+ p.mu.Unlock()
+ require.Equal(t,uint32(1),first)
+ // A successful safe-head check must not clear the log-specific cooldown.
+ rpcRecordReady(d,url)
+ require.ErrorContains(t,rpcCooldown(d,url),"cooldown")
+ p.mu.Lock()
+ after:=p.readConsecutive
+ p.mu.Unlock()
+ require.Equal(t,first,after)
+ rpcRecordFailure(d,url,fmt.Errorf("Interchain RPC eth_getLogs HTTP 429"),true)
+ p.mu.Lock()
+ twice:=p.readConsecutive
+ p.mu.Unlock()
+ require.Equal(t,uint32(2),twice)
+}
