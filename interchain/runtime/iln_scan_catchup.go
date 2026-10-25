@@ -165,3 +165,32 @@ func (w *Worker) directILNScanFinished(route *evm.CheckpointRoute, now time.Time
     state.until=now.Add(directILNRetryDelay(state.failures))
     w.ilnDirectScanRetries[key]=state
 }
+
+// finishILNObserverScanBackoff applies a shared observer transport failure
+// exactly once per source chain, not once for every route receiving the same
+// failure from scanILNObserverRoutes. Route-specific failures retain separate
+// retry gates. Process successes before shared failures, so one successful
+// route cannot erroneously clear another route's source-level cooldown.
+func (w *Worker) finishILNObserverScanBackoff(
+ routes []*evm.CheckpointRoute, failures map[string]error, now time.Time,
+) {
+ type failedSource struct {
+  route *evm.CheckpointRoute
+  err error
+ }
+ sourceFailures:=make(map[string]failedSource)
+ for _,route:=range routes {
+  if route==nil {continue}
+  err:=failures[route.Name]
+  if err!=nil && directILNTransportFailure(err) {
+   if _,seen:=sourceFailures[route.SourceNetwork];!seen {
+    sourceFailures[route.SourceNetwork]=failedSource{route:route,err:err}
+   }
+   continue
+  }
+  w.directILNScanFinished(route,now,err)
+ }
+ for _,failure:=range sourceFailures {
+  w.directILNScanFinished(failure.route,now,failure.err)
+ }
+}
