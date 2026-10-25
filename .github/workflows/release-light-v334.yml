@@ -44,7 +44,7 @@ jobs:
           fi
           git diff --name-only v3.3.3 HEAD > /tmp/v334-files
           test -s /tmp/v334-files
-          if grep -Ev '^(interchain/.*|\.github/workflows/release-light-v334\.yml)
+          if grep -Ev '^(interchain/.*|\.github/workflows/release-light-v334\.yml)$' /tmp/v334-files; then
             echo 'Out-of-scope change: light release forbidden' >&2
             exit 1
           fi
