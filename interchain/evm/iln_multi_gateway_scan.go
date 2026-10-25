@@ -5,7 +5,7 @@ import (
  "sort"
 
  "github.com/umbracle/ethgo"
- "github.com/umbracle/ethgo/jsonrpc"
+ 
 
  "github.com/xgr-network/xgr-node/crypto"
  "github.com/xgr-network/xgr-node/types"
@@ -30,7 +30,7 @@ func ConfirmedILNMultiGatewayWindow(
  if source==nil||source.ChainID==1643{
   return 0,nil,fmt.Errorf("external EVM source required for gateway log scanning")
  }
- var client *jsonrpc.Client
+ var client ilnRPCClient
  client,head,err=newVerifiedRPCClientWithHead(source)
  if err!=nil{return}
  defer client.Close()
@@ -40,7 +40,7 @@ func ConfirmedILNMultiGatewayWindow(
 }
 
 func confirmedILNMultiGatewayLogsOnClient(
- client *jsonrpc.Client, gateways []types.Address,
+ client ilnRPCClient, gateways []types.Address,
  fromBlock,toBlock,confirmed uint64,
 )([]ILNObservedGatewayOperation,error){
  if client==nil{return nil,fmt.Errorf("gateway event client missing")}
