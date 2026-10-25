@@ -82,8 +82,11 @@ func TestRPCProvider429CooldownAndIndependentEndpointRecovery(t *testing.T) {
         }
     }
     require.True(t,found)
+    // A successful chain-ID + safe-head preflight must NOT clear a 429
+    // raised by a later eth_getLogs request.
     rpcRecordReady(d,d.RPCURLs[0])
-    require.NoError(t,rpcCooldown(d,d.RPCURLs[0]))
+    require.ErrorContains(t,rpcCooldown(d,d.RPCURLs[0]),"cooldown")
+    require.NoError(t,rpcCooldown(d,d.RPCURLs[1]))
 }
 
 func TestRPCProviderCooldownSkipsBlockedPrimary(t *testing.T) {
