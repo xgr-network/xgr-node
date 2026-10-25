@@ -132,18 +132,21 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   // retry the original window is replayed idempotently, including failed work.
   // This is a partial availability isolation only; durable per-message
   // quarantine/retry is needed before N-01 can be marked fully resolved.
-  var firstFailure error
+  bindingByRoute:=make(map[string]observerRoute,len(routes))
+  for _,r:=range routes{bindingByRoute[r.Route.Name]=r}
   for _,event:=range dispatched{
    if event.Operation.BlockNumber<=cursors[event.Route.Name]{continue}
    err:=observerSignMessage(w,event.Route,event.Operation.MessageID,event.Operation.BlockNumber)
-   if err!=nil&&err.Error()!="Interchain message already delivered"&&firstFailure==nil{
-    firstFailure=fmt.Errorf("source message %s on %s: %w",
-     event.Operation.MessageID.String(),event.Route.Name,err)
+   if err!=nil&&err.Error()!="Interchain message already delivered"{
+    // Do not trust the observed event to authorize signing. A failed proof
+    // advances its shared cursor ONLY after crash-safe retry admission.
+    if e:=w.queueObserverRetry(source,bindingByRoute[event.Route.Name],event.Operation);e!=nil{
+     return fmt.Errorf("observer retry journal unavailable: %w",e)
+    }
    }
   }
-  if firstFailure!=nil{return firstFailure}
-  // Update every route cursor after all proof checks complete. A failure
-  // halfway through cursor commits repeats events, never skips any.
+  // A crash repeats the source window idempotently. All failed operations
+  // are journaled with the exact source locator for independent rechecking.
   for _,r:=range routes{
    if cursors[r.Route.Name]>=to{continue}
    if err:=w.writeILNCursor("_direct_"+r.Route.Name,to);err!=nil{return err}
@@ -153,6 +156,7 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   budget-=to-from+1
   if cursor>=head{break}
  }
+ if err:=w.retryObserverSource(source,routes);err!=nil{return err}
  for _,r:=range routes{w.recordILNDirectScan(r.Route,head,cursors[r.Route.Name])}
  return nil
 }
