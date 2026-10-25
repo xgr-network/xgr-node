@@ -73,10 +73,13 @@ func TestSharedILNObserverRejectsUnverifiedWorkWithoutAdvancingCursor(t *testing
   return errors.New("independent source witness mismatch")
  }
  err:=w.scanSharedILNSource(source,[]observerRoute{{Route:route,Gateway:gateway,DestinationDomain:1643}})
- require.ErrorContains(t,err,"independent source witness")
- _,exists,e:=w.readILNCursor("_direct_a")
+ require.NoError(t,err)
+ cursor,exists,e:=w.readILNCursor("_direct_a")
  require.NoError(t,e)
- require.False(t,exists,"failed full BLS verification must not advance any source cursor")
+ require.True(t,exists,"a durable retry permits advancing the window")
+ require.Equal(t,uint64(20),cursor)
+ count,e:=w.observerRetryCount("base","a")
+ require.NoError(t,e);require.Equal(t,1,count,"a poisoned message must remain queued and unsigned")
 }
 
 func TestSharedILNObserverLateRouteBackfillsWithoutRepeatingExistingVotes(t *testing.T){
@@ -169,12 +172,16 @@ func TestSharedObserverContinuesSigningHealthySiblingButNeverAdvancesFailedWindo
   {Route:routeA,Gateway:addrA,DestinationDomain:1643},
   {Route:routeB,Gateway:addrB,DestinationDomain:1643},
  })
- require.ErrorContains(t,err,"independent source witness mismatch")
+ require.NoError(t,err)
  require.Equal(t,1,attempts["a"])
- require.Equal(t,1,attempts["b"],"unrelated healthy vote must be processed despite poisoned sibling")
+ require.Equal(t,1,attempts["b"],"healthy sibling must be independently signed")
  for _,name:=range []string{"a","b"}{
-  _,exists,e:=w.readILNCursor("_direct_"+name)
-  require.NoError(t,e)
-  require.False(t,exists,"never skip failed source message with shared cursor advancement")
+  cursor,exists,e:=w.readILNCursor("_direct_"+name)
+  require.NoError(t,e);require.True(t,exists)
+  require.Equal(t,uint64(100),cursor)
  }
+ count,e:=w.observerRetryCount("base","a")
+ require.NoError(t,e);require.Equal(t,1,count)
+ count,e=w.observerRetryCount("base","b")
+ require.NoError(t,e);require.Zero(t,count)
 }
