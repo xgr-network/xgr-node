@@ -51,7 +51,7 @@ jobs:
             echo "v3.3.6 already exists; immutable release refused" >&2
             exit 1
           fi
-          git diff --name-only v3.3.4 HEAD > /tmp/v336-files
+          git diff --name-only v3.3.5 HEAD > /tmp/v336-files
           test -s /tmp/v336-files
           if grep -Ev '^(interchain/evm/(rpc_failover|iln_multi_gateway_scan)(_test)?\.go|\.github/workflows/release-light-v336\.yml)$' /tmp/v336-files; then
             echo 'Out-of-scope change: light release forbidden' >&2
