@@ -7,7 +7,7 @@ import (
     "sync"
     "time"
 
-    "github.com/umbracle/ethgo/jsonrpc"
+    
 )
 
 // This failover is restricted to Interchain RPC reads. Consensus, IBFT, state
@@ -160,19 +160,19 @@ func rpcRecordReady(d *Destination,url string){
 // rpcDialVerifiedWithHead verifies ChainID and an independently obtained
 // finality head once for the selected provider. Callers that need the head
 // reuse it, avoiding repeated safe/number/hash checks in the same operation.
-func rpcDialVerifiedWithHead(d *Destination,url string)(*jsonrpc.Client,uint64,error){
+func rpcDialVerifiedWithHead(d *Destination,url string)(ilnRPCClient,uint64,error){
     if d==nil{return nil,0,fmt.Errorf("missing Interchain destination")}
     if err:=rpcCooldown(d,url);err!=nil{return nil,0,err}
     p:=rpcProviderState(d,url)
     p.mu.Lock()
     p.attempted++
     p.mu.Unlock()
-    client,err:=jsonrpc.NewClient(url)
+    client,err:=newBoundedILNRPC(d.ilnRPCParent(),url)
     if err!=nil{
         rpcRecordFailure(d,url,err,false)
         return nil,0,err
     }
-    chainID,err:=client.Eth().ChainID()
+    chainID,err:=ilnRPCChainID(client)
     if err!=nil||chainID==nil||!chainID.IsUint64()||chainID.Uint64()!=d.ChainID{
         client.Close()
         failure:=fmt.Errorf("interchain RPC chain identity failed for %s: %v",d.Name,err)
@@ -189,7 +189,7 @@ func rpcDialVerifiedWithHead(d *Destination,url string)(*jsonrpc.Client,uint64,e
     rpcRecordReady(d,url)
     return client,head,nil
 }
-func rpcDialVerified(d *Destination,url string)(*jsonrpc.Client,error){
+func rpcDialVerified(d *Destination,url string)(ilnRPCClient,error){
     client,_,err:=rpcDialVerifiedWithHead(d,url)
     return client,err
 }
@@ -197,7 +197,7 @@ func rpcDialVerified(d *Destination,url string)(*jsonrpc.Client,error){
 // newVerifiedRPCClientWithHead shares the verified source head with its caller.
 // Failed providers are skipped during cooldown. Sticky failover avoids repeatedly
 // hammering a rate-limited primary; three spaced probes restore the primary.
-func newVerifiedRPCClientWithHead(d *Destination)(*jsonrpc.Client,uint64,error){
+func newVerifiedRPCClientWithHead(d *Destination)(ilnRPCClient,uint64,error){
     endpoints:=rpcEndpoints(d)
     if len(endpoints)==0{return nil,0,fmt.Errorf("interchain RPC endpoint missing")}
     if len(endpoints)==1{return rpcDialVerifiedWithHead(d,endpoints[0])}
@@ -250,7 +250,7 @@ func newVerifiedRPCClientWithHead(d *Destination)(*jsonrpc.Client,uint64,error){
     return nil,0,fmt.Errorf("all interchain RPC endpoints failed for %s: %w",d.Name,lastErr)
 }
 
-func newVerifiedRPCClient(d *Destination)(*jsonrpc.Client,error){
+func newVerifiedRPCClient(d *Destination)(ilnRPCClient,error){
     client,_,err:=newVerifiedRPCClientWithHead(d)
     return client,err
 }
