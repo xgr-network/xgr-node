@@ -73,10 +73,13 @@ func TestSharedILNObserverRejectsUnverifiedWorkWithoutAdvancingCursor(t *testing
   return errors.New("independent source witness mismatch")
  }
  err:=w.scanSharedILNSource(source,[]observerRoute{{Route:route,Gateway:gateway,DestinationDomain:1643}})
- require.ErrorContains(t,err,"independent source witness")
- _,exists,e:=w.readILNCursor("_direct_a")
+ require.NoError(t,err)
+ cursor,exists,e:=w.readILNCursor("_direct_a")
  require.NoError(t,e)
- require.False(t,exists,"failed full BLS verification must not advance any source cursor")
+ require.True(t,exists,"a durable retry permits advancing the window")
+ require.Equal(t,uint64(20),cursor)
+ count,e:=w.observerRetryCount("base","a")
+ require.NoError(t,e);require.Equal(t,1,count,"a poisoned message must remain queued and unsigned")
 }
 
 func TestSharedILNObserverLateRouteBackfillsWithoutRepeatingExistingVotes(t *testing.T){
@@ -132,4 +135,53 @@ func TestObserverUncatalogedRouteDoesNotStartAnyGatewayScan(t *testing.T){
  _,exists,err:=w.readILNCursor("_direct_"+route.Name)
  require.NoError(t,err)
  require.False(t,exists)
+}
+
+func TestSharedObserverContinuesSigningHealthySiblingButNeverAdvancesFailedWindow(t *testing.T){
+ idA:=types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+ idB:=types.StringToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+ tx:=types.StringToHash("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+ bad:=types.StringToHash("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+ good:=types.StringToHash("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+ addrA:=types.StringToAddress("0x1111111111111111111111111111111111111111")
+ addrB:=types.StringToAddress("0x2222222222222222222222222222222222222222")
+ src:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryActivationBlock:100}
+ routeA:=&evm.CheckpointRoute{Name:"a",RouteID:idA}
+ routeB:=&evm.CheckpointRoute{Name:"b",RouteID:idB}
+ w:=&Worker{dataDir:t.TempDir()}
+ originalReader,originalSigner:=observerRemoteWindow,observerSignMessage
+ defer func(){observerRemoteWindow=originalReader;observerSignMessage=originalSigner}()
+ observerRemoteWindow=func(_ *evm.Destination,_ []types.Address,cursor,window uint64)(
+  uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error){
+  require.Equal(t,uint64(99),cursor)
+  a:=evm.ILNOperation{RouteID:idA,MessageID:bad,DestinationDomain:1643,
+   BlockNumber:100,TransactionHash:tx,ValidatorFeeWei:big.NewInt(1),LogIndex:0}
+  b:=evm.ILNOperation{RouteID:idB,MessageID:good,DestinationDomain:1643,
+   BlockNumber:100,TransactionHash:tx,ValidatorFeeWei:big.NewInt(1),LogIndex:1}
+  return 100,100,100,[]evm.ILNObservedGatewayOperation{
+   {Gateway:addrA,Operation:a},{Gateway:addrB,Operation:b},
+  },nil
+ }
+ attempts:=map[string]int{}
+ observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64)error{
+  attempts[r.Name]++
+  if r.Name=="a"{return errors.New("independent source witness mismatch")}
+  return nil
+ }
+ err:=w.scanSharedILNSource(src,[]observerRoute{
+  {Route:routeA,Gateway:addrA,DestinationDomain:1643},
+  {Route:routeB,Gateway:addrB,DestinationDomain:1643},
+ })
+ require.NoError(t,err)
+ require.Equal(t,1,attempts["a"])
+ require.Equal(t,1,attempts["b"],"healthy sibling must be independently signed")
+ for _,name:=range []string{"a","b"}{
+  cursor,exists,e:=w.readILNCursor("_direct_"+name)
+  require.NoError(t,e);require.True(t,exists)
+  require.Equal(t,uint64(100),cursor)
+ }
+ count,e:=w.observerRetryCount("base","a")
+ require.NoError(t,e);require.Equal(t,1,count)
+ count,e=w.observerRetryCount("base","b")
+ require.NoError(t,e);require.Zero(t,count)
 }
