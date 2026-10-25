@@ -80,7 +80,7 @@ func VerifyDirectILNReceipt(
         dispatches++
     }
     if events!=1||dispatches!=1 {
-        return nil,fmt.Errorf("source receipt must contain exactly one matching Gateway operation and one message-bound Mailbox Dispatch")
+        return nil,fmt.Errorf("source receipt must contain exactly one matching Gateway operation and one bound Mailbox Dispatch")
     }
     return message,nil
 }
