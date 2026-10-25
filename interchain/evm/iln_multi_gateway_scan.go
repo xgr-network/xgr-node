@@ -108,18 +108,34 @@ func ScanILNMultiGatewayWindow(
  if source==nil||source.ChainID==1643||window==0||window>maxILNLogRange{
   return 0,0,0,nil,fmt.Errorf("invalid external observer window")
  }
- client,h,e:=newVerifiedRPCClientWithHead(source)
- if e!=nil{return 0,0,0,nil,e}
- defer client.Close()
- head=h
- if cursor>head{return head,0,0,nil,fmt.Errorf("confirmed source head behind observer cursor")}
- if cursor==head{return head,0,0,nil,nil}
- from=cursor+1
- to=cursor+window
- if to<cursor||to>head{to=head}
- events,err=confirmedILNMultiGatewayLogsOnClient(client,gateways,from,to,head)
- if err!=nil{recordInterchainRPCReadFailure(source)}
- return
+ // A verified safe head does not imply the same provider permits historical
+ // eth_getLogs. Retry the SAME bounded window against another verified
+ // provider on transient transport/429 failures, without advancing cursors.
+ // Cooldowns prevent repeating the same failed URL during this operation.
+ attempts:=len(rpcEndpoints(source))
+ if attempts<1{return 0,0,0,nil,fmt.Errorf("missing observer RPC endpoints")}
+ var last error
+ for i:=0;i<attempts;i++{
+  client,h,e:=newVerifiedRPCClientWithHead(source)
+  if e!=nil{return 0,0,0,nil,e}
+  head=h
+  if cursor>head{client.Close();return head,0,0,nil,fmt.Errorf("confirmed source head behind observer cursor")}
+  if cursor==head{
+   recordInterchainRPCReadForClient(source,client,nil)
+   client.Close()
+   return head,0,0,nil,nil
+  }
+  from=cursor+1
+  to=cursor+window
+  if to<cursor||to>head{to=head}
+  events,e=confirmedILNMultiGatewayLogsOnClient(client,gateways,from,to,head)
+  recordInterchainRPCReadForClient(source,client,e)
+  client.Close()
+  if e==nil{return head,from,to,events,nil}
+  last=e
+  if !rpcTransientFailure(e){return head,from,to,nil,e}
+ }
+ return head,from,to,nil,fmt.Errorf("all qualified source providers rejected Gateway log window: %w",last)
 }
 
 // ScanNativeXGRMultiGatewayWindow walks each locally committed IBFT

@@ -40,6 +40,9 @@ type rpcProviderHealth struct {
     rateLimited uint64
     readFailures uint64
     consecutive uint32
+    // Read failures survive a successful chain-ID / safe-head preflight:
+    // a provider may serve headers while continuously rejecting eth_getLogs.
+    readConsecutive uint32
     retryAfter time.Time
 }
 var rpcProviderHealthByURL sync.Map
@@ -138,23 +141,54 @@ func rpcRecordFailure(d *Destination,url string,err error,read bool){
     p.mu.Lock()
     defer p.mu.Unlock()
     p.failed++
-    if read{p.readFailures++}
+    var streak uint32
+    if read {
+        p.readFailures++
+        if p.readConsecutive<5{p.readConsecutive++}
+        streak=p.readConsecutive
+    } else {
+        if p.consecutive<5{p.consecutive++}
+        streak=p.consecutive
+    }
     if rpcRateLimited(err){p.rateLimited++}
-    if p.consecutive<5{p.consecutive++}
     delay:=rpcTransportCooldown
     if rpcRateLimited(err){delay=rpcRateLimitCooldown}
-    // Exponential cooldown is capped to avoid unbounded outage after recovery.
-    for n:=uint32(1);n<p.consecutive;n++{delay*=2}
+    // Retry state is per provider and per observed RPC read. A successful
+    // safe-head preflight must not erase repeated eth_getLogs 429 failures.
+    for n:=uint32(1);n<streak;n++{delay*=2}
     if delay>rpcMaximumCooldown{delay=rpcMaximumCooldown}
-    p.retryAfter=time.Now().Add(delay)
+    next:=time.Now().Add(delay)
+    if next.After(p.retryAfter){p.retryAfter=next}
 }
 func rpcRecordReady(d *Destination,url string){
     p:=rpcProviderState(d,url)
     p.mu.Lock()
     p.ready++
     p.consecutive=0
-    p.retryAfter=time.Time{}
+    // The validated safe head is NOT evidence that the provider can serve
+    // archive logs. Do not reset readConsecutive here.
+    if !time.Now().Before(p.retryAfter){p.retryAfter=time.Time{}}
     p.mu.Unlock()
+}
+// Only a completed successful RPC read resets the read-specific 429 streak.
+// A concurrent failure's cooldown must not be removed by this success.
+func rpcRecordReadSuccess(d *Destination,url string){
+    if d==nil||url==""{return}
+    p:=rpcProviderState(d,url)
+    p.mu.Lock()
+    p.readConsecutive=0
+    if !time.Now().Before(p.retryAfter){p.retryAfter=time.Time{}}
+    p.mu.Unlock()
+}
+// Attribute a read to the actual bounded client rather than a shared sticky
+// selection that other concurrent requests may already have rotated.
+func recordInterchainRPCReadForClient(d *Destination,client ilnRPCClient,err error){
+    if bound,ok:=client.(*boundedILNRPC);ok{
+        if err==nil{rpcRecordReadSuccess(d,bound.endpoint)
+        }else{recordInterchainRPCReadError(d,bound.endpoint,err)}
+        return
+    }
+    if err!=nil{recordInterchainRPCReadFailure(d)}
 }
 
 // rpcDialVerifiedWithHead verifies ChainID and an independently obtained
