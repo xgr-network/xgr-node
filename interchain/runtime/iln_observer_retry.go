@@ -164,8 +164,9 @@ func (w *Worker) retryObserverSource(source *evm.Destination,routes []observerRo
    if pending[i].modified.Equal(pending[j].modified){return pending[i].name<pending[j].name}
    return pending[i].modified.Before(pending[j].modified)
   })
+  perRoute:=0
   for _,item:=range pending{
-   if processed>=observerRetryMaxPerPoll{break}
+   if processed>=observerRetryMaxPerPoll||perRoute>=observerRetryMaxPerRoutePoll{break}
    if time.Since(item.modified)<observerRetryMinInterval{continue}
    path:=filepath.Join(dir,item.name)
    raw,err:=os.ReadFile(path)
@@ -177,6 +178,7 @@ func (w *Worker) retryObserverSource(source *evm.Destination,routes []observerRo
     return fmt.Errorf("observer retry journal route/message identity mismatch")
    }
    processed++
+   perRoute++
    err=observerSignMessage(w,route.Route,types.StringToHash(entry.MessageID),entry.SourceBlock)
    if err==nil||err.Error()=="Interchain message already delivered"{
     if err=os.Remove(path);err!=nil{return err}
