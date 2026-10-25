@@ -120,3 +120,16 @@ func TestSharedILNObserverLateRouteBackfillsWithoutRepeatingExistingVotes(t *tes
   require.NoError(t,err);require.True(t,exists);require.Equal(t,uint64(200),cursor)
  }
 }
+
+func TestObserverUncatalogedRouteDoesNotStartAnyGatewayScan(t *testing.T){
+ src:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryActivationBlock:100}
+ dst:=&evm.Destination{Name:"xgr",ChainID:1643,Domain:1643}
+ route:=&evm.CheckpointRoute{Name:"uncataloged",SourceNetwork:"base",Destination:"xgr",
+  RouteID:types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")}
+ w:=&Worker{dataDir:t.TempDir(),destinations:map[string]*evm.Destination{"base":src,"xgr":dst}}
+ _,err:=w.ensureObserverCatalogRoute(src,route,0)
+ require.ErrorContains(t,err,"confirmed source head unavailable")
+ _,exists,err:=w.readILNCursor("_direct_"+route.Name)
+ require.NoError(t,err)
+ require.False(t,exists)
+}
