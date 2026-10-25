@@ -4,6 +4,7 @@ import (
  "context"
  "encoding/json"
  "fmt"
+ "io"
  "net/http"
  "net/http/httptest"
  "strings"
@@ -16,11 +17,19 @@ import (
 
 func TestILNRPCRequestCancellationOnWorkerShutdown(t *testing.T){
  started:=make(chan struct{})
+ releaseHandler:=make(chan struct{})
  server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  // Drain the request body so net/http can observe client cancellation.
+  // An explicit cleanup channel also guarantees the test server can close
+  // even if the underlying network does not propagate a disconnect.
+  _,_=io.Copy(io.Discard,r.Body)
   close(started)
-  <-r.Context().Done()
+  select{
+  case <-r.Context().Done():
+  case <-releaseHandler:
+  }
  }))
- defer server.Close()
+ defer func(){close(releaseHandler);server.Close()}()
  parent,cancel:=context.WithCancel(context.Background())
  client,err:=newBoundedILNRPC(parent,server.URL)
  require.NoError(t,err)
