@@ -19,6 +19,9 @@ type ilnRouteHealth struct{
  SourceHead uint64 `json:"sourceHead"`
  ScanCursor uint64 `json:"scanCursor"`
  BlockLag uint64 `json:"blockLag"`
+ SourceHeadKnown bool `json:"sourceHeadKnown"`
+ ScanCursorKnown bool `json:"scanCursorKnown"`
+ LastSuccessfulScanUnix int64 `json:"lastSuccessfulScanUnix,omitempty"`
  UpdatedUnix int64 `json:"updatedUnix"`
  Error string `json:"error,omitempty"`
 }
@@ -42,6 +45,7 @@ func (w *Worker) recordILNDirectScan(route *evm.CheckpointRoute,head,cursor uint
  w.ilnRouteHealthByName[route.Name]=ilnRouteHealth{
   Route:route.Name,Source:route.SourceNetwork,Destination:route.Destination,
   SourceHead:head,ScanCursor:cursor,BlockLag:head-cursor,State:state,UpdatedUnix:now,
+  SourceHeadKnown:true,ScanCursorKnown:true,LastSuccessfulScanUnix:now,
  }
  w.mu.Unlock()
 }
@@ -52,6 +56,12 @@ func (w *Worker) recordILNDirectScanFailure(route *evm.CheckpointRoute,err error
  w.mu.Lock()
  if w.ilnRouteHealthByName==nil{w.ilnRouteHealthByName=make(map[string]ilnRouteHealth)}
  rh:=w.ilnRouteHealthByName[route.Name]
+ // Recover persistent diagnostic cursor even if the first external RPC after
+ // restart is rate-limited. Never substitute it for independently verified head.
+ if !rh.ScanCursorKnown {
+  cursor,exists,readErr:=w.readILNCursor("_direct_"+route.Name)
+  if readErr==nil&&exists {rh.ScanCursor=cursor;rh.ScanCursorKnown=true}
+ }
  rh.Route=route.Name;rh.Source=route.SourceNetwork;rh.Destination=route.Destination
  rh.State="unavailable";rh.Error=err.Error()
  rh.UpdatedUnix=time.Now().Unix()
@@ -75,6 +85,11 @@ func (w *Worker) writeILNIndexerHealth(){
    rh=ilnRouteHealth{Route:route.Name,Source:route.SourceNetwork,
     Destination:route.Destination,State:"catching-up",
     Error:"awaiting independent confirmed Gateway operation scan",UpdatedUnix:now}
+  }
+  if !rh.ScanCursorKnown {
+   // Health-only disk recovery; does not affect the scanner or signature path.
+   cursor,exists,readErr:=w.readILNCursor("_direct_"+route.Name)
+   if readErr==nil&&exists {rh.ScanCursor=cursor;rh.ScanCursorKnown=true}
   }
   if now-rh.UpdatedUnix>90||rh.UpdatedUnix>now+30{
    rh.State="unavailable";rh.Error="source Gateway operation scan stale"
