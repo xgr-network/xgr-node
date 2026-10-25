@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
+
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
 	"github.com/xgr-network/xgr-node/crypto"
 	evm "github.com/xgr-network/xgr-node/interchain/evm"
@@ -28,7 +30,7 @@ const (
 	ilnCompleteMaxPerTick = 4
 	ilnCompleteCandidateCap = 64
 	ilnCompleteMaxArchiveBytes = 16 << 10
-	ilnCompleteInboundInterval = 100 * time.Millisecond
+	ilnCompleteInboundMaxPerMinute = 64
 )
 
 func ilnUnhexBounded(s string, max int) ([]byte, error) {
@@ -104,6 +106,30 @@ func verifyImportedILNQuorum(a ilnCheckpointAttestation,
 	return p,nil
 }
 
+// Bound expensive current-set/ISM checks per source libp2p publisher.
+// Pubsub forwarding does NOT require a direct connection to the original peer;
+// the BLS quorum remains the only source of authorization.
+type ilnCompleteInboundBucket struct { since time.Time; count int }
+func (w *Worker) allowILNCompletedQuorumFrom(from peer.ID) bool {
+ if w==nil||from=="" {return false}
+ now:=time.Now()
+ w.mu.Lock()
+ defer w.mu.Unlock()
+ if w.ilnCompletedInbound==nil {w.ilnCompletedInbound=make(map[peer.ID]ilnCompleteInboundBucket)}
+ // Bound stale per-peer accounting across long-lived, changing peer sets.
+ if len(w.ilnCompletedInbound)>128 {
+  for id,b:=range w.ilnCompletedInbound {
+   if now.Sub(b.since)>time.Minute {delete(w.ilnCompletedInbound,id)}
+  }
+ }
+ b:=w.ilnCompletedInbound[from]
+ if b.since.IsZero()||now.Sub(b.since)>=time.Minute {b=ilnCompleteInboundBucket{since:now}}
+ if b.count>=ilnCompleteInboundMaxPerMinute {return false}
+ b.count++
+ w.ilnCompletedInbound[from]=b
+ return true
+}
+
 func (w *Worker) acceptILNCompletedQuorum(a ilnCheckpointAttestation)error{
 	if w==nil||w.state==nil||!w.state.IsSynchronized(){
 		return fmt.Errorf("XGRChain must be synchronized before quorum import")
@@ -164,6 +190,12 @@ func (w *Worker) publishILNCompletedQuorum(a ilnCheckpointAttestation){
 		w.mu.Unlock()
 		return
 	}
+	// The persistent attestation archive, not this transient timer, is authority.
+ if len(w.ilnCompletedPublished)>4096 {
+  for old,ts:=range w.ilnCompletedPublished {
+   if now.Sub(ts)>4*ilnCompleteRepeatInterval {delete(w.ilnCompletedPublished,old)}
+  }
+ }
 	w.ilnCompletedPublished[key]=now
 	w.mu.Unlock()
 	if err:=w.publish(wireEnvelope{Type:"iln_completed_quorum",ILNCompletedQuorum:&a});err!=nil{
