@@ -67,6 +67,7 @@ type wireEnvelope struct {
 	Req                *wireRequest            `json:"request,omitempty"`
 	Vote               *wireVote               `json:"vote,omitempty"`
 	ILNCheckpointVote  *ilnCheckpointVote `json:"ilnCheckpointVote,omitempty"`
+    ILNCompletedQuorum *ilnCheckpointAttestation `json:"ilnCompletedQuorum,omitempty"`
     ILNRouteNotice *ilnRouteNoticeWire `json:"ilnRouteNotice,omitempty"`
 	ILNQuorumRequest   *requestedILNQuorum     `json:"ilnQuorumRequest,omitempty"`
 	GovernanceProposal *governanceProposalWire  `json:"governanceProposal,omitempty"`
@@ -131,6 +132,7 @@ type Worker struct {
 	requests         map[types.Hash]*requestState
 	reserveWarned    map[string]bool
 	ilnLocalVotes              map[types.Hash]*ilnLocalVoteState
+    ilnCompletedPublished map[string]time.Time
 	ilnCheckpoints              map[types.Hash]*ilnCheckpointState
 	governance              map[types.Hash]*governanceState
 	governanceExecuteCh chan governanceExecuteRequest
@@ -239,6 +241,7 @@ func New(
 		requests:         make(map[types.Hash]*requestState),
 		reserveWarned:    make(map[string]bool),
 		ilnLocalVotes:                make(map[types.Hash]*ilnLocalVoteState),
+        ilnCompletedPublished: make(map[string]time.Time),
 		ilnCheckpoints: make(map[types.Hash]*ilnCheckpointState),
         ilnRouteLastPublished: make(map[string]time.Time),
         ilnRouteLastSeen: make(map[peer.ID]time.Time),
@@ -443,6 +446,7 @@ func (w *Worker) tick() {
 		// Pending votes/message repair may require remote reads. They MUST NOT
 		// retry every 2s when the remote chain rate-limits a validator.
 		w.rebroadcastILNCheckpointVotes()
+        w.rebroadcastILNCompletedQuorums()
 		w.trySubmissions()
 	}
 	w.rebroadcastGovernance()
@@ -855,6 +859,9 @@ func (w *Worker) handleWireFrom(raw []byte, from peer.ID) error {
 			return fmt.Errorf("missing ILN checkpoint vote")
 		}
 		return w.acceptILNCheckpointVote(*envelope.ILNCheckpointVote)
+    case "iln_completed_quorum":
+        if envelope.ILNCompletedQuorum==nil{return fmt.Errorf("missing completed Direct-BLS quorum")}
+        return w.acceptILNCompletedQuorum(*envelope.ILNCompletedQuorum)
 	case "governance_proposal":
 		if envelope.GovernanceProposal == nil {
 			return fmt.Errorf("missing governance proposal")
