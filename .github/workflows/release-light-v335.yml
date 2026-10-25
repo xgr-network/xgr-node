@@ -1,0 +1,440 @@
+name: Release Light (XGR v3.3.5 Interchain RPC stabilization)
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: "Reviewed XGR3.0 40-character commit SHA"
+        required: true
+        type: string
+      confirmation:
+        description: "Type RELEASE-v3.3.5 to publish"
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: xgr-v335-light-release
+  cancel-in-progress: false
+jobs:
+  release:
+    if: ${{ github.ref == 'refs/heads/XGR3.0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate signed-off revision and strictly interchain scope
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRMATION" = 'RELEASE-v3.3.5'
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$GITHUB_REF" = 'refs/heads/XGR3.0'
+          test "$(git rev-parse v3.3.4)" = 'fd39a0fb4d20163c6a6d93cb8cf5dc25f017f188'
+          if git rev-parse -q --verify refs/tags/v3.3.5 >/dev/null ||
+             gh api "repos/${{ github.repository }}/git/ref/tags/v3.3.5" >/dev/null 2>&1; then
+            echo "v3.3.5 already exists; immutable release refused" >&2
+            exit 1
+          fi
+          git diff --name-only v3.3.3 HEAD > /tmp/v335-files
+          test -s /tmp/v335-files
+          if grep -Ev '^(interchain/runtime/(iln_indexer_health(_test)?\.go|iln_scan_catchup(_test)?\.go|worker\.go)|jsonrpc/xgr_iln_indexer_status\.go|\.github/workflows/release-light-v335\.yml)
+            echo 'Out-of-scope change: light release forbidden' >&2
+            exit 1
+          fi
+          test -z "$(git diff --name-only v3.3.3 HEAD -- consensus/ blockchain/ state/ chain/ contracts/ command/ | grep -v '^consensus/ibft/interchain_runtime.go$' || true)"
+          test -z "$(git diff --name-only v3.3.3 HEAD -- consensus/ibft/interchain_runtime.go)"
+          test -e interchain/evm/rpc_evidence_quorum.go
+          test ! -e interchain/evm/iln_merkle.go
+          test -e interchain/evm/rpc_transport.go
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Direct-BLS security and M-04 cancellation regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=3 -timeout 12m ./interchain ./interchain/evm ./interchain/runtime ./consensus/ibft/interchain ./jsonrpc
+          go test -count=5 ./interchain/evm -run '^Test(TwoIndependentOperatorsWithFailover|OneOperatorAndConflictingProvidersFailClosed|IndependentSourceWitness|ILNRPCRequestCancellationOnWorkerShutdown|ILNRPCRejectsOversizedResponseAndMismatchedID)'
+      - name: v3.3.5 source backoff and persisted health regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=5 -timeout 12m ./interchain/runtime -run '^Test(SharedObserverTransportFailureCountsOncePerSource|SharedObserverSuccessCannotClearSourceFailure|DirectILNHealthRecoversPersistentCursorWithoutFabricatingHead)
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'VerifyNativeXGROperation' interchain/runtime/iln_direct_signing.go
+          grep -q 'NativeXGRBlock' consensus/ibft/interchain_runtime.go
+          ! grep -q 'rpc.thirdweb.com' interchain/config.go
+      - name: Diagnose runner RPC reachability (advisory; runtime quorum stays fail-closed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re,json,urllib.request,urllib.error
+          source=open('interchain/config.go',encoding='utf-8').read()
+          # XGR 1643 uses each validator's local committed IBFT blockchain and receipts.
+          # Only L2 sources require two independent remote RPC operators.
+          for name,chain_id in [('base',8453),('arbitrum',42161)]:
+              m=re.search(r'\{Name:"'+name+r'".*?RPCURLs:\[\]string\{([^}]+)\},\s*IndependentOperatorIDs:\[\]string\{([^}]+)\}',source,re.S)
+              if not m: raise SystemExit('RPC policy missing: '+name)
+              urls=re.findall(r'"([^"]+)"',m.group(1));ops=re.findall(r'"([^"]+)"',m.group(2))
+              if len(urls)<3 or len(urls)!=len(ops): raise SystemExit('Insufficient RPC endpoints '+name)
+              if len(set(ops))<2: raise SystemExit('Insufficient independent RPC operator identities: '+name)
+              good=set()
+              for url,operator in zip(urls,ops):
+                  try:
+                      body=json.dumps(dict(jsonrpc='2.0',id=1,method='eth_chainId',params=[])).encode()
+                      req=urllib.request.Request(url,data=body,headers={'Content-Type':'application/json'},method='POST')
+                      with urllib.request.urlopen(req,timeout=8) as res: data=json.load(res)
+                      if int(data['result'],16)!=chain_id: raise ValueError('wrong chain')
+                      if chain_id!=1643:
+                          safe=json.dumps(dict(jsonrpc='2.0',id=2,method='eth_getBlockByNumber',params=['safe',False])).encode()
+                          req=urllib.request.Request(url,data=safe,headers={'Content-Type':'application/json'},method='POST')
+                          with urllib.request.urlopen(req,timeout=8) as res: block=json.load(res).get('result')
+                          if not block or not block.get('hash'):raise ValueError('no safe finality')
+                      good.add(operator)
+                  except Exception as exc:
+                      print('Provider unavailable',name,operator,url,str(exc)[:160])
+              print(name,'independent active operators:',len(good))
+              if len(good)<2:
+                  print('::warning title=GitHub Actions RPC probe::'+name+' reachable independent providers from runner: '+str(len(good))+'; live RPC connectivity is environment-dependent. Direct-BLS runtime independently requires two matching complete witnesses and fails closed otherwise.')
+          PY
+      - name: Build binary and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          COMMIT="$(git rev-parse --short HEAD)"
+          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          PKG=github.com/xgr-network/xgrchain/versioning
+          go build -trimpath -o dist/xgrchain-v3.3.5-linux-amd64 \
+            -ldflags "-X ${PKG}.Version=v3.3.5 -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=XGR3.0 -X ${PKG}.BuildTime=${TIME}" .
+          chmod 755 dist/xgrchain-v3.3.5-linux-amd64
+          ./dist/xgrchain-v3.3.5-linux-amd64 version
+          printf '%s\n' v3.3.5 > dist/version.txt
+          git rev-parse HEAD > dist/commit.txt
+          (cd dist && sha256sum xgrchain-v3.3.5-linux-amd64 version.txt commit.txt > sha256sums.txt)
+          (cd dist && sha256sum -c sha256sums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xgr-v3.3.5-interchain-light-linux-amd64
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish immutable v3.3.5 release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v3.3.5
+          name: v3.3.5
+          commit: ${{ github.sha }}
+          allowUpdates: false
+          makeLatest: true
+          generateReleaseNotes: false
+          artifacts: dist/*
+          body: |
+            XGR v3.3.5 Interchain-only light release: per-source-chain Gateway observer and M-04 bounded/cancellable external RPC.
+            H-01: retain fail-closed matching evidence from 2 independent RPC operators for Base/Arbitrum.
+            M-04: per-call RPC deadlines, bounded responses and validator shutdown cancellation.
+            M-05: resource-isolation stress verification remains OPEN and is not claimed to be remediated.
+            No consensus, EVM, state or staking modifications.
+            Focused tests, advisory runner RPC diagnostics, and built checksum-verified binary.
+            Gateway discovery batches addresses per source chain; XGR source uses locally committed IBFT block receipts.
+            Base/Arbitrum BLS signatures require two matching independent full-evidence RPC witnesses at runtime.
+            Full EEST/ForkGate not repeated: this release modifies Interchain only. No unverified end-to-end assertion.
+ /tmp/v335-files; then
+            echo 'Out-of-scope change: light release forbidden' >&2
+            exit 1
+          fi
+          test -z "$(git diff --name-only v3.3.3 HEAD -- consensus/ blockchain/ state/ chain/ contracts/ command/ | grep -v '^consensus/ibft/interchain_runtime.go$' || true)"
+          test -z "$(git diff --name-only v3.3.3 HEAD -- consensus/ibft/interchain_runtime.go)"
+          test -e interchain/evm/rpc_evidence_quorum.go
+          test ! -e interchain/evm/iln_merkle.go
+          test -e interchain/evm/rpc_transport.go
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Direct-BLS security and M-04 cancellation regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=3 -timeout 12m ./interchain ./interchain/evm ./interchain/runtime ./consensus/ibft/interchain ./jsonrpc
+          go test -count=5 ./interchain/evm -run '^Test(TwoIndependentOperatorsWithFailover|OneOperatorAndConflictingProvidersFailClosed|IndependentSourceWitness|ILNRPCRequestCancellationOnWorkerShutdown|ILNRPCRejectsOversizedResponseAndMismatchedID)'
+      - name: Validate native XGR reader integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'VerifyNativeXGROperation' interchain/runtime/iln_direct_signing.go
+          grep -q 'NativeXGRBlock' consensus/ibft/interchain_runtime.go
+          ! grep -q 'rpc.thirdweb.com' interchain/config.go
+      - name: Diagnose runner RPC reachability (advisory; runtime quorum stays fail-closed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re,json,urllib.request,urllib.error
+          source=open('interchain/config.go',encoding='utf-8').read()
+          # XGR 1643 uses each validator's local committed IBFT blockchain and receipts.
+          # Only L2 sources require two independent remote RPC operators.
+          for name,chain_id in [('base',8453),('arbitrum',42161)]:
+              m=re.search(r'\{Name:"'+name+r'".*?RPCURLs:\[\]string\{([^}]+)\},\s*IndependentOperatorIDs:\[\]string\{([^}]+)\}',source,re.S)
+              if not m: raise SystemExit('RPC policy missing: '+name)
+              urls=re.findall(r'"([^"]+)"',m.group(1));ops=re.findall(r'"([^"]+)"',m.group(2))
+              if len(urls)<3 or len(urls)!=len(ops): raise SystemExit('Insufficient RPC endpoints '+name)
+              if len(set(ops))<2: raise SystemExit('Insufficient independent RPC operator identities: '+name)
+              good=set()
+              for url,operator in zip(urls,ops):
+                  try:
+                      body=json.dumps(dict(jsonrpc='2.0',id=1,method='eth_chainId',params=[])).encode()
+                      req=urllib.request.Request(url,data=body,headers={'Content-Type':'application/json'},method='POST')
+                      with urllib.request.urlopen(req,timeout=8) as res: data=json.load(res)
+                      if int(data['result'],16)!=chain_id: raise ValueError('wrong chain')
+                      if chain_id!=1643:
+                          safe=json.dumps(dict(jsonrpc='2.0',id=2,method='eth_getBlockByNumber',params=['safe',False])).encode()
+                          req=urllib.request.Request(url,data=safe,headers={'Content-Type':'application/json'},method='POST')
+                          with urllib.request.urlopen(req,timeout=8) as res: block=json.load(res).get('result')
+                          if not block or not block.get('hash'):raise ValueError('no safe finality')
+                      good.add(operator)
+                  except Exception as exc:
+                      print('Provider unavailable',name,operator,url,str(exc)[:160])
+              print(name,'independent active operators:',len(good))
+              if len(good)<2:
+                  print('::warning title=GitHub Actions RPC probe::'+name+' reachable independent providers from runner: '+str(len(good))+'; live RPC connectivity is environment-dependent. Direct-BLS runtime independently requires two matching complete witnesses and fails closed otherwise.')
+          PY
+      - name: Build binary and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          COMMIT="$(git rev-parse --short HEAD)"
+          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          PKG=github.com/xgr-network/xgrchain/versioning
+          go build -trimpath -o dist/xgrchain-v3.3.5-linux-amd64 \
+            -ldflags "-X ${PKG}.Version=v3.3.5 -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=XGR3.0 -X ${PKG}.BuildTime=${TIME}" .
+          chmod 755 dist/xgrchain-v3.3.5-linux-amd64
+          ./dist/xgrchain-v3.3.5-linux-amd64 version
+          printf '%s\n' v3.3.5 > dist/version.txt
+          git rev-parse HEAD > dist/commit.txt
+          (cd dist && sha256sum xgrchain-v3.3.5-linux-amd64 version.txt commit.txt > sha256sums.txt)
+          (cd dist && sha256sum -c sha256sums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xgr-v3.3.5-direct-bls-light-linux-amd64
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish immutable v3.3.5 release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v3.3.5
+          name: v3.3.5
+          commit: ${{ github.sha }}
+          allowUpdates: false
+          makeLatest: true
+          generateReleaseNotes: false
+          artifacts: dist/*
+          body: |
+            XGR v3.3.5 Interchain-only light release: per-source-chain Gateway observer and M-04 bounded/cancellable external RPC.
+            H-01: retain fail-closed matching evidence from 2 independent RPC operators for Base/Arbitrum.
+            M-04: per-call RPC deadlines, bounded responses and validator shutdown cancellation.
+            M-05: resource-isolation stress verification remains OPEN and is not claimed to be remediated.
+            No consensus, EVM, state or staking modifications.
+            Focused tests, advisory runner RPC diagnostics, and built checksum-verified binary.
+            Gateway discovery batches addresses per source chain; XGR source uses locally committed IBFT block receipts.
+            Base/Arbitrum BLS signatures require two matching independent full-evidence RPC witnesses at runtime.
+            Full EEST/ForkGate not repeated: this release modifies Interchain only. No unverified end-to-end assertion.
+
+          go test -count=3 -timeout 12m ./jsonrpc
+      - name: Validate native XGR reader integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'VerifyNativeXGROperation' interchain/runtime/iln_direct_signing.go
+          grep -q 'NativeXGRBlock' consensus/ibft/interchain_runtime.go
+          ! grep -q 'rpc.thirdweb.com' interchain/config.go
+      - name: Diagnose runner RPC reachability (advisory; runtime quorum stays fail-closed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re,json,urllib.request,urllib.error
+          source=open('interchain/config.go',encoding='utf-8').read()
+          # XGR 1643 uses each validator's local committed IBFT blockchain and receipts.
+          # Only L2 sources require two independent remote RPC operators.
+          for name,chain_id in [('base',8453),('arbitrum',42161)]:
+              m=re.search(r'\{Name:"'+name+r'".*?RPCURLs:\[\]string\{([^}]+)\},\s*IndependentOperatorIDs:\[\]string\{([^}]+)\}',source,re.S)
+              if not m: raise SystemExit('RPC policy missing: '+name)
+              urls=re.findall(r'"([^"]+)"',m.group(1));ops=re.findall(r'"([^"]+)"',m.group(2))
+              if len(urls)<3 or len(urls)!=len(ops): raise SystemExit('Insufficient RPC endpoints '+name)
+              if len(set(ops))<2: raise SystemExit('Insufficient independent RPC operator identities: '+name)
+              good=set()
+              for url,operator in zip(urls,ops):
+                  try:
+                      body=json.dumps(dict(jsonrpc='2.0',id=1,method='eth_chainId',params=[])).encode()
+                      req=urllib.request.Request(url,data=body,headers={'Content-Type':'application/json'},method='POST')
+                      with urllib.request.urlopen(req,timeout=8) as res: data=json.load(res)
+                      if int(data['result'],16)!=chain_id: raise ValueError('wrong chain')
+                      if chain_id!=1643:
+                          safe=json.dumps(dict(jsonrpc='2.0',id=2,method='eth_getBlockByNumber',params=['safe',False])).encode()
+                          req=urllib.request.Request(url,data=safe,headers={'Content-Type':'application/json'},method='POST')
+                          with urllib.request.urlopen(req,timeout=8) as res: block=json.load(res).get('result')
+                          if not block or not block.get('hash'):raise ValueError('no safe finality')
+                      good.add(operator)
+                  except Exception as exc:
+                      print('Provider unavailable',name,operator,url,str(exc)[:160])
+              print(name,'independent active operators:',len(good))
+              if len(good)<2:
+                  print('::warning title=GitHub Actions RPC probe::'+name+' reachable independent providers from runner: '+str(len(good))+'; live RPC connectivity is environment-dependent. Direct-BLS runtime independently requires two matching complete witnesses and fails closed otherwise.')
+          PY
+      - name: Build binary and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          COMMIT="$(git rev-parse --short HEAD)"
+          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          PKG=github.com/xgr-network/xgrchain/versioning
+          go build -trimpath -o dist/xgrchain-v3.3.5-linux-amd64 \
+            -ldflags "-X ${PKG}.Version=v3.3.5 -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=XGR3.0 -X ${PKG}.BuildTime=${TIME}" .
+          chmod 755 dist/xgrchain-v3.3.5-linux-amd64
+          ./dist/xgrchain-v3.3.5-linux-amd64 version
+          printf '%s\n' v3.3.5 > dist/version.txt
+          git rev-parse HEAD > dist/commit.txt
+          (cd dist && sha256sum xgrchain-v3.3.5-linux-amd64 version.txt commit.txt > sha256sums.txt)
+          (cd dist && sha256sum -c sha256sums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xgr-v3.3.5-direct-bls-light-linux-amd64
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish immutable v3.3.5 release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v3.3.5
+          name: v3.3.5
+          commit: ${{ github.sha }}
+          allowUpdates: false
+          makeLatest: true
+          generateReleaseNotes: false
+          artifacts: dist/*
+          body: |
+            XGR v3.3.5 Interchain-only light release: per-source-chain Gateway observer and M-04 bounded/cancellable external RPC.
+            H-01: retain fail-closed matching evidence from 2 independent RPC operators for Base/Arbitrum.
+            M-04: per-call RPC deadlines, bounded responses and validator shutdown cancellation.
+            M-05: resource-isolation stress verification remains OPEN and is not claimed to be remediated.
+            No consensus, EVM, state or staking modifications.
+            Focused tests, advisory runner RPC diagnostics, and built checksum-verified binary.
+            Gateway discovery batches addresses per source chain; XGR source uses locally committed IBFT block receipts.
+            Base/Arbitrum BLS signatures require two matching independent full-evidence RPC witnesses at runtime.
+            Full EEST/ForkGate not repeated: this release modifies Interchain only. No unverified end-to-end assertion.
+ /tmp/v335-files; then
+            echo 'Out-of-scope change: light release forbidden' >&2
+            exit 1
+          fi
+          test -z "$(git diff --name-only v3.3.3 HEAD -- consensus/ blockchain/ state/ chain/ contracts/ command/ | grep -v '^consensus/ibft/interchain_runtime.go$' || true)"
+          test -z "$(git diff --name-only v3.3.3 HEAD -- consensus/ibft/interchain_runtime.go)"
+          test -e interchain/evm/rpc_evidence_quorum.go
+          test ! -e interchain/evm/iln_merkle.go
+          test -e interchain/evm/rpc_transport.go
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Direct-BLS security and M-04 cancellation regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=3 -timeout 12m ./interchain ./interchain/evm ./interchain/runtime ./consensus/ibft/interchain ./jsonrpc
+          go test -count=5 ./interchain/evm -run '^Test(TwoIndependentOperatorsWithFailover|OneOperatorAndConflictingProvidersFailClosed|IndependentSourceWitness|ILNRPCRequestCancellationOnWorkerShutdown|ILNRPCRejectsOversizedResponseAndMismatchedID)'
+      - name: Validate native XGR reader integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'VerifyNativeXGROperation' interchain/runtime/iln_direct_signing.go
+          grep -q 'NativeXGRBlock' consensus/ibft/interchain_runtime.go
+          ! grep -q 'rpc.thirdweb.com' interchain/config.go
+      - name: Diagnose runner RPC reachability (advisory; runtime quorum stays fail-closed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re,json,urllib.request,urllib.error
+          source=open('interchain/config.go',encoding='utf-8').read()
+          # XGR 1643 uses each validator's local committed IBFT blockchain and receipts.
+          # Only L2 sources require two independent remote RPC operators.
+          for name,chain_id in [('base',8453),('arbitrum',42161)]:
+              m=re.search(r'\{Name:"'+name+r'".*?RPCURLs:\[\]string\{([^}]+)\},\s*IndependentOperatorIDs:\[\]string\{([^}]+)\}',source,re.S)
+              if not m: raise SystemExit('RPC policy missing: '+name)
+              urls=re.findall(r'"([^"]+)"',m.group(1));ops=re.findall(r'"([^"]+)"',m.group(2))
+              if len(urls)<3 or len(urls)!=len(ops): raise SystemExit('Insufficient RPC endpoints '+name)
+              if len(set(ops))<2: raise SystemExit('Insufficient independent RPC operator identities: '+name)
+              good=set()
+              for url,operator in zip(urls,ops):
+                  try:
+                      body=json.dumps(dict(jsonrpc='2.0',id=1,method='eth_chainId',params=[])).encode()
+                      req=urllib.request.Request(url,data=body,headers={'Content-Type':'application/json'},method='POST')
+                      with urllib.request.urlopen(req,timeout=8) as res: data=json.load(res)
+                      if int(data['result'],16)!=chain_id: raise ValueError('wrong chain')
+                      if chain_id!=1643:
+                          safe=json.dumps(dict(jsonrpc='2.0',id=2,method='eth_getBlockByNumber',params=['safe',False])).encode()
+                          req=urllib.request.Request(url,data=safe,headers={'Content-Type':'application/json'},method='POST')
+                          with urllib.request.urlopen(req,timeout=8) as res: block=json.load(res).get('result')
+                          if not block or not block.get('hash'):raise ValueError('no safe finality')
+                      good.add(operator)
+                  except Exception as exc:
+                      print('Provider unavailable',name,operator,url,str(exc)[:160])
+              print(name,'independent active operators:',len(good))
+              if len(good)<2:
+                  print('::warning title=GitHub Actions RPC probe::'+name+' reachable independent providers from runner: '+str(len(good))+'; live RPC connectivity is environment-dependent. Direct-BLS runtime independently requires two matching complete witnesses and fails closed otherwise.')
+          PY
+      - name: Build binary and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          COMMIT="$(git rev-parse --short HEAD)"
+          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          PKG=github.com/xgr-network/xgrchain/versioning
+          go build -trimpath -o dist/xgrchain-v3.3.5-linux-amd64 \
+            -ldflags "-X ${PKG}.Version=v3.3.5 -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=XGR3.0 -X ${PKG}.BuildTime=${TIME}" .
+          chmod 755 dist/xgrchain-v3.3.5-linux-amd64
+          ./dist/xgrchain-v3.3.5-linux-amd64 version
+          printf '%s\n' v3.3.5 > dist/version.txt
+          git rev-parse HEAD > dist/commit.txt
+          (cd dist && sha256sum xgrchain-v3.3.5-linux-amd64 version.txt commit.txt > sha256sums.txt)
+          (cd dist && sha256sum -c sha256sums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xgr-v3.3.5-direct-bls-light-linux-amd64
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish immutable v3.3.5 release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v3.3.5
+          name: v3.3.5
+          commit: ${{ github.sha }}
+          allowUpdates: false
+          makeLatest: true
+          generateReleaseNotes: false
+          artifacts: dist/*
+          body: |
+            XGR v3.3.5 Interchain-only light release: chain-generic source observer retry correction and persistent Direct-BLS health cursor recovery.
+            A shared Base/Arbitrum source RPC failure counts once per source poll, not once per route; routing-specific failures retain individual retry gates.
+            Read-only health recovers persisted per-route Direct-BLS scan cursors after restart/temporary RPC failures without inventing a verified source head.
+            Exposes sourceHeadKnown, scanCursorKnown and lastSuccessfulScanUnix in the read-only ILN indexer status RPC.
+            Base/Arbitrum still require two independently agreeing source RPC operator witnesses and canonical safe finality for BLS signatures.
+            No ordinary consensus/IBFT, staking, state, contracts, custody or fee policy changes.
+            Focused tests, advisory runner RPC diagnostics, and a checksum-verified Linux binary.
+            M-05 isolation stress verification and bidirectional production on-chain E2E remain outside this light release.
