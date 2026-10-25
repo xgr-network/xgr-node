@@ -10,7 +10,7 @@ import (
 
 	"github.com/umbracle/ethgo"
 	"github.com/umbracle/ethgo/abi"
-	"github.com/umbracle/ethgo/jsonrpc"
+	
 
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
 	"github.com/xgr-network/xgr-node/crypto"
@@ -73,7 +73,7 @@ func GetDestinationGasBalance(destination *Destination, address ethgo.Address) (
  client,err:=newVerifiedRPCClient(destination)
  if err!=nil{return nil,err}
  defer client.Close()
- balance,err:=client.Eth().GetBalance(address,ethgo.Latest)
+ balance,err:=ilnRPCBalance(client,address,ethgo.Latest)
  if err!=nil{
   recordInterchainRPCReadFailure(destination)
   return nil,fmt.Errorf("destination gas balance RPC failed: %w",err)
@@ -95,13 +95,13 @@ func GetValidatorSet(destination *Destination) (*ValidatorSet, error) {
     if destination.ChainID==1643 {
         decodedRaw,err=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),method.ID())
     } else {
-        var client *jsonrpc.Client
+        var client ilnRPCClient
         client,err=newVerifiedRPCClient(destination)
         if err!=nil{return nil,err}
         defer client.Close()
         addr:=ethgo.Address(types.StringToAddress(destination.RegistryAddress))
         var raw string
-        raw,err=client.Eth().Call(&ethgo.CallMsg{To:&addr,Data:method.ID()},ethgo.Latest)
+        raw,err=ilnRPCCall(client,&ethgo.CallMsg{To:&addr,Data:method.ID()},ethgo.Latest)
         if err==nil{decodedRaw,err=decodeRPCHex(raw)}
     }
     if err!=nil{return nil,fmt.Errorf("call getValidatorSet: %w",err)}
@@ -469,12 +469,12 @@ func SubmitMembership(
 	}, nil
 }
 
-func prepareAndCheckGas(client *jsonrpc.Client, tx *ethgo.Transaction, sender ethgo.Address) (*big.Int, error) {
+func prepareAndCheckGas(client ilnRPCClient, tx *ethgo.Transaction, sender ethgo.Address) (*big.Int, error) {
 	if client == nil || tx == nil {
 		return nil, fmt.Errorf("destination gas preflight requires client and transaction")
 	}
 
-	estimate, err := client.Eth().EstimateGas(&ethgo.CallMsg{
+	estimate, err := ilnRPCEstimateGas(client,&ethgo.CallMsg{
 		From:  sender,
 		To:    tx.To,
 		Data:  tx.Input,
@@ -491,8 +491,8 @@ func prepareAndCheckGas(client *jsonrpc.Client, tx *ethgo.Transaction, sender et
 	tx.Gas = estimate * 2
 
 	var feeCeiling *big.Int
-	priority, priorityErr := client.Eth().MaxPriorityFeePerGas()
-	feeHistory, historyErr := client.Eth().FeeHistory(1, ethgo.Latest, nil)
+	priority, priorityErr := ilnRPCPriority(client)
+	feeHistory, historyErr := ilnRPCFeeHistory(client,1, ethgo.Latest, nil)
 	if priorityErr == nil && historyErr == nil && priority != nil &&
 		feeHistory != nil && len(feeHistory.BaseFee) > 0 &&
 		feeHistory.BaseFee[len(feeHistory.BaseFee)-1] != nil {
@@ -505,7 +505,7 @@ func prepareAndCheckGas(client *jsonrpc.Client, tx *ethgo.Transaction, sender et
 		)
 		feeCeiling = new(big.Int).Set(tx.MaxFeePerGas)
 	} else {
-		gasPrice, err := client.Eth().GasPrice()
+		gasPrice, err := ilnRPCGasPrice(client)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"destination supports neither EIP-1559 fee discovery nor legacy gas price: %w",
@@ -528,7 +528,7 @@ func prepareAndCheckGas(client *jsonrpc.Client, tx *ethgo.Transaction, sender et
 		required.Add(required, tx.Value)
 	}
 
-	balance, err := client.Eth().GetBalance(sender, ethgo.Latest)
+	balance, err := ilnRPCBalance(client,sender, ethgo.Latest)
 	if err != nil {
 		return nil, fmt.Errorf("query destination gas balance: %w", err)
 	}
