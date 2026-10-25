@@ -48,7 +48,7 @@ func GetConfirmedILNRouteAdds(source *Destination, fromBlock, toBlock uint64) ([
  filter:=&ethgo.LogFilter{Address:[]ethgo.Address{ethgo.Address(registry)},Topics:[][]*ethgo.Hash{{&topic}}}
  filter.SetFromUint64(fromBlock)
  filter.SetToUint64(toBlock)
- logs,err:=client.Eth().GetLogs(filter)
+ logs,err:=ilnRPCLogs(client,filter)
  if err!=nil{recordInterchainRPCReadFailure(source)
   return nil,fmt.Errorf("read ILN registry RouteAdded events: %w",err)}
  result:=make([]ILNRouteAdded,0,len(logs))
