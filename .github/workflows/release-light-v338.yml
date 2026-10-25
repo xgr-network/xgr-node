@@ -51,7 +51,7 @@ jobs:
           fi
           git diff --name-only v3.3.7 HEAD > /tmp/v338-files
           test -s /tmp/v338-files
-          if grep -Ev '^(interchain/runtime/(iln_checkpoint|iln_completed_quorum(_test)?|worker)\.go|\.github/workflows/release-light-v338\.yml)
+          if grep -Ev '^(interchain/runtime/(iln_checkpoint|iln_completed_quorum(_test)?|worker)\.go|\.github/workflows/release-light-v338\.yml)$' /tmp/v338-files; then
             echo 'Out-of-scope change: light release forbidden' >&2
             exit 1
           fi
