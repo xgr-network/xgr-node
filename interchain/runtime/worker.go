@@ -133,6 +133,7 @@ type Worker struct {
 	reserveWarned    map[string]bool
 	ilnLocalVotes              map[types.Hash]*ilnLocalVoteState
     ilnCompletedPublished map[string]time.Time
+    ilnCompletedInbound map[peer.ID]ilnCompleteInboundBucket
 	ilnCheckpoints              map[types.Hash]*ilnCheckpointState
 	governance              map[types.Hash]*governanceState
 	governanceExecuteCh chan governanceExecuteRequest
@@ -242,6 +243,7 @@ func New(
 		reserveWarned:    make(map[string]bool),
 		ilnLocalVotes:                make(map[types.Hash]*ilnLocalVoteState),
         ilnCompletedPublished: make(map[string]time.Time),
+        ilnCompletedInbound: make(map[peer.ID]ilnCompleteInboundBucket),
 		ilnCheckpoints: make(map[types.Hash]*ilnCheckpointState),
         ilnRouteLastPublished: make(map[string]time.Time),
         ilnRouteLastSeen: make(map[peer.ID]time.Time),
@@ -861,6 +863,7 @@ func (w *Worker) handleWireFrom(raw []byte, from peer.ID) error {
 		return w.acceptILNCheckpointVote(*envelope.ILNCheckpointVote)
     case "iln_completed_quorum":
         if envelope.ILNCompletedQuorum==nil{return fmt.Errorf("missing completed Direct-BLS quorum")}
+        if !w.allowILNCompletedQuorumFrom(from){return fmt.Errorf("rate limited Direct-BLS completed quorum gossip")}
         return w.acceptILNCompletedQuorum(*envelope.ILNCompletedQuorum)
 	case "governance_proposal":
 		if envelope.GovernanceProposal == nil {
