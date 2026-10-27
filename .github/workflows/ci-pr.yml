@@ -9,9 +9,9 @@ jobs:
   test-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.23.x"
           cache: true
@@ -29,11 +29,27 @@ jobs:
               print("YAML OK:", workflow)
           PY
 
-      - name: Go test (unit)
+      - name: Go test (all unit packages, no short mode)
+        run: bash scripts/ci/unit-tests.sh
+
+      - name: Upload unit test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-unit-tests
+          path: artifacts/unit-tests/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build node for security consensus E2E
         run: |
-          set -euo pipefail
-          pkgs=$(go list ./... | grep -vE '(/e2e($|/)|/e2e-polybft($|/)|/tests($|/)|/tracker($|/)|/command/rootchain/deploy($|/)|/consensus/polybft($|/)|/state/runtime/evm($|/))')
-          go test -count=1 -short $pkgs
+          mkdir -p bin
+          go build -trimpath -o ./bin/xgrchain .
+
+      - name: Security accounting four-validator fork boundary
+        run: |
+          XGRCHAIN_BINARY="$PWD/bin/xgrchain" go test -count=1 -timeout 5m ./e2e \
+            -run '^TestSecurityAccountingFourValidators$' -v
 
       - name: ILN archive-independent route E2E
         run: go test -count=1 ./e2e -run '^TestInterchainILNRoutesE2E$' -v
