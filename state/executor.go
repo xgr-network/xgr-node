@@ -191,6 +191,10 @@ func (e *Executor) ProcessBlock(
 	}
 
 	for _, t := range block.Transactions {
+		if txn.config.SecurityAccounting && t.Type == types.StateTx &&
+			!types.IsEpochFinalizationSystemTxForBlock(t, block.Number(), contracts.SystemCaller) {
+			return nil, fmt.Errorf("unauthorized StateTx in block %d", block.Number())
+		}
 		if types.IsEpochFinalizationSystemTxForBlock(t, block.Header.Number, contracts.SystemCaller) {
 			// The deterministic native PoS epoch-finalization system transaction is
 			// represented by logs emitted in the consensus PreCommitState hook and
@@ -620,6 +624,7 @@ func (t *Transition) Call(msg *types.Transaction) (*runtime.ExecutionResult, err
 
 // Apply applies a new transaction
 func (t *Transition) Apply(msg *types.Transaction) (*runtime.ExecutionResult, error) {
+	t.state.beginTransaction(t.config.SecurityAccounting)
 	s := t.state.Snapshot()
 
 	result, err := t.apply(msg)
@@ -736,6 +741,9 @@ func (t *Transition) apply(msg *types.Transaction) (*runtime.ExecutionResult, er
 	var err error
 
 	if msg.Type == types.StateTx {
+		if t.config.SecurityAccounting {
+			return nil, fmt.Errorf("unauthorized executable StateTx")
+		}
 		err = checkAndProcessStateTx(msg)
 	} else {
 		err = checkAndProcessTx(msg, t)
@@ -817,6 +825,11 @@ func (t *Transition) apply(msg *types.Transaction) (*runtime.ExecutionResult, er
 		result = t.Call2(msg.From, *msg.To, msg.Input, value, gasLeft)
 	}
 
+	if t.config.SecurityAccounting {
+		if err := t.state.refundError(); err != nil {
+			return nil, err
+		}
+	}
 	refund := t.state.GetRefund()
 	result.UpdateGasUsed(msg.Gas, refund)
 
@@ -824,7 +837,8 @@ func (t *Transition) apply(msg *types.Transaction) (*runtime.ExecutionResult, er
 		t.ctx.Tracer.TxEnd(result.GasLeft)
 	}
 
-	if !t.ctx.NonPayable {
+	// Based on ngjupeng's F1 fix: an undebited StateTx must receive no gas credit.
+	if !t.ctx.NonPayable && (!t.config.SecurityAccounting || msg.Type != types.StateTx) {
 		// Refund the sender
 		remaining := new(big.Int).Mul(new(big.Int).SetUint64(result.GasLeft), gasPrice)
 		t.state.AddBalance(msg.From, remaining)

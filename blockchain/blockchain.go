@@ -1419,7 +1419,10 @@ func mulDivClampU64(a, b, c, d uint64) uint64 {
 func (b *Blockchain) CalculateBaseFee(parent *types.Header) uint64 {
 	// Minimum base fee (static or dynamic)
 	minBaseFee := b.resolveMinBaseFee(parent)
+	return b.calculateBaseFeeWithMin(parent, minBaseFee, false)
+}
 
+func (b *Blockchain) calculateBaseFeeWithMin(parent *types.Header, minBaseFee uint64, secure bool) uint64 {
 	var baseFee uint64
 
 	// Genesis or first London block?
@@ -1438,6 +1441,9 @@ func (b *Blockchain) CalculateBaseFee(parent *types.Header) uint64 {
 			baseFee = minBaseFee
 		} else {
 			threshold := (gasLimit * chain.CriticalGasThresholdPct) / 100
+			if secure {
+				threshold = gasLimit/100*chain.CriticalGasThresholdPct + gasLimit%100*chain.CriticalGasThresholdPct/100
+			}
 
 			if parent.GasUsed <= threshold {
 				// Hard clamp to floor in normal mode (predictable enterprise pricing)

@@ -97,6 +97,10 @@ func (i *backendIBFT) IsValidProposal(rawProposal []byte) bool {
 		return false
 	}
 
+	if err := i.verifySecurityTransactions(newBlock); err != nil {
+		i.logger.Error("system transaction verification failed", "err", err)
+		return false
+	}
 	if err := i.blockchain.VerifyPotentialBlock(newBlock); err != nil {
 		i.logger.Error("block verification failed", "err", err)
 

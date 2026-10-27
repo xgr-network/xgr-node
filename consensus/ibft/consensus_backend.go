@@ -207,7 +207,10 @@ func (i *backendIBFT) buildBlock(parent *types.Header) (*types.Block, error) {
 
 	// calculate base fee
 	header.GasLimit = gasLimit
-	baseFee := i.blockchain.CalculateBaseFee(parent)
+	baseFee, err := i.securityBaseFee(parent, header.Number)
+	if err != nil {
+		return nil, err
+	}
 
 	header.BaseFee = baseFee
 	currentHooks := i.getCurrentHooks()
@@ -252,6 +255,9 @@ func (i *backendIBFT) buildBlock(parent *types.Header) (*types.Block, error) {
 	// finalization writes a deterministic internal system receipt; when that
 	// happens, append the matching system transaction to the otherwise user-tx-free
 	// block so receipt count, receipt root, and tx root remain deterministic.
+	if i.securityAccountingActive(header.Number) && i.securityEpochBoundary(header.Number) {
+		txs = append(txs, pos.EpochFinalizationSystemTx(header.Number))
+	}
 	preCommitBlock := &types.Block{Header: header, Transactions: txs}
 	if err := i.PreCommitState(preCommitBlock, transition); err != nil {
 		return nil, fmt.Errorf("pre-commit state failed at block %d: %w", header.Number, err)
