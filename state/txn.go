@@ -36,6 +36,14 @@ type Txn struct {
 	snapshots []*iradix.Tree
 	txn       *iradix.Txn
 	codeCache *lru.Cache
+
+	// committed holds, per account, an immutable snapshot of that account's
+	// storage as of the end of the previous transaction in the current block
+	// (captured at each tx boundary in CleanDeleteObjects). GetCommittedState
+	// reads it so that the EIP-2200 "original" value is the slot value at the
+	// start of the current transaction, not the stale parent-block root.
+	// Fixes GHSA-2c3c-889q-r8xx (same-block SSTORE refund underflow).
+	committed map[types.Address]*iradix.Tree
 }
 
 func NewTxn(snapshot Snapshot) *Txn {
@@ -56,6 +64,7 @@ func newTxn(snapshot readSnapshot) *Txn {
 		snapshots: []*iradix.Tree{},
 		txn:       i.Txn(),
 		codeCache: codeCache,
+		committed: map[types.Address]*iradix.Tree{},
 	}
 }
 
@@ -484,6 +493,23 @@ func (txn *Txn) GetCommittedState(addr types.Address, key types.Hash) types.Hash
 		return types.Hash{}
 	}
 
+	// EIP-2200 requires "original" to be the slot value at the START of the
+	// current transaction. If an earlier transaction in this block already
+	// touched the slot, the correct original is its committed baseline value
+	// (captured per tx in CleanDeleteObjects), not the parent-block root, which
+	// is only refreshed once per block. Reading the stale root makes original
+	// wrong for same-block writes and lets the SSTORE refund counter underflow
+	// (GHSA-2c3c-889q-r8xx).
+	if tree, ok := txn.committed[addr]; ok {
+		if raw, found := tree.Get(key.Bytes()); found {
+			if raw == nil {
+				return types.Hash{}
+			}
+			//nolint:forcetypeassert
+			return types.BytesToHash(raw.([]byte))
+		}
+	}
+
 	return txn.snapshot.GetStorage(addr, obj.Account.Root, key)
 }
 
@@ -581,7 +607,48 @@ func (txn *Txn) CleanDeleteObjects(deleteEmptyObjects bool) error {
 	// delete refunds
 	txn.txn.Delete(refundIndex)
 
+	// Capture the per-account storage baseline for the NEXT transaction: this is
+	// the committed state as of the end of the current transaction, which is the
+	// EIP-2200 "original" for the next one. See GetCommittedState / GHSA-2c3c-889q-r8xx.
+	txn.captureCommittedStorage()
+
 	return nil
+}
+
+// captureCommittedStorage snapshots each live account's storage into txn.committed,
+// to serve as the EIP-2200 "original" (start-of-transaction) value for subsequent
+// transactions in the same block. iradix trees are immutable, so the snapshot is
+// cheap and does not alias later in-block mutations.
+func (txn *Txn) captureCommittedStorage() {
+	type entry struct {
+		key []byte
+		obj *StateObject
+	}
+
+	var entries []entry
+	txn.txn.Root().Walk(func(k []byte, v interface{}) bool {
+		obj, ok := v.(*StateObject)
+		if !ok || obj.Deleted || obj.Txn == nil {
+			return false
+		}
+		entries = append(entries, entry{key: k, obj: obj})
+
+		return false
+	})
+
+	for _, e := range entries {
+		// CommitOnly finalizes the current storage Txn into an immutable tree;
+		// re-open a fresh Txn on that tree so the live object stays writable
+		// (same idiom as StateObject.Copy).
+		tree := e.obj.Txn.CommitOnly()
+
+		var addr types.Address
+		copy(addr[:], e.key)
+		txn.committed[addr] = tree
+
+		e.obj.Txn = tree.Txn()
+		txn.txn.Insert(e.key, e.obj)
+	}
 }
 
 func (txn *Txn) Commit(deleteEmptyObjects bool) ([]*Object, error) {
