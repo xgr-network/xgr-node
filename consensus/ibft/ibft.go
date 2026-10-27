@@ -485,6 +485,10 @@ func (i *backendIBFT) verifyHeaderImpl(
 		return ErrWrongDifficulty
 	}
 
+	if err := i.verifySecurityBaseFee(parent, header); err != nil {
+		return err
+	}
+
 	// ensure the extra data is correctly formatted
 	if _, err := headerSigner.GetIBFTExtra(header); err != nil {
 		return err
@@ -628,6 +632,9 @@ func (i *backendIBFT) GetBlockCreator(header *types.Header) (types.Address, erro
 func (i *backendIBFT) PreCommitState(block *types.Block, txn *state.Transition) error {
 	if block == nil || block.Header == nil {
 		return fmt.Errorf("missing block header in PreCommitState")
+	}
+	if err := i.verifySecurityTransactions(block); err != nil {
+		return err
 	}
 	// Deterministic uptime accounting MUST use the parent header (already sealed/final).
 	// Counting on the current header breaks determinism during buildBlock because proposer seal/hash

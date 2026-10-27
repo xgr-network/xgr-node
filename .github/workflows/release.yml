@@ -32,7 +32,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   meta:
@@ -42,12 +42,14 @@ jobs:
       version: ${{ steps.v.outputs.version }}
     steps:
       - id: v
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          TAG="${{ github.event.inputs.release_tag }}"
+          TAG="$RELEASE_TAG"
           if [ -z "$TAG" ]; then echo "release_tag required"; exit 1; fi
           if [[ "$TAG" != v* ]]; then echo "release_tag must start with v (got: $TAG)"; exit 1; fi
-          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([\-+].*)?$ ]]; then
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             echo "release_tag should look like vX.Y.Z (got: $TAG)"
             exit 1
           fi
@@ -61,11 +63,11 @@ jobs:
     outputs:
       version: ${{ needs.meta.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.23.x"
           cache: true
@@ -76,11 +78,17 @@ jobs:
           go version
           go env | sort
 
-      - name: Go test (unit, full)
-        run: |
-          set -euo pipefail
-          pkgs=$(go list ./... | grep -vE '(/e2e($|/)|/e2e-polybft($|/)|/tests($|/)|/tracker($|/)|/command/rootchain/deploy($|/)|/consensus/polybft($|/)|/state/runtime/evm($|/))')
-          go test -count=1 $pkgs
+      - name: Go test (all unit packages, no short mode)
+        run: bash scripts/ci/unit-tests.sh
+
+      - name: Upload complete unit test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-unit-tests
+          path: artifacts/unit-tests/
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Build node binary (release)
         env:
@@ -96,7 +104,7 @@ jobs:
             BRANCH="${GITHUB_REF_NAME:-detached}"
           fi
           TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-          PKG="github.com/xgr-network/xgrchain/versioning"
+          PKG="$(go list -m)/versioning"
 
           go build -trimpath -o "./bin/${OUT}" \
             -ldflags "-X ${PKG}.Version=${VERSION} -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=${BRANCH} -X ${PKG}.BuildTime=${TIME}" \
@@ -110,10 +118,17 @@ jobs:
           test -x "./bin/${OUT}"
           ls -lah "./bin/${OUT}" "./bin/xgrchain" ./bin/version.txt
           file "./bin/${OUT}" || true
-          "./bin/xgrchain" version || true
+          version_output="$(./bin/xgrchain version)"
+          printf '%s\n' "$version_output"
+          grep -F "Release version = ${VERSION}" <<< "$version_output"
+          grep -F "Commit hash     = ${COMMIT}" <<< "$version_output"
 
           echo "$PWD/bin" >> "$GITHUB_PATH"
-          "./bin/${OUT}" version || true
+          "./bin/${OUT}" version
+          git rev-parse HEAD > ./bin/commit.txt
+          go version > ./bin/toolchain.txt
+          (cd bin && sha256sum "${OUT}" version.txt commit.txt toolchain.txt > sha256sums.txt)
+          (cd bin && sha256sum -c sha256sums.txt)
 
       - name: E2E (watchdog + heartbeat)
         run: |
@@ -169,31 +184,41 @@ jobs:
           pkill -9 xgrchain || true
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: xgrchain-release
           path: |
             ./bin/xgrchain-${{ needs.meta.outputs.version }}-linux-amd64
             ./bin/version.txt
-          retention-days: 14
+            ./bin/commit.txt
+            ./bin/toolchain.txt
+            ./bin/sha256sums.txt
+          if-no-files-found: error
+          retention-days: 30
 
   eest:
-    name: EEST (execution-spec-tests)
+    name: EEST (${{ matrix.accounting }} accounting rules)
     runs-on: ubuntu-latest
     timeout-minutes: 360
     needs: [meta]
+    strategy:
+      fail-fast: false
+      matrix:
+        accounting: [legacy, security]
+
     env:
       FORK: ${{ github.event.inputs.fork }}
       TESTS_PATH: ${{ github.event.inputs.tests_path }}
       PYTEST_K: ${{ github.event.inputs.pytest_k }}
       RPC: "http://127.0.0.1:8545"
       CHAIN_ID: "100"
+      ACCOUNTING_RULES: ${{ matrix.accounting }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.23.x"
           cache: true
@@ -239,7 +264,9 @@ jobs:
           }
           GO
           out="$(go run /tmp/keygen.go)"
-          echo "$out"
+          seed_key="$(sed -n 's/^SEED_KEY=//p' <<< "$out")"
+          test -n "$seed_key"
+          echo "::add-mask::$seed_key"
           echo "$out" >> "$GITHUB_ENV"
 
       - name: Create IBFT validator secrets (single node) + derive bootnode
@@ -283,11 +310,18 @@ jobs:
             --name eest \
             --dir ./genesis-eest.json
 
-          jq '
+          jq --arg rules "$ACCOUNTING_RULES" '
             (.params.forks |= with_entries(.value |= (if (.block? != null) then (.block=0) else . end))) |
+            (if $rules == "security" then .params.forks.securityAccounting = {block: 0}
+             else del(.params.forks.securityAccounting) end) |
             (.alloc = .genesis.alloc)
           ' ./genesis-eest.json > ./genesis-eest.tmp && mv ./genesis-eest.tmp ./genesis-eest.json
           test -s ./genesis-eest.json
+          if [ "$ACCOUNTING_RULES" = security ]; then
+            jq -e '.params.forks.securityAccounting.block == 0' ./genesis-eest.json
+          else
+            jq -e '.params.forks | has("securityAccounting") | not' ./genesis-eest.json
+          fi
 
       - name: Start local node (JSON-RPC) + RPC sanity
         run: |
@@ -339,17 +373,24 @@ jobs:
           tail -n 200 node.log || true
           exit 1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
 
-      - name: Clone execution-spec-tests
+      - name: Clone pinned execution-spec-tests
+        env:
+          EEST_REVISION: 10eaa63d5da2f50b63d4359968f36542212f9f50
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/ethereum/execution-spec-tests.git eest
+          git init eest
+          git -C eest remote add origin https://github.com/ethereum/execution-spec-tests.git
+          git -C eest fetch --depth 1 origin "$EEST_REVISION"
+          git -C eest checkout --detach FETCH_HEAD
+          git -C eest rev-parse HEAD | tee eest-revision.txt
+          test "$(cat eest-revision.txt)" = "$EEST_REVISION"
 
       - name: Run EEST (execute remote)
         run: |
@@ -369,10 +410,14 @@ jobs:
 
       - name: Upload node log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: eest-node-log
-          path: node.log
+          name: eest-${{ matrix.accounting }}-evidence
+          path: |
+            node.log
+            genesis-eest.json
+            eest-revision.txt
+          if-no-files-found: error
           retention-days: 14
 
   fork_gate:
@@ -397,7 +442,7 @@ jobs:
           sudo apt-get install -y jq curl
 
       - name: Download built binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: xgrchain-release
           path: dist
@@ -405,6 +450,8 @@ jobs:
       - name: Prepare binary
         run: |
           set -euo pipefail
+          (cd dist && sha256sum -c sha256sums.txt)
+          test "$(cat dist/commit.txt)" = "$GITHUB_SHA"
           BIN="$(ls -1 dist/xgrchain-*-linux-amd64 | head -n1)"
           test -n "$BIN"
           chmod +x "$BIN"
@@ -420,6 +467,7 @@ jobs:
           curl -fsSL "${GENESIS_URL}" -o ./genesis.json
           test -s ./genesis.json
           jq . ./genesis.json >/dev/null
+          sha256sum genesis.json > fork-gate-genesis.sha256
 
       - name: Start local sync node
         run: |
@@ -429,6 +477,7 @@ jobs:
           ./bin/xgrchain server \
             --data-dir ./forkgate \
             --chain ./genesis.json \
+            --seal=false \
             --grpc-address 127.0.0.1:9632 \
             --libp2p 127.0.0.1:1478 \
             --jsonrpc 127.0.0.1:8545 \
@@ -616,36 +665,60 @@ jobs:
 
       - name: Upload fork gate node log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fork-gate-node-log
-          path: fork-gate-node.log
+          path: |
+            fork-gate-node.log
+            genesis.json
+            fork-gate-genesis.sha256
           retention-days: 14
 
   publish_release:
     name: Publish release
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     needs: [meta, integration, eest, fork_gate]
     if: ${{ needs.integration.result == 'success' && needs.eest.result == 'success' && needs.fork_gate.result == 'success' }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: xgrchain-release
           path: dist
+
+      - name: Verify tested binary and prepare release notes
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c sha256sums.txt)
+          test "$(cat dist/commit.txt)" = "${GITHUB_SHA}"
+          if [ -f "RELEASE_NOTES_${VERSION}.md" ]; then
+            cp "RELEASE_NOTES_${VERSION}.md" release-notes.md
+          else
+            printf 'Version: %s\nCommit: %s\n' "$VERSION" "$GITHUB_SHA" > release-notes.md
+          fi
 
       - name: Create checksums
         run: |
           set -euo pipefail
           cd dist
-          sha256sum * > sha256sums.txt
+          sha256sum xgrchain-*-linux-amd64 version.txt commit.txt toolchain.txt > sha256sums.txt
+          sha256sum -c sha256sums.txt
           ls -lah
           cat sha256sums.txt
 
       - name: Fail if tag already exists
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          RELEASE_TAG: ${{ needs.meta.outputs.version }}
         with:
           script: |
-            const tag = `${{ needs.meta.outputs.version }}`.trim();
+            const tag = process.env.RELEASE_TAG.trim();
             try {
               await github.rest.git.getRef({
                 owner: context.repo.owner,
@@ -659,17 +732,16 @@ jobs:
             }
 
       - name: Create Release (creates tag on this commit)
-        uses: ncipollo/release-action@v1
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
         with:
           tag: ${{ needs.meta.outputs.version }}
           name: ${{ needs.meta.outputs.version }}
           prerelease: false
           allowUpdates: false
+          artifactErrorsFailBuild: true
+          immutableCreate: true
           makeLatest: true
           commit: ${{ github.sha }}
-          body: |
-            Release build.
-            Version: ${{ needs.meta.outputs.version }}
-            Commit:  ${{ github.sha }}
+          bodyFile: release-notes.md
           artifacts: |
             dist/*

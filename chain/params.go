@@ -112,6 +112,8 @@ const (
 	EIP2930             = "EIP2930"
 	EIP3651             = "EIP3651"
 	FeePoolSplit        = "feePoolSplit"
+	// SecurityAccounting jointly activates F1/F2. No production height is implicit.
+	SecurityAccounting = "securityAccounting"
 )
 
 // Forks is map which contains all forks and their starting blocks from genesis
@@ -155,6 +157,7 @@ func (f *Forks) At(block uint64) ForksInTime {
 		EIP2930:             f.IsActive(EIP2930, block),
 		EIP3651:             f.IsActive(EIP3651, block),
 		FeePoolSplit:        f.IsActive(FeePoolSplit, block),
+		SecurityAccounting:  f.IsActive(SecurityAccounting, block),
 	}
 }
 
@@ -207,7 +210,7 @@ type ForksInTime struct {
 	EIP155,
 	QuorumCalcAlignment,
 	TxHashWithType,
-	LondonFix, EIP3860, EIP2929, EIP2930, EIP3651, FeePoolSplit bool
+	LondonFix, EIP3860, EIP2929, EIP2930, EIP3651, FeePoolSplit, SecurityAccounting bool
 }
 
 // AllForksEnabled should contain all supported forks by current edge version

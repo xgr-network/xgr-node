@@ -36,6 +36,12 @@ type Txn struct {
 	snapshots []*iradix.Tree
 	txn       *iradix.Txn
 	codeCache *lru.Cache
+
+	// Immutable transaction-start radix root; account and storage writes use Copy.
+	// This retains ngjupeng's transaction-local original-state semantics without
+	// walking all accounts after every transaction.
+	originalState    *iradix.Tree
+	secureAccounting bool
 }
 
 func NewTxn(snapshot Snapshot) *Txn {
@@ -445,13 +451,41 @@ func (txn *Txn) HasSuicided(addr types.Address) bool {
 	return exists && object.Suicide
 }
 
+// beginTransaction pins an O(1), immutable transaction-start view. EVM call
+// snapshots and reverts must not move this baseline.
+func (txn *Txn) beginTransaction(secure bool) {
+	txn.secureAccounting = secure
+	txn.originalState = nil
+	if secure {
+		txn.originalState = txn.txn.CommitOnly()
+	}
+}
+
+var refundErrorIndex = types.BytesToHash([]byte{4}).Bytes()
+var ErrRefundAccounting = errors.New("refund accounting invariant violated")
+
+func (txn *Txn) refundError() error {
+	if _, ok := txn.txn.Get(refundErrorIndex); ok {
+		return ErrRefundAccounting
+	}
+	return nil
+}
+
 // Refund
 func (txn *Txn) AddRefund(gas uint64) {
+	if txn.secureAccounting && ^uint64(0)-txn.GetRefund() < gas {
+		txn.txn.Insert(refundErrorIndex, true)
+		return
+	}
 	refund := txn.GetRefund() + gas
 	txn.txn.Insert(refundIndex, refund)
 }
 
 func (txn *Txn) SubRefund(gas uint64) {
+	if txn.secureAccounting && txn.GetRefund() < gas {
+		txn.txn.Insert(refundErrorIndex, true)
+		return
+	}
 	refund := txn.GetRefund() - gas
 	txn.txn.Insert(refundIndex, refund)
 }
@@ -479,6 +513,32 @@ func (txn *Txn) GetRefund() uint64 {
 
 // GetCommittedState returns the state of the address in the trie
 func (txn *Txn) GetCommittedState(addr types.Address, key types.Hash) types.Hash {
+	if txn.secureAccounting && txn.originalState != nil {
+		if raw, found := txn.originalState.Get(addr.Bytes()); found {
+			obj := raw.(*StateObject)
+			if obj.Deleted {
+				return types.ZeroHash
+			}
+			if obj.Txn != nil {
+				if val, ok := obj.Txn.Get(key.Bytes()); ok {
+					if val == nil {
+						return types.ZeroHash
+					}
+					return types.BytesToHash(val.([]byte))
+				}
+			}
+			if obj.withFakeStorage {
+				return types.ZeroHash
+			}
+			return txn.snapshot.GetStorage(addr, obj.Account.Root, key)
+		}
+		obj, err := txn.snapshot.GetAccount(addr)
+		if err != nil || obj == nil {
+			return types.ZeroHash
+		}
+		return txn.snapshot.GetStorage(addr, obj.Root, key)
+	}
+
 	obj, ok := txn.getStateObject(addr)
 	if !ok {
 		return types.Hash{}
@@ -580,6 +640,9 @@ func (txn *Txn) CleanDeleteObjects(deleteEmptyObjects bool) error {
 
 	// delete refunds
 	txn.txn.Delete(refundIndex)
+	if txn.secureAccounting {
+		txn.txn.Delete(refundErrorIndex)
+	}
 
 	return nil
 }

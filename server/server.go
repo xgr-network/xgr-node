@@ -989,7 +989,7 @@ func initForkManager(engineName string, config *chain.Chain) error {
 	// Register forks
 	for name, f := range *config.Params.Forks {
 		// check if fork is not supported by current edge version
-		if _, found := (*chain.AllForksEnabled)[name]; !found {
+		if _, found := (*chain.AllForksEnabled)[name]; !found && name != chain.SecurityAccounting {
 			return fmt.Errorf("fork is not available: %s", name)
 		}
 
