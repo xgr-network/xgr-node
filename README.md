@@ -1,5 +1,7 @@
 # xgr-node
 
+[System context and every Interchain contract](https://github.com/xgr-network/XGR/blob/main/docs/interchain/XGR_INTERCHAIN_Context_and_Contracts.md): component diagrams, contract roles, trust boundaries and value flows.
+
 ## Technical reference navigation
 
 - [Structured Interchain documentation](https://github.com/xgr-network/XGR/blob/main/docs/interchain/README.md)
