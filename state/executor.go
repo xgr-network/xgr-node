@@ -824,7 +824,13 @@ func (t *Transition) apply(msg *types.Transaction) (*runtime.ExecutionResult, er
 		t.ctx.Tracer.TxEnd(result.GasLeft)
 	}
 
-	if !t.ctx.NonPayable {
+	// A state transaction (type 0x7f) pays no gas up front (checkAndProcessStateTx
+	// performs no subGasLimitPrice debit) and its gas price is mandated to be zero.
+	// It must therefore receive no refund and no fee split: for a StateTx the
+	// effective gasPrice would otherwise fall back to header.BaseFee, and crediting
+	// GasLeft*BaseFee + GasUsed*BaseFee here creates unbacked native XGR from
+	// nothing (GHSA-wc4w-xh2c-jwpv). Skip the fee-credit block for StateTx.
+	if !t.ctx.NonPayable && msg.Type != types.StateTx {
 		// Refund the sender
 		remaining := new(big.Int).Mul(new(big.Int).SetUint64(result.GasLeft), gasPrice)
 		t.state.AddBalance(msg.From, remaining)
