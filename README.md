@@ -20,11 +20,11 @@ The node provides:
 
 Current public release:
 
-    v3.1.1
+    v3.4.0
 
 Release commit:
 
-    1a4844b311fb856cb8c2303a40fa8aa69b560544
+    cbe6f8a4ae1718429a9924dcf87f0d28591d74e1
 
 ---
 
@@ -214,7 +214,7 @@ https://github.com/xgr-network/XGR/blob/main/docs/chain/XRC-GAS_Gas_Price_Behavi
 
 ## Interchain BLS verification
 
-`v3.1.1` includes a native BLS12-381 Interchain verification precompile at:
+`v3.4.0` includes a native BLS12-381 Interchain verification precompile at:
 
     0x0000000000000000000000000000000000002040
 
@@ -232,7 +232,7 @@ It does not itself define:
 
 Interchain infrastructure is maintained separately in:
 
-https://github.com/xgr-network/xgr-hyperlane
+https://github.com/xgr-network/xgr-interchain
 
 ---
 
@@ -242,7 +242,7 @@ https://github.com/xgr-network/xgr-hyperlane
 
 `xgr-node` includes an online state-trie garbage collector called the Online State Trie Sweeper.
 
-The feature was introduced in `v2.1.0` and remains part of `v3.1.1`.
+The feature was introduced in `v2.1.0` and remains part of `v3.4.0`.
 
 It can reclaim unreachable historical:
 
@@ -310,23 +310,23 @@ Private embedded-engine builds can replace that stub in their own development en
 
 # Current release
 
-## `v3.1.1`
+## `v3.4.0`
 
 Release:
 
-https://github.com/xgr-network/xgr-node/releases/tag/v3.1.1
+https://github.com/xgr-network/xgr-node/releases/tag/v3.4.0
 
 Release commit:
 
-    1a4844b311fb856cb8c2303a40fa8aa69b560544
+    cbe6f8a4ae1718429a9924dcf87f0d28591d74e1
 
 Published Linux AMD64 binary:
 
-    xgrchain-v3.1.1-linux-amd64
+    xgrchain-v3.4.0-linux-amd64
 
 SHA-256:
 
-    429d18db37e9cdb6eb82b33583880c407701fcf070f1d8f6398ca8c4c7a0c88d
+    c4b41557ee957f1a1e6487aa7701ae593ae2e657a911a4761627f728a61be85e
 
 The release also publishes:
 
@@ -340,13 +340,13 @@ The release also publishes:
 Example for Linux AMD64:
 
     curl -fL \
-      https://github.com/xgr-network/xgr-node/releases/download/v3.1.1/xgrchain-v3.1.1-linux-amd64 \
+      https://github.com/xgr-network/xgr-node/releases/download/v3.4.0/xgrchain-v3.4.0-linux-amd64 \
       -o xgrchain
 
 Verify:
 
     echo \
-    "429d18db37e9cdb6eb82b33583880c407701fcf070f1d8f6398ca8c4c7a0c88d  xgrchain" \
+    "c4b41557ee957f1a1e6487aa7701ae593ae2e657a911a4761627f728a61be85e  xgrchain" \
     | sha256sum -c -
 
 Expected:
@@ -386,7 +386,7 @@ A normal Linux build environment should include:
     cd xgr-node
 
     git fetch --all --tags
-    git checkout v3.1.1
+    git checkout v3.4.0
 
 Verify:
 
@@ -395,11 +395,11 @@ Verify:
 
 Expected:
 
-    v3.1.1
+    v3.4.0
 
 and:
 
-    1a4844b311fb856cb8c2303a40fa8aa69b560544
+    cbe6f8a4ae1718429a9924dcf87f0d28591d74e1
 
 ---
 
@@ -567,7 +567,7 @@ https://github.com/xgr-network/XGR/blob/main/docs/chain/XGRCHAIN_Staking_PoS_End
 
 ## Interchain attestation RPC
 
-`v3.1.1` also includes read-only XGR Interchain attestation methods including:
+`v3.4.0` also includes read-only XGR Interchain attestation methods including:
 
     xgr_getInterchainAttestation
     xgr_getInterchainAttestationByCheckpoint
@@ -669,7 +669,7 @@ Router deployments, cross-chain validators, relayers and destination security mo
 
 Repository:
 
-https://github.com/xgr-network/xgr-hyperlane
+https://github.com/xgr-network/xgr-interchain
 
 The first implemented XGR asset route between XGRChain and Base has been validated end-to-end in both directions on mainnet.
 
@@ -814,7 +814,7 @@ Do not commit or publish:
 - XGRChain node releases: https://github.com/xgr-network/xgr-node/releases
 - Explorer: https://explorer.xgr.network
 - Testnet faucet: https://faucet.xgr.network
-- Interchain implementation: https://github.com/xgr-network/xgr-hyperlane
+- Interchain implementation: https://github.com/xgr-network/xgr-interchain
 - MCP implementation: https://github.com/xgr-network/xgr-mcp
 
 ---
@@ -838,10 +838,21 @@ Do not remove or alter third-party legal attribution without appropriate review.
 
 Current public XGRChain node baseline:
 
-    xgr-node v3.1.1
+    xgr-node v3.4.0
 
 Commit:
 
-    1a4844b311fb856cb8c2303a40fa8aa69b560544
+    cbe6f8a4ae1718429a9924dcf87f0d28591d74e1
 
 The public release provides the standalone open-source foundation for XGRChain mainnet node operation, delegated PoS consensus participation, EVM execution, RPC access and XGR-specific protocol functionality.
+
+
+## Current v3.4.0 documentation and independent operation
+
+XGRChain node v3.4.0 is deployed on Testnet and Mainnet according to the network operator (27 October 2026). Binary rollout and consensus activation are distinct: the published Mainnet configuration activates `params.forks.securityAccounting.block` at **12,186,213**, inclusively. An omitted fork entry leaves the new rules inactive.
+
+The current Interchain implementation is [xgr-interchain](https://github.com/xgr-network/xgr-interchain). Route registration through the public Factory is permissionless; XITA listing is not protocol admission. Message validity depends on the current destination validator BLS quorum and verified source evidence, not on the identity of a relayer. Users or independent executors can prepare and submit the same authenticated `Mailbox.process` call without the XITA website, commercial execution gateway, sponsor or managed relayer. Gas, protocol fees, working RPC access and validator quorum availability remain required.
+
+- [Complete Direct-BLS technical reference](https://github.com/xgr-network/XGR/blob/main/docs/interchain/XGR_INTERCHAIN_v3.4.0_Reference.md)
+- [Independent transfer and recovery runbook](https://github.com/xgr-network/XGR/blob/main/docs/interchain/XGR_INTERCHAIN_v3.4.0_Operations.md)
+- [Node release, checksums and activation](https://github.com/xgr-network/XGR/blob/main/docs/chain/XGRCHAIN_v3.4.0_Release_and_Activation.md)
