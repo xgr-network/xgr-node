@@ -10,8 +10,9 @@ import (
 )
 
 // finalizedILNHead is the authoritative upper bound for ALL source discovery
-// and signing reads. Base and Arbitrum require "safe"; no confirmation depth
-// or fallback to "latest" is ever permitted. XGRChain is IBFT-committed.
+// and signing reads. Base/Arbitrum require "safe", BSC requires "finalized".
+// No confirmation-depth fallback or fallback to "latest" is permitted.
+// XGRChain uses its locally committed IBFT head.
 func finalizedILNHead(client ilnRPCClient, source *Destination)(uint64,error){
  if client==nil||source==nil{return 0,fmt.Errorf("finality client or chain missing")}
  p,err:=policy.PolicyForChainID(source.ChainID)
@@ -21,6 +22,7 @@ func finalizedILNHead(client ilnRPCClient, source *Destination)(uint64,error){
  switch p.Finality{
  case policy.FinalityIBFT: block,err=ilnRPCBlock(client,ethgo.Latest,false)
  case policy.FinalitySafe: err=client.Call("eth_getBlockByNumber",&block,"safe",false)
+ case policy.FinalityFinalized: err=client.Call("eth_getBlockByNumber",&block,"finalized",false)
  default:return 0,fmt.Errorf("unsupported finality rule for chain %d",source.ChainID)
  }
  if err!=nil{return 0,fmt.Errorf("native %s finality head unavailable: %w",p.Finality,err)}

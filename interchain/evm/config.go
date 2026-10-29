@@ -52,7 +52,9 @@ func makeDestination(p policy.ChainPolicy) (*Destination,error) {
   }
  }
  for _,v:=range []string{d.RegistryAddress,d.ILNRegistryAddress}{
-  if v==""{continue}
+  // The zero-address placeholders are legal ONLY for an inactive policy
+  // validated by policy.Policy. They are never accepted by activation paths.
+  if v==""||strings.EqualFold(v,policy.ZeroRegistryAddress){continue}
   if err:=types.IsValidAddress(v);err!=nil||types.StringToAddress(v)==types.ZeroAddress {
    return nil,fmt.Errorf("invalid compiled XITA contract address for %s",d.Name)
   }
@@ -61,7 +63,7 @@ func makeDestination(p policy.ChainPolicy) (*Destination,error) {
 }
 
 // Load reads no ENV: it may describe an undeployed chain but cannot enable
-// signing without the receipt-pinned contract bindings in v3.3.2.
+// signing without valid receipt-pinned nonzero contract bindings.
 func Load(name string) (*Destination,error) {
  p,err:=policy.Policy(name)
  if err!=nil{return nil,err}
@@ -83,6 +85,7 @@ func LoadAll() ([]*Destination,error) {
 
 func (d *Destination) ValidateMembershipRead() error {
  if d==nil||d.ChainID==0||d.Domain==0||strings.TrimSpace(d.RegistryAddress)==""||
+  strings.EqualFold(d.RegistryAddress,policy.ZeroRegistryAddress)||
   (d.ChainID!=1643&&strings.TrimSpace(d.RPCURL)==""){
   return fmt.Errorf("verified destination Registry deployment required")
  }

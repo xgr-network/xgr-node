@@ -34,3 +34,23 @@ func TestInterchainEnvironmentCannotOverrideProtocol(t *testing.T){
  require.NoError(t,err)
  require.Len(t,all,3)
 }
+
+func TestV341BSCZeroAddressCannotActivate(t *testing.T) {
+ d,err:=Load("bsc")
+ require.NoError(t,err)
+ require.Equal(t,uint64(56),d.ChainID)
+ require.Equal(t,uint32(56),d.Domain)
+ require.Equal(t,VerifierFormatEIP2537,d.VerifierFormat)
+ require.Equal(t,"ethereum-finalized",string(d.FinalityRule))
+ require.Equal(t,"0x0000000000000000000000000000000000000000",d.RegistryAddress)
+ require.Equal(t,"0x0000000000000000000000000000000000000000",d.ILNRegistryAddress)
+ require.Zero(t,d.ILNRegistryActivationBlock)
+ require.NotEmpty(t,d.RPCURL)
+ require.ErrorContains(t,d.ValidateMembershipRead(),"verified destination Registry")
+ require.ErrorContains(t,d.ValidateSubmission(),"verified destination Registry")
+ require.ErrorContains(t,d.ValidateILNRead(),"non-zero")
+ active,err:=LoadAll()
+ require.NoError(t,err)
+ require.Len(t,active,3)
+ for _,entry:=range active {require.NotEqual(t,uint64(56),entry.ChainID)}
+}
