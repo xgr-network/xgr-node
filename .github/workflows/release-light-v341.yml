@@ -42,7 +42,7 @@ jobs:
           fi
           git diff --name-only v3.4.0 HEAD > /tmp/v341-changes
           test -s /tmp/v341-changes
-          if grep -Ev '^(interchain/|RELEASE_NOTES_v3[.]4[.]1[.]md$|[.]github/workflows/(release-light-v341|release-direct-bls-candidate)[.]yml$)' /tmp/v341-changes; then
+          if grep -Ev '^(interchain/|README[.]md$|docs/ILN_V340_OPERATOR_REFERENCE[.]md$|RELEASE_NOTES_v3[.]4[.]1[.]md$|[.]github/workflows/(release-light-v341|release-direct-bls-candidate)[.]yml$)' /tmp/v341-changes; then
             echo "Interchain-only light-release scope exceeded" >&2; exit 1
           fi
           test -z "$(git diff --name-only v3.4.0 HEAD -- consensus/ blockchain/ state/ chain/ contracts/ command/ jsonrpc/)"
