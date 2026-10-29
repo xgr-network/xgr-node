@@ -1,8 +1,8 @@
 // Package interchain is the immutable, release-reviewed XITA network policy.
-// v3.3.2 pins only verified Direct-BLS deployments for XGRChain, Base and
-// Arbitrum (XITA deployment inventory xgr-network/xgr-interchain @
-// 8b4b078fda4edf5592b6f83510d14c0ef9a88830, 2026-10-24).
-// Polygon remains deliberately unsupported until its separate reviewed release.
+// v3.4.1 pins receipt-documented BSC deployment bindings for chain/domain 56.
+// XGRChain, Base and Arbitrum retain their verified, receipt-pinned bindings.
+// BSC is eligible for validator workers only after explicit operator rollout.
+// Polygon remains unsupported until separately reviewed.
 package interchain
 
 import (
@@ -16,7 +16,18 @@ type FinalityRule string
 const (
  FinalityIBFT FinalityRule = "ibft-committed"
  FinalitySafe FinalityRule = "ethereum-safe"
+ FinalityFinalized FinalityRule = "ethereum-finalized"
 )
+
+// ZeroRegistryAddress represents an undeployed placeholder, NOT a valid
+// production binding. Every compiled v3.4.1 chain must reject this address.
+const ZeroRegistryAddress = "0x0000000000000000000000000000000000000000"
+
+// hasDeployedRegistry deliberately excludes the zero-address placeholder.
+// Invalid nonzero addresses are rejected by evm.makeDestination.
+func hasDeployedRegistry(address string) bool {
+ return address!=""&&!strings.EqualFold(address,ZeroRegistryAddress)
+}
 
 // ChainPolicy MUST NOT contain validator-specific security settings.
 // Addresses below are populated only by a reviewed light release.
@@ -69,6 +80,17 @@ var compiledChains = []ChainPolicy{
   Registry:"0x1a6610cc7dd0d0f42e22c3608e025d891065814c",
   SourceRegistry:"0x51e3b684ed61fc88083497e475825a6cecaf21f5",
   SourceActivationBlock:517836903},
+ // BSC deployed on 2026-10-29. Registry receipt d7258302...,
+ // SourceRegistry receipt e1b3a5c1... at RPC-native block 130525341.
+ // RPC witness independence, finalized-head and log-history checks must still
+ // pass live production preflight before validator activation.
+ {Name:"bsc",ChainID:56,Domain:56,Finality:FinalityFinalized,
+  VerifierFormat:"eip2537",
+  RPCURLs:[]string{"https://bsc-rpc.publicnode.com","https://bsc.drpc.org","https://bnb.api.onfinality.io/public"},
+  IndependentOperatorIDs:[]string{"publicnode","drpc","onfinality"},
+  Registry:"0x70f5752326735b31641f21d174ba035e904db93c",
+  SourceRegistry:"0x14d5d33a65a39f96665ed631b04fecf357bcb576",
+  SourceActivationBlock:130525341},
 }
 
 func validatePolicy(p ChainPolicy) error {
@@ -77,7 +99,7 @@ func validatePolicy(p ChainPolicy) error {
   return fmt.Errorf("invalid compiled XITA chain identity: %q",p.Name)
  }
  // XGR's native verified data source deliberately has no RPC addresses.
- // L2 chains retain 3+ endpoints and two independent operators.
+ // All external chains retain 3+ endpoints and two independent operators.
  if p.ChainID==1643 {
   if len(p.RPCURLs)!=0||len(p.IndependentOperatorIDs)!=0 {
    return fmt.Errorf("XGR native IBFT mode must not contain external RPC endpoints")
@@ -101,7 +123,7 @@ func validatePolicy(p ChainPolicy) error {
   }
   seen[endpoint]=true
  }
- // On Base/Arbitrum, independent operators are mandatory; on XGR there
+ // On external chains, independent operators are mandatory; on XGR there
  // are no remote operators because each validator reads its own IBFT chain.
  if len(operators)<2 && p.ChainID!=1643 {
   return fmt.Errorf("at least two independent Interchain RPC operators required for %s",p.Name)
@@ -119,16 +141,32 @@ func validatePolicy(p ChainPolicy) error {
   if p.Name!="arbitrum"||p.Finality!=FinalitySafe||p.VerifierFormat!="eip2537" {
    return fmt.Errorf("inconsistent Arbitrum finality policy")
   }
+ case 56:
+  if p.Name!="bsc"||p.Finality!=FinalityFinalized||p.VerifierFormat!="eip2537" {
+   return fmt.Errorf("inconsistent BSC finality policy")
+  }
  default:
   return fmt.Errorf("unsupported chain %d: new finality adapter required",p.ChainID)
  }
- if (p.Registry=="")!=(p.SourceRegistry=="") {
+ // A compiled release with documented deployments never permits zero
+ // placeholders, even on BSC. A partial or accidentally erased binding
+ // must fail closed instead of silently deactivating a validator worker.
+ if strings.EqualFold(p.Registry,ZeroRegistryAddress)||
+  strings.EqualFold(p.SourceRegistry,ZeroRegistryAddress){
+  return fmt.Errorf("zero-address Registry placeholder is not permitted on %s",p.Name)
+ }
+ registryBound:=hasDeployedRegistry(p.Registry)
+ sourceBound:=hasDeployedRegistry(p.SourceRegistry)
+ if registryBound!=sourceBound {
   return fmt.Errorf("incomplete XITA deployment bindings for %s",p.Name)
  }
- if p.Registry==""&&p.SourceActivationBlock!=0 {
+ if !registryBound {
+  return fmt.Errorf("missing reviewed deployment bindings for %s",p.Name)
+ }
+ if !registryBound&&p.SourceActivationBlock!=0 {
   return fmt.Errorf("unbound XITA registry activation height for %s",p.Name)
  }
- if p.Registry!=""&&p.SourceActivationBlock==0 {
+ if registryBound&&p.SourceActivationBlock==0 {
   return fmt.Errorf("missing RPC-native deployment height for %s",p.Name)
  }
  return nil
@@ -158,13 +196,16 @@ func Policy(name string) (ChainPolicy,error) {
 }
 
 // ActivePolicies returns only fully receipt-pinned Direct-BLS deployments.
-// v3.3.2 activates the three reviewed chains; Polygon has no binding.
+// v3.4.1 includes the fully receipt-pinned BSC policy alongside the three
+// existing networks. Each validator still requires explicit operational rollout.
 // This config enables validator workers, NOT token routes or user transfers.
 func ActivePolicies() ([]ChainPolicy,error) {
  out:=make([]ChainPolicy,0,len(compiledChains))
  for _,p:=range compiledChains {
   if err:=validatePolicy(p);err!=nil{return nil,err}
-  if p.Registry!=""&&p.SourceRegistry!="" {out=append(out,p)}
+  if hasDeployedRegistry(p.Registry)&&hasDeployedRegistry(p.SourceRegistry) {
+   out=append(out,p)
+  }
  }
  return out,nil
 }

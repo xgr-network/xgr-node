@@ -6,6 +6,7 @@ import (
  "net/http"
  "net/http/httptest"
  "strings"
+ "sync/atomic"
  "testing"
 
  "github.com/stretchr/testify/require"
@@ -105,4 +106,48 @@ func TestReceiptMustMatchFinalizedCanonicalBlockHash(t *testing.T) {
  receipt.BlockHash[0]=0x11
  receipt.BlockNumber=78
  require.Error(t,verifyFinalizedReceipt(client,src,receipt))
+}
+
+func TestBSCV341FinalizedHeadRequiredWithoutSafeFallback(t *testing.T) {
+ var unsupported,wrongCanonical atomic.Bool
+ server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  var req struct{ID json.RawMessage `json:"id"`;Method string `json:"method"`;Params []json.RawMessage `json:"params"`}
+  require.NoError(t,json.NewDecoder(r.Body).Decode(&req))
+  w.Header().Set("Content-Type","application/json")
+  if req.Method!="eth_getBlockByNumber"{t.Errorf("unexpected BSC RPC %s",req.Method);return}
+  var tag string
+  require.NotEmpty(t,req.Params)
+  require.NoError(t,json.Unmarshal(req.Params[0],&tag))
+  if tag!="finalized"&&tag!="0x8a" {
+   t.Errorf("BSC finality must query finalized or its numeric canonical block: %s",tag)
+   return
+  }
+  if tag=="finalized"&&unsupported.Load(){
+   _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"finalized not supported"}}`,req.ID)
+   return
+  }
+  hash:="0x"+strings.Repeat("1",64)
+  if tag=="0x8a"&&wrongCanonical.Load(){hash="0x"+strings.Repeat("2",64)}
+  _,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"result":%s}`,req.ID,testFinalityBlock(138,hash))
+ }))
+ defer server.Close()
+ client,err:=jsonrpc.NewClient(server.URL)
+ require.NoError(t,err)
+ d:=&Destination{Name:"bsc",ChainID:56,Domain:56,RPCURL:server.URL}
+ head,err:=finalizedILNHead(client,d)
+ require.NoError(t,err)
+ require.Equal(t,uint64(138),head)
+ receipt:=&ethgo.Receipt{Status:1,BlockNumber:139,BlockHash:ethgo.Hash{1}}
+ require.ErrorContains(t,verifyFinalizedReceipt(client,d,receipt),"beyond chain finality")
+ unsupported.Store(true)
+ _,err=finalizedILNHead(client,d)
+ require.Error(t,err,"unsupported finalized must fail closed")
+ unsupported.Store(false)
+ wrongCanonical.Store(true)
+ _,err=finalizedILNHead(client,d)
+ require.ErrorContains(t,err,"hash")
+ wrongCanonical.Store(false)
+ d.Domain=1
+ _,err=finalizedILNHead(client,d)
+ require.ErrorContains(t,err,"domain mismatch")
 }

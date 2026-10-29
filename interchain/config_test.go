@@ -33,7 +33,7 @@ func TestV332HasReviewedSignerBindings(t *testing.T) {
  }
  active,err:=ActivePolicies()
  require.NoError(t,err)
- require.Len(t,active,3)
+ require.Len(t,active,4)
  _,err=Policy("polygon")
  require.Error(t,err)
 }
@@ -69,4 +69,58 @@ func TestXGRFirstPartyRPCsAreNotIndependentWitnesses(t *testing.T) {
   operators[p.IndependentOperatorIDs[i]]=struct{}{}
  }
  require.Empty(t,operators)
+}
+
+func TestV341BSCReceiptPinnedAndPolicyActive(t *testing.T) {
+ p,err:=Policy("bsc")
+ require.NoError(t,err)
+ require.Equal(t,uint64(56),p.ChainID)
+ require.Equal(t,uint32(56),p.Domain)
+ require.Equal(t,FinalityFinalized,p.Finality)
+ require.Equal(t,"eip2537",p.VerifierFormat)
+ require.Equal(t,"0x70f5752326735b31641f21d174ba035e904db93c",p.Registry)
+ require.Equal(t,"0x14d5d33a65a39f96665ed631b04fecf357bcb576",p.SourceRegistry)
+ require.Equal(t,uint64(130525341),p.SourceActivationBlock)
+ require.Len(t,p.RPCURLs,3)
+ require.Len(t,p.IndependentOperatorIDs,3)
+ operators:=map[string]bool{}
+ for _,operator:=range p.IndependentOperatorIDs {operators[operator]=true}
+ require.GreaterOrEqual(t,len(operators),2)
+ active,err:=ActivePolicies()
+ require.NoError(t,err)
+ require.Len(t,active,4)
+ require.Equal(t,uint64(56),active[3].ChainID)
+}
+
+func TestV341BSCBindingAndFinalityPolicyFailClosed(t *testing.T) {
+ p,err:=Policy("bsc")
+ require.NoError(t,err)
+ p.Finality=FinalitySafe
+ require.ErrorContains(t,validatePolicy(p),"finality")
+ p,err=Policy("bsc")
+ require.NoError(t,err)
+ p.SourceRegistry=ZeroRegistryAddress
+ require.ErrorContains(t,validatePolicy(p),"placeholder")
+ p.SourceRegistry="0x2222222222222222222222222222222222222222"
+ p.SourceActivationBlock=0
+ require.ErrorContains(t,validatePolicy(p),"height")
+ p.SourceActivationBlock=100
+ require.NoError(t,validatePolicy(p),"fully bound reviewed policy structure")
+ p,err=Policy("bsc")
+ require.NoError(t,err)
+ p.SourceRegistry=ZeroRegistryAddress
+ p.Registry=ZeroRegistryAddress
+ p.SourceActivationBlock=0
+ require.ErrorContains(t,validatePolicy(p),"placeholder")
+ p,err=Policy("bsc")
+ require.NoError(t,err)
+ p.RPCURLs=append([]string(nil),p.RPCURLs...)
+ p.RPCURLs[0]="http://untrusted.example.invalid"
+ require.Error(t,validatePolicy(p))
+ base,err:=Policy("base")
+ require.NoError(t,err)
+ base.Registry=ZeroRegistryAddress
+ base.SourceRegistry=ZeroRegistryAddress
+ base.SourceActivationBlock=0
+ require.ErrorContains(t,validatePolicy(base),"placeholder")
 }
