@@ -33,7 +33,7 @@ func TestV332HasReviewedSignerBindings(t *testing.T) {
  }
  active,err:=ActivePolicies()
  require.NoError(t,err)
- require.Len(t,active,3)
+ require.Len(t,active,4)
  _,err=Policy("polygon")
  require.Error(t,err)
 }
@@ -71,7 +71,7 @@ func TestXGRFirstPartyRPCsAreNotIndependentWitnesses(t *testing.T) {
  require.Empty(t,operators)
 }
 
-func TestV341BSCKnownWithExplicitZeroAddressPlaceholdersButInactive(t *testing.T) {
+func TestV341BSCReceiptPinnedAndPolicyActive(t *testing.T) {
  p,err:=Policy("bsc")
  require.NoError(t,err)
  require.Equal(t,uint64(56),p.ChainID)
