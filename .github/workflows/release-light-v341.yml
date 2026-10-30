@@ -54,11 +54,18 @@ jobs:
         with:
           go-version: '1.23.x'
           cache: true
-      - name: Full and repeated Direct-BLS regression
+      # Interchain-only light release. Full E2E, PoS, consensus and EEST
+      # suites belong to the full-release workflow, not this patch.
+      - name: Direct-BLS and Interchain light-release regressions
+        shell: bash
         run: |
           set -euo pipefail
-          go test -count=1 -timeout 45m ./...
-          go test -count=3 -timeout 15m ./interchain/... ./consensus/ibft/interchain ./jsonrpc
+          go test -count=3 -timeout 12m ./interchain/... ./consensus/ibft/interchain ./jsonrpc
+      - name: BSC v3.4.1 bindings and finalized-only fail-closed regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=5 -timeout 5m ./interchain ./interchain/evm -run '^(TestV341|TestBSCV341)'
       - name: Build versioned immutable candidate
         shell: bash
         run: |
@@ -66,11 +73,15 @@ jobs:
           mkdir -p dist
           COMMIT="$(git rev-parse --short HEAD)"
           TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          PKG=github.com/xgr-network/xgrchain/versioning
+          PKG="$(go list -m)/versioning"
           go build -trimpath -o dist/xgrchain-v3.4.1-linux-amd64 \
             -ldflags "-X ${PKG}.Version=v3.4.1 -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=XGR3.0 -X ${PKG}.BuildTime=${TIME}" .
           chmod 755 dist/xgrchain-v3.4.1-linux-amd64
-          ./dist/xgrchain-v3.4.1-linux-amd64 version
+          VERSION_OUTPUT="$(./dist/xgrchain-v3.4.1-linux-amd64 version)"
+          printf '%s\n' "$VERSION_OUTPUT"
+          grep -Fq 'Release version' <<< "$VERSION_OUTPUT"
+          grep -Fq 'v3.4.1' <<< "$VERSION_OUTPUT"
+          grep -Fq "$COMMIT" <<< "$VERSION_OUTPUT"
           printf '%s\n' v3.4.1 > dist/version.txt
           git rev-parse HEAD > dist/commit.txt
           (cd dist && sha256sum xgrchain-v3.4.1-linux-amd64 version.txt commit.txt > sha256sums.txt)
