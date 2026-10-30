@@ -381,7 +381,7 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
             continue
         }
         w.mu.Lock();route:=w.routes[vote.Route];w.mu.Unlock()
-        if route==nil{w.removeILNLocalVote(hash);continue}
+        if route==nil{continue}
         dest:=w.destinations[route.Destination]
         if dest==nil{continue}
         set,err:=getILNValidatorSet(dest)
@@ -393,10 +393,13 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
             continue
         }
         if set.SetID!=payload.SetID{
-            w.removeILNLocalVote(hash)
             if err:=w.signDirectILNMessage(route,payload.MessageID,payload.SourceBlockNumber);err!=nil{
                 w.logger.Debug("Direct-BLS message awaits current validator set",
                   "route",route.Name,"err",err)
+            }else{
+                // Successor is persisted by the normal signing path before
+                // the obsolete-set vote can be removed.
+                w.removeILNLocalVote(hash)
             }
             continue
         }

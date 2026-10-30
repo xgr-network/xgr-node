@@ -2,6 +2,7 @@ package jsonrpc
 
 import (
  "encoding/json"
+ "fmt"
  "os"
  "path/filepath"
  "strings"
@@ -158,4 +159,14 @@ func TestILNUnknownCanonicalRouteCreatesHintNotSigningAdmission(t *testing.T) {
  require.NoError(t,err,"same hint is idempotent")
  _,err=ep.RequestILNQuorum("iln_042161_1643_"+strings.Repeat("f",64),quorumTestMessage,123)
  require.Error(t,err)
+}
+
+func TestF32UnknownRouteDirectoryCapacityPreservesExistingRequests(t *testing.T){
+ dir:=t.TempDir()
+ base:=filepath.Join(dir,"interchain","iln","quorum-requests")
+ for i:=0;i<maxUnverifiedILNRouteDirs;i++{
+  require.NoError(t,os.MkdirAll(filepath.Join(base,fmt.Sprintf("unverified-%03d",i)),0o770))
+ }
+ require.NoError(t,checkUnverifiedILNRequestCapacity(dir,"unverified-000"))
+ require.ErrorContains(t,checkUnverifiedILNRequestCapacity(dir,"new-unknown-route"),"capacity")
 }

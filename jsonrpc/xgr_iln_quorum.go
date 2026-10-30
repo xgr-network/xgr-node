@@ -6,12 +6,46 @@ import (
  "os"
  "path/filepath"
  "strings"
+ "sync"
  "time"
 
  evmInterchain "github.com/xgr-network/xgr-node/interchain/evm"
 )
 
 const ilnQuorumHintLease = 15*time.Minute
+const maxUnverifiedILNRouteDirs = 128
+
+// Only unauthenticated, not-yet-cataloged RPC admissions use this lock.
+// Known routes and their transfer/recovery path retain their old behavior.
+// The worker independently validates source registry bindings before signing.
+var unverifiedILNAdmissionMu sync.Mutex
+
+// Every unverified route already has a per-route 128-message cap. A global
+// directory cap now also bounds its accumulated footprint across hint churn.
+// This counts persisted directories, including stale ones until the existing
+// maintenance worker safely expires their unverified jobs. Verified routes
+// are excluded; neither their requests nor any BLS evidence is removed.
+func checkUnverifiedILNRequestCapacity(dataDir,route string)error{
+ base:=filepath.Join(dataDir,"interchain","iln")
+ dirs,err:=os.ReadDir(filepath.Join(base,"quorum-requests"))
+ if os.IsNotExist(err){return nil}
+ if err!=nil{return err}
+ count:=0
+ present:=false
+ for _,d:=range dirs{
+  if !d.IsDir(){continue}
+  name:=d.Name()
+  if name==route{present=true}
+  if info,e:=os.Stat(filepath.Join(base,"cursors",name+".cursor"));e==nil&&info.Mode().IsRegular(){continue}
+  if info,e:=os.Stat(filepath.Join(base,"registered-routes",name+".route"));e==nil&&info.Mode().IsRegular(){continue}
+  count++
+ }
+ if count>=maxUnverifiedILNRouteDirs&&!present{
+  return fmt.Errorf("ILN unverified route request capacity reached; retry after hint expiry")
+ }
+ return nil
+}
+
 
 // ILN quorum requests are hints only. They contain NO caller-provided payload
 // or signatures. The validator worker reconstructs and verifies all evidence.
@@ -49,6 +83,13 @@ func (x *xgrEndpoint) RequestILNQuorum(route, messageID string, sourceBlockNumbe
  cursor, cursorErr := os.Stat(filepath.Join(x.dataDir,"interchain","iln","cursors",normalized+".cursor"))
  registered, routeErr := os.Stat(filepath.Join(x.dataDir,"interchain","iln","registered-routes",normalized+".route"))
  if (cursorErr!=nil||!cursor.Mode().IsRegular()) && (routeErr!=nil||!registered.Mode().IsRegular()) {
+  // Serialize unverified hint + request admission so concurrent RPC calls
+  // cannot evade the global on-disk directory bound.
+  unverifiedILNAdmissionMu.Lock()
+  defer unverifiedILNAdmissionMu.Unlock()
+  if err:=checkUnverifiedILNRequestCapacity(x.dataDir,normalized);err!=nil{
+   return nil,err
+  }
   // An unknown deterministic route is only a discovery hint. Admission to
   // the quorum queue is NOT permission to sign: the validator worker must
   // independently verify the canonical source registry before processing it.
