@@ -138,13 +138,24 @@ func observerHexLower(s string)bool{
  return true
 }
 
+// Deterministic rotation lets every configured route lead a retry poll even
+// when earlier routes exhaust the shared per-poll budget.
+func observerRetryRouteStart(count int,at time.Time)int{
+ if count<=0{return 0}
+ return int((at.Unix()/int64(observerRetryMinInterval/time.Second))%int64(count))
+}
 // Fair bounded replay: at most two messages per route and 24 per source poll.
 // Failed records are rotated by mtime, never discarded, re-signed blindly,
 // or retried at 2s RPC polling frequency.
 func (w *Worker) retryObserverSource(source *evm.Destination,routes []observerRoute)error{
  if source==nil{return fmt.Errorf("missing observer retry source")}
  processed:=0
- for _,route:=range routes{
+ // F-04: rotate the bounded source budget across configured routes. A
+ // recurring backlog in the first twelve routes must not starve a later
+ // route indefinitely. The order is stable within each 30s retry interval.
+ start:=observerRetryRouteStart(len(routes),time.Now())
+ for step:=0;step<len(routes);step++{
+  route:=routes[(start+step)%len(routes)]
   if processed>=observerRetryMaxPerPoll{break}
   if route.Route==nil{return fmt.Errorf("missing observer retry route")}
   dir,err:=w.observerRetryDir(source.Name,route.Route.Name)
@@ -157,7 +168,7 @@ func (w *Worker) retryObserverSource(source *evm.Destination,routes []observerRo
   for _,item:=range files{
    if item.IsDir()||!strings.HasSuffix(item.Name(),".json"){continue}
    info,e:=item.Info()
-   if e!=nil{return e}
+   if e!=nil{continue}
    pending=append(pending,candidate{name:item.Name(),modified:info.ModTime()})
   }
   sort.Slice(pending,func(i,j int)bool{
@@ -170,13 +181,11 @@ func (w *Worker) retryObserverSource(source *evm.Destination,routes []observerRo
    if time.Since(item.modified)<observerRetryMinInterval{continue}
    path:=filepath.Join(dir,item.name)
    raw,err:=os.ReadFile(path)
-   if err!=nil{return err}
-   if len(raw)==0||len(raw)>observerRetryMaxBytes{return fmt.Errorf("invalid observer retry journal record")}
+   if err!=nil{continue}
+   if len(raw)==0||len(raw)>observerRetryMaxBytes{continue}
    var entry observerRetryRecord
-   if err=json.Unmarshal(raw,&entry);err!=nil{return fmt.Errorf("corrupt observer retry journal: %w",err)}
-   if !validObserverRetryRecord(entry,route,source,item.name){
-    return fmt.Errorf("observer retry journal route/message identity mismatch")
-   }
+   if err=json.Unmarshal(raw,&entry);err!=nil{continue}
+   if !validObserverRetryRecord(entry,route,source,item.name){continue}
    processed++
    perRoute++
    err=observerSignMessage(w,route.Route,types.StringToHash(entry.MessageID),entry.SourceBlock)

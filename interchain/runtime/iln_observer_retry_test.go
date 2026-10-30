@@ -5,6 +5,7 @@ import (
  "math/big"
  "os"
  "path/filepath"
+ "strings"
  "testing"
  "time"
 
@@ -73,5 +74,51 @@ func TestObserverRetryRejectsCorruptJournalWithoutSigning(t *testing.T){
   t.Fatal("unverified/invalid retry must never be signed")
   return nil
  }
- require.ErrorContains(t,w.retryObserverSource(source,[]observerRoute{route}),"identity mismatch")
+ require.NoError(t,w.retryObserverSource(source,[]observerRoute{route}))
+ _,err=os.Stat(path);require.NoError(t,err,"invalid evidence must not be discarded")
+}
+
+func TestObserverRetryRouteRotationReachesLateRoutes(t *testing.T){
+ const routes=13
+ seen:=map[int]bool{}
+ first:=time.Unix(0,0)
+ for tick:=0;tick<routes;tick++{
+  start:=observerRetryRouteStart(routes,first.Add(time.Duration(tick)*observerRetryMinInterval))
+  require.GreaterOrEqual(t,start,0)
+  require.Less(t,start,routes)
+  seen[start]=true
+ }
+ require.Len(t,seen,routes,"all routes must have a first-served poll")
+ require.Equal(t,0,observerRetryRouteStart(0,first))
+}
+
+func TestF04CorruptRouteDoesNotStarveHealthySibling(t *testing.T){
+ w,source,bad,op:=retryFixture(t)
+ bad.Route.Name="broken"
+ require.NoError(t,w.queueObserverRetry(source,bad,op))
+ badDir,err:=w.observerRetryDir(source.Name,bad.Route.Name)
+ require.NoError(t,err)
+ badPath:=filepath.Join(badDir,strings.TrimPrefix(op.MessageID.String(),"0x")+".json")
+ require.NoError(t,os.WriteFile(badPath,[]byte("{}"),0o660))
+ healthy:=bad
+ healthy.Route=&evm.CheckpointRoute{Name:"healthy",RouteID:bad.Route.RouteID}
+ require.NoError(t,w.queueObserverRetry(source,healthy,op))
+ healthyDir,err:=w.observerRetryDir(source.Name,healthy.Route.Name)
+ require.NoError(t,err)
+ healthyPath:=filepath.Join(healthyDir,strings.TrimPrefix(op.MessageID.String(),"0x")+".json")
+ old:=time.Now().Add(-time.Minute)
+ require.NoError(t,os.Chtimes(badPath,old,old))
+ require.NoError(t,os.Chtimes(healthyPath,old,old))
+ original:=observerSignMessage
+ defer func(){observerSignMessage=original}()
+ attempts:=0
+ observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64)error{
+  require.Equal(t,"healthy",r.Name)
+  attempts++
+  return nil
+ }
+ require.NoError(t,w.retryObserverSource(source,[]observerRoute{bad,healthy}))
+ require.Equal(t,1,attempts)
+ _,err=os.Stat(badPath);require.NoError(t,err)
+ _,err=os.Stat(healthyPath);require.True(t,os.IsNotExist(err))
 }

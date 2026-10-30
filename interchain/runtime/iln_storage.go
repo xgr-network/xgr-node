@@ -77,9 +77,9 @@ func (w *Worker) pruneILNQuorumCaches() {
    }
    delivered,err:=getILNMessageDelivered(destination,snapshot.Route.DestinationRouter,hash)
    if err!=nil{continue}
-   if !delivered {
-    if age<ilnPendingQuorumCacheRetention||!w.canRegenerateILNQuorum(route,aliasPath,hash){continue}
-   }
+   // F-20: proof of possible reconstruction is NOT a durable successor.
+   // Retain any undelivered attestation until completion is authenticated.
+   if !delivered {continue}
    // No bridge custody data is needed locally after successful on-chain
    // delivery; chain logs and receipts remain independently auditable.
    if err:=os.RemoveAll(filepath.Join(dir,messageID));err!=nil{continue}
@@ -134,6 +134,36 @@ func (w *Worker) pruneExpiredILNGovernance() {
  }
 }
 
+// F-32: bounded reclamation of expired, unverified quorum requests for
+// routes not admitted to the active registry. Recent requests and all
+// attestation/vote archives remain untouched.
+func (w *Worker) pruneExpiredUnknownILNRequests(){
+ base:=filepath.Join(w.ilnDir(),"quorum-requests")
+ dirs,err:=os.ReadDir(base)
+ if err!=nil{return}
+ remaining:=ilnCleanupBudget
+ for _,dir:=range dirs{
+  if remaining<=0{break}
+  if !dir.IsDir(){continue}
+  w.mu.Lock()
+  _,known:=w.routes[dir.Name()]
+  w.mu.Unlock()
+  if known{continue}
+  path:=filepath.Join(base,dir.Name())
+  entries,e:=os.ReadDir(path)
+  if e!=nil{continue}
+  for _,entry:=range entries{
+   if remaining<=0{break}
+   if entry.IsDir()||!strings.HasSuffix(entry.Name(),".json"){continue}
+   info,e:=entry.Info()
+   if e!=nil||time.Since(info.ModTime())<maxILNQuorumHintAge{continue}
+   if os.Remove(filepath.Join(path,entry.Name()))==nil{remaining--}
+  }
+  // Remove empty directories only; never recurse into unknown storage.
+  _=os.Remove(path)
+ }
+}
+
 func (w *Worker) storageMaintenanceLoop() {
  defer w.wg.Done()
  ticker:=time.NewTicker(ilnCleanupInterval)
@@ -143,6 +173,7 @@ func (w *Worker) storageMaintenanceLoop() {
   case <-w.closeCh: return
   case <-ticker.C:
    w.pruneILNQuorumCaches()
+   w.pruneExpiredUnknownILNRequests()
    w.pruneExpiredILNGovernance()
    w.pruneCompletedILNControlResults()
   }
