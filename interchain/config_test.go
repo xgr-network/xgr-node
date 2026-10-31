@@ -33,7 +33,7 @@ func TestV332HasReviewedSignerBindings(t *testing.T) {
  }
  active,err:=ActivePolicies()
  require.NoError(t,err)
- require.Len(t,active,4)
+ require.Len(t,active,5)
  _,err=Policy("polygon")
  require.Error(t,err)
 }
@@ -88,7 +88,7 @@ func TestV341BSCReceiptPinnedAndPolicyActive(t *testing.T) {
  require.GreaterOrEqual(t,len(operators),2)
  active,err:=ActivePolicies()
  require.NoError(t,err)
- require.Len(t,active,4)
+ require.Len(t,active,5)
  require.Equal(t,uint64(56),active[3].ChainID)
 }
 
