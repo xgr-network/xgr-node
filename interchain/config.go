@@ -91,6 +91,14 @@ var compiledChains = []ChainPolicy{
   Registry:"0x70f5752326735b31641f21d174ba035e904db93c",
   SourceRegistry:"0x14d5d33a65a39f96665ed631b04fecf357bcb576",
   SourceActivationBlock:130525341},
+ // OP Mainnet: verified receipt bindings; RPC-native L2 source activation.
+ {Name:"optimism",ChainID:10,Domain:10,Finality:FinalitySafe,
+  VerifierFormat:"eip2537",
+  RPCURLs:[]string{"https://mainnet.optimism.io","https://optimism-rpc.publicnode.com","https://optimism.drpc.org","https://optimism.gateway.tenderly.co"},
+  IndependentOperatorIDs:[]string{"optimism-official","publicnode","drpc","tenderly"},
+  Registry:"0x70f5752326735b31641f21d174ba035e904db93c",
+  SourceRegistry:"0x14d5d33a65a39f96665ed631b04fecf357bcb576",
+  SourceActivationBlock:158929283},
 }
 
 func validatePolicy(p ChainPolicy) error {
