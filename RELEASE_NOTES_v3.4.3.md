@@ -1,23 +1,25 @@
-# XGR Node v3.4.3 — OP Mainnet Direct-BLS interchain light release (preparation only)
+# XGR Node v3.4.3 — OP Mainnet Interchain light release
 
-**Status: PREDEPLOY / NOT RELEASED / NOT DEPLOYED.** No release tag, node upgrade, or validator activation is authorized by this branch.
+**Status: release candidate, not tagged or deployed.** Intended baseline: `v3.4.2`. No consensus, PoS, genesis or general node changes.
 
-## Proposed chain policy
+## Added chain
 
-- OP Mainnet chain/domain 10, native ETH, EIP-2537 Direct-BLS.
-- Compiled policy requires `ethereum-safe` with canonical numbered-block hash agreement, with no latest/confirmation fallback, analogous to Base.
-- Four proposed HTTPS RPC endpoints from independent operators (OP official, PublicNode, dRPC, Tenderly). Live witness independence, archival log support, and `safe` tag/positive-and-negative BLS precompile vectors must be proven before use.
-- **Do not activate** OP Mainnet while ValidatorRegistry/SourceRegistry addresses or SourceRegistry receipt-native deployment block are unknown.
-- The `ProposedOptimismPolicy` helper is deliberately absent from active `compiledChains`. Fail-closed unit tests prove it cannot be used by validator workers.
+- OP Mainnet: chain ID 10, domain 10, native ETH, EIP-2537 Direct-BLS, finality `ethereum-safe` (no latest fallback).
+- Four proposed distinct operators: OP official, PublicNode, dRPC, Tenderly. Verify independent `safe` headers and precompiles before operator rollout.
+- Registry receipts have been recorded in `xgr-network/xgr-interchain/main` after on-chain deployment:
+  - ValidatorRegistry `0x70f5752326735b31641f21d174ba035e904db93c`, receipt `0x93178b2146f22a362febb59b03fca3df4cf8599e07ffd011b9adcba76918b582`, OP L2 block 158929035.
+  - SourceRegistry `0x14d5d33a65a39f96665ed631b04fecf357bcb576`, receipt `0xee77ab2fdde50b697e950c97322ffcf0fea81b9364458e70e049db8a10f896d4`, OP RPC-native L2 block **158929283**.
+- These hexadecimal contract addresses are the same as those recorded on BSC, but are separate deployments on different EVM chains. Source activation heights must not be confused.
 
-## Completion gate for the actual 3.4.3 light release
+## Release safeguards
 
-1. Merge the declarative OP chain/bootstrap config into xgr-interchain main; independently check 4 RPC chain IDs, `safe` block hashes, and EIP-2537 vector responses on OP Mainnet.
-2. Have operator review initial Registry reserves and source-native fee. Admin deploys the missing EIP-2537 verifier, RegistryV3, ISM, transport, router deployers, Factory, Factory-owned SourceRegistry and optional ExecutionGateway via MetaMask.
-3. Admin must publish real transaction receipts, runtime code hashes, exact SourceRegistry creation height and canonical contract binding proofs into `deployments/chains/optimism.json`.
-4. Replace this non-executable candidate with an actual `compiledChains` entry only after verifying the immutable receipt-backed Registry and SourceRegistry values and RPC-native activation block.
-5. Add tests for `Policy("optimism")`, `LoadAll` count five, finalized/safe header agreement, independent 2-operator witness quorum, duplicate/incorrect proofs and graceful RPC failures. Preserve currently deployed chain policies exactly.
-6. Add `release-light-v343.yml` with permitted interchain-only changes, tests, signed versioned artifacts and existing v3.4.2 baseline. Node/PoS/consensus sources remain out of scope.
-7. Explicitly roll out the new binary to validators, verify quorum and source scanning, then perform small XGR ↔ OP Mainnet transfers and an external→XGR→external two-hop regression.
+- Pin both contract addresses and **OP RPC-native** source activation block directly in the node's compiled Interchain policy; no zero addresses or runtime ENV overrides.
+- Keep XGRChain, Base, Arbitrum and BSC values unchanged.
+- Validate chain identity, `safe` finality without confirmation fallback, canonical safe block hash, independently operated RPC witnesses and EIP-2537 precompile responses before enabling signing.
+- Run repeated focused `./interchain/... ./consensus/ibft/interchain ./jsonrpc` tests, plus targeted OP policy/negative tests.
+- Publish versioned amd64 binary with SHA-256 manifest, commit hash and immutable `v3.4.3` release tag from a reviewed `XGR3.0` commit only.
+- No auto rollout: operator updates each validator and verifies quorum, source-observer catch-up, and a small direct + two-hop transfer afterwards.
 
-**Never treat a prepared PR or zero-address placeholder as an installed production contract.**
+## Important
+
+Publicly documented on-chain deployment is not the same as a running validator release. Do not start OP validator jobs before release and operator preflight.
