@@ -16,7 +16,7 @@ func TestOptimismV343PredeployMustRemainInactive(t *testing.T){
  require.Equal(t,ZeroRegistryAddress,p.Registry)
  require.Equal(t,ZeroRegistryAddress,p.SourceRegistry)
  require.Zero(t,p.SourceActivationBlock)
- require.ErrorContains(t,validatePolicy(p),"placeholder")
+ require.ErrorContains(t,validatePolicy(p),"unsupported chain 10")
  _,err:=Policy("optimism")
  require.Error(t,err,"undocumented OP Mainnet MUST NOT enter the active policy")
  _,err=PolicyForChainID(10)
