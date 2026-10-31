@@ -63,6 +63,7 @@ func TestV343OptimismFailClosedOnUnreviewedIdentityFinalityOrRegistry(t *testing
  require.ErrorContains(t,validatePolicy(p),"finality")
  p,err=Policy("optimism")
  require.NoError(t,err)
+ p.RPCURLs=append([]string(nil),p.RPCURLs...)
  p.RPCURLs[0]="http://untrusted.example.invalid"
  require.ErrorContains(t,validatePolicy(p),"RPC")
  p,err=Policy("optimism")
