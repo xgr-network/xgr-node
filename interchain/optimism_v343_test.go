@@ -60,7 +60,7 @@ func TestV343OptimismFailClosedOnUnreviewedIdentityFinalityOrRegistry(t *testing
  p,err=Policy("optimism")
  require.NoError(t,err)
  p.ChainID=56
- require.ErrorContains(t,validatePolicy(p),"finality")
+ require.ErrorContains(t,validatePolicy(p),"identity")
  p,err=Policy("optimism")
  require.NoError(t,err)
  p.RPCURLs=append([]string(nil),p.RPCURLs...)
