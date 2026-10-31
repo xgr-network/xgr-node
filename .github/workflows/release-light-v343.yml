@@ -1,0 +1,108 @@
+name: Release Light (XGR v3.4.3 OP Mainnet Direct-BLS)
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: "Reviewed XGR3.0 40-character commit SHA"
+        required: true
+        type: string
+      confirmation:
+        description: "Type RELEASE-v3.4.3 to publish"
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: xgr-v343-light-release
+  cancel-in-progress: false
+jobs:
+  release:
+    if: ${{ github.ref == 'refs/heads/XGR3.0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact reviewed commit, baseline and interchain scope
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/XGR3.0'
+          test "$CONFIRMATION" = 'RELEASE-v3.4.3'
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          git rev-parse -q --verify refs/tags/v3.4.2 >/dev/null
+          git merge-base --is-ancestor "$(git rev-parse v3.4.2)" HEAD
+          if git rev-parse -q --verify refs/tags/v3.4.3 >/dev/null; then
+            echo "v3.4.3 already exists" >&2; exit 1
+          fi
+          git diff --name-only v3.4.2 HEAD > /tmp/v343-changes
+          test -s /tmp/v343-changes
+          if grep -Ev '^(interchain/|jsonrpc/xgr_iln_quorum(_test)?[.]go$|RELEASE_NOTES_v3[.]4[.]3[.]md$|[.]github/workflows/(release-light-v343|release-light-v342|release-light-v341|release-direct-bls-candidate)[.]yml$)' /tmp/v343-changes; then
+            echo "Interchain-only light-release scope exceeded" >&2; exit 1
+          fi
+          test -z "$(git diff --name-only v3.4.2 HEAD -- consensus/ blockchain/ state/ chain/ contracts/ command/)"
+          grep -q '0x70f5752326735b31641f21d174ba035e904db93c' interchain/config.go
+          grep -q '0x14d5d33a65a39f96665ed631b04fecf357bcb576' interchain/config.go
+          grep -q '130525341' interchain/config.go
+          grep -q '158929283' interchain/config.go
+          grep -q '"optimism"' interchain/config.go
+          grep -q '"ethereum-safe"' interchain/config.go || grep -q 'FinalitySafe' interchain/config.go
+          grep -q '"ethereum-finalized"' interchain/config.go || grep -q 'FinalityEthereumFinalized' interchain/config.go
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+      # Interchain-only light release. Full E2E, PoS, consensus and EEST
+      # suites belong to the full-release workflow, not this patch.
+      - name: Direct-BLS and Interchain light-release regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=3 -timeout 12m ./interchain/... ./consensus/ibft/interchain ./jsonrpc
+      - name: OP v3.4.3 safe-only and existing BSC fail-closed regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=5 -timeout 5m ./interchain ./interchain/evm ./interchain/runtime ./jsonrpc -run '^(TestV343|TestV341|TestBSCV341|TestF04|TestF20|TestF32|TestObserverRetry)'
+      - name: Build versioned immutable candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          COMMIT="$(git rev-parse --short HEAD)"
+          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          PKG="$(go list -m)/versioning"
+          go build -trimpath -o dist/xgrchain-v3.4.3-linux-amd64 \
+            -ldflags "-X ${PKG}.Version=v3.4.3 -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Branch=XGR3.0 -X ${PKG}.BuildTime=${TIME}" .
+          chmod 755 dist/xgrchain-v3.4.3-linux-amd64
+          VERSION_OUTPUT="$(./dist/xgrchain-v3.4.3-linux-amd64 version)"
+          printf '%s\n' "$VERSION_OUTPUT"
+          grep -Fq 'Release version' <<< "$VERSION_OUTPUT"
+          grep -Fq 'v3.4.3' <<< "$VERSION_OUTPUT"
+          grep -Fq "$COMMIT" <<< "$VERSION_OUTPUT"
+          printf '%s\n' v3.4.3 > dist/version.txt
+          git rev-parse HEAD > dist/commit.txt
+          (cd dist && sha256sum xgrchain-v3.4.3-linux-amd64 version.txt commit.txt > sha256sums.txt)
+          (cd dist && sha256sum -c sha256sums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xgr-v3.4.3-optimism-light-amd64
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish immutable v3.4.3 release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v3.4.3
+          name: v3.4.3
+          commit: ${{ github.sha }}
+          allowUpdates: false
+          makeLatest: true
+          generateReleaseNotes: false
+          artifacts: dist/*
+          bodyFile: RELEASE_NOTES_v3.4.3.md

@@ -1,8 +1,7 @@
 // Package interchain is the immutable, release-reviewed XITA network policy.
-// v3.4.1 pins receipt-documented BSC deployment bindings for chain/domain 56.
-// XGRChain, Base and Arbitrum retain their verified, receipt-pinned bindings.
-// BSC is eligible for validator workers only after explicit operator rollout.
-// Polygon remains unsupported until separately reviewed.
+// v3.4.3 adds receipt-pinned OP Mainnet chain/domain 10.
+// XGRChain, Base, Arbitrum and BSC preserve their existing bindings.
+// Validator activation requires explicit controlled rollout; Polygon unsupported.
 package interchain
 
 import (
@@ -91,6 +90,14 @@ var compiledChains = []ChainPolicy{
   Registry:"0x70f5752326735b31641f21d174ba035e904db93c",
   SourceRegistry:"0x14d5d33a65a39f96665ed631b04fecf357bcb576",
   SourceActivationBlock:130525341},
+ // OP Mainnet: verified receipt bindings; RPC-native L2 source activation.
+ {Name:"optimism",ChainID:10,Domain:10,Finality:FinalitySafe,
+  VerifierFormat:"eip2537",
+  RPCURLs:[]string{"https://mainnet.optimism.io","https://optimism-rpc.publicnode.com","https://optimism.drpc.org","https://optimism.gateway.tenderly.co"},
+  IndependentOperatorIDs:[]string{"optimism-official","publicnode","drpc","tenderly"},
+  Registry:"0x70f5752326735b31641f21d174ba035e904db93c",
+  SourceRegistry:"0x14d5d33a65a39f96665ed631b04fecf357bcb576",
+  SourceActivationBlock:158929283},
 }
 
 func validatePolicy(p ChainPolicy) error {
@@ -145,6 +152,10 @@ func validatePolicy(p ChainPolicy) error {
   if p.Name!="bsc"||p.Finality!=FinalityFinalized||p.VerifierFormat!="eip2537" {
    return fmt.Errorf("inconsistent BSC finality policy")
   }
+ case 10:
+  if p.Name!="optimism"||p.Finality!=FinalitySafe||p.VerifierFormat!="eip2537" {
+   return fmt.Errorf("inconsistent OP Mainnet finality policy")
+  }
  default:
   return fmt.Errorf("unsupported chain %d: new finality adapter required",p.ChainID)
  }
@@ -196,8 +207,8 @@ func Policy(name string) (ChainPolicy,error) {
 }
 
 // ActivePolicies returns only fully receipt-pinned Direct-BLS deployments.
-// v3.4.1 includes the fully receipt-pinned BSC policy alongside the three
-// existing networks. Each validator still requires explicit operational rollout.
+// v3.4.3 includes OP Mainnet alongside the four receipt-pinned networks.
+// Each validator still requires explicit operational rollout.
 // This config enables validator workers, NOT token routes or user transfers.
 func ActivePolicies() ([]ChainPolicy,error) {
  out:=make([]ChainPolicy,0,len(compiledChains))

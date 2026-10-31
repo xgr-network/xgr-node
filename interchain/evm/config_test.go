@@ -14,7 +14,7 @@ func TestV332CompiledDestinationsHaveReceiptBindings(t *testing.T){
  require.NoError(t,cfg.ValidateSubmission())
  all,err:=LoadAll()
  require.NoError(t,err)
- require.Len(t,all,4)
+ require.Len(t,all,5)
  _,err=Load("polygon")
  require.Error(t,err)
 }
@@ -32,7 +32,7 @@ func TestInterchainEnvironmentCannotOverrideProtocol(t *testing.T){
  require.Equal(t,"https://mainnet.base.org",got.RPCURL)
  all,err:=LoadAll()
  require.NoError(t,err)
- require.Len(t,all,4)
+ require.Len(t,all,5)
 }
 
 func TestV341BSCReceiptPinnedWithFinalizedOnly(t *testing.T) {
@@ -51,6 +51,6 @@ func TestV341BSCReceiptPinnedWithFinalizedOnly(t *testing.T) {
  require.NoError(t,d.ValidateILNRead())
  active,err:=LoadAll()
  require.NoError(t,err)
- require.Len(t,active,4)
+ require.Len(t,active,5)
  require.Equal(t,uint64(56),active[3].ChainID)
 }

@@ -13,5 +13,5 @@ func TestDirectRouteWithoutMerkleOrStaticENV(t *testing.T){
  t.Setenv("XGR_INTERCHAIN_ROUTE_BASE_TO_XGR_DESTINATION","xgr")
  all,err:=LoadAll()
  require.NoError(t,err)
- require.Len(t,all,4)
+ require.Len(t,all,5)
 }
