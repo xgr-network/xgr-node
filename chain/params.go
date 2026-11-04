@@ -27,10 +27,11 @@ var (
 
 // Params are all the set of params for the chain
 type Params struct {
-	Forks          *Forks                 `json:"forks"`
-	ChainID        int64                  `json:"chainID"`
-	Engine         map[string]interface{} `json:"engine"`
-	BlockGasTarget uint64                 `json:"blockGasTarget"`
+	Forks                  *Forks                  `json:"forks"`
+	ChainID                int64                   `json:"chainID"`
+	Engine                 map[string]interface{}  `json:"engine"`
+	BlockGasTarget         uint64                  `json:"blockGasTarget"`
+	StakingBLSPoPMigration *StakingBLSPoPMigration `json:"stakingBlsPoPMigration,omitempty"`
 
 	// XGR: On-chain config registry (loaded from genesis.json -> params.*)
 	EngineRegistryAddress types.Address `json:"engineRegistryAddress,omitempty"`
@@ -48,6 +49,14 @@ type Params struct {
 	BurnContract map[uint64]types.Address `json:"burnContract"`
 	// Destination address to initialize default burn contract with
 	BurnContractDestinationAddress types.Address `json:"burnContractDestinationAddress,omitempty"`
+}
+
+// StakingBLSPoPMigration contains public evidence only. Manifest is the exact
+// canonical JSON emitted by `ibft bls-pop assemble`, embedded as a JSON string.
+// Activation is controlled solely by forks.stakingBlsPoP.block.
+type StakingBLSPoPMigration struct {
+	Manifest string     `json:"manifest"`
+	Digest   types.Hash `json:"digest"`
 }
 
 type AddressListConfig struct {
@@ -114,6 +123,7 @@ const (
 	FeePoolSplit        = "feePoolSplit"
 	// SecurityAccounting jointly activates F1/F2. No production height is implicit.
 	SecurityAccounting = "securityAccounting"
+	StakingBLSPoP      = "stakingBlsPoP"
 )
 
 // Forks is map which contains all forks and their starting blocks from genesis
@@ -158,6 +168,7 @@ func (f *Forks) At(block uint64) ForksInTime {
 		EIP3651:             f.IsActive(EIP3651, block),
 		FeePoolSplit:        f.IsActive(FeePoolSplit, block),
 		SecurityAccounting:  f.IsActive(SecurityAccounting, block),
+		StakingBLSPoP:       f.IsActive(StakingBLSPoP, block),
 	}
 }
 
@@ -210,7 +221,7 @@ type ForksInTime struct {
 	EIP155,
 	QuorumCalcAlignment,
 	TxHashWithType,
-	LondonFix, EIP3860, EIP2929, EIP2930, EIP3651, FeePoolSplit, SecurityAccounting bool
+	LondonFix, EIP3860, EIP2929, EIP2930, EIP3651, FeePoolSplit, SecurityAccounting, StakingBLSPoP bool
 }
 
 // AllForksEnabled should contain all supported forks by current edge version

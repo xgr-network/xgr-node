@@ -3,6 +3,7 @@ package ibft
 import (
 	"github.com/spf13/cobra"
 	"github.com/xgr-network/xgr-node/command/helper"
+	"github.com/xgr-network/xgr-node/command/ibft/blspop"
 	"github.com/xgr-network/xgr-node/command/ibft/candidates"
 	"github.com/xgr-network/xgr-node/command/ibft/interchain"
 	"github.com/xgr-network/xgr-node/command/ibft/join"
@@ -34,6 +35,7 @@ func GetCommand() *cobra.Command {
 
 func registerSubcommands(baseCmd *cobra.Command) {
 	baseCmd.AddCommand(
+		blspop.GetCommand(),
 		status.GetCommand(),
 		snapshot.GetCommand(),
 		propose.GetCommand(),

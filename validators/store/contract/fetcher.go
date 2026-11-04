@@ -139,6 +139,9 @@ func IsEmergencyModeActive(transition *state.Transition) bool {
 
 	eligibleCount := uint64(0)
 	for _, addr := range valAddrs {
+		if transition.ForksInTime().StakingBLSPoP && transition.RequireStakingPoP(addr, readMetaBLSPubKey(transition, addr)) != nil {
+			continue
+		}
 		if !isValidatorActive(transition, addr) {
 			continue
 		}
@@ -180,6 +183,9 @@ func FetchBLSValidatorSelection(transition *state.Transition, _ types.Address) (
 		totalStake := ReadValidatorEffectiveTotalStakeAt(transition, addr, currentBlockNumber(transition))
 		votingStake := ReadValidatorVotingStakeAt(transition, addr, currentBlockNumber(transition))
 		_, blsErr := crypto.UnmarshalBLSPublicKey(blsKey)
+		if blsErr == nil {
+			blsErr = transition.RequireStakingPoP(addr, blsKey)
+		}
 
 		if votingStake.Sign() > 0 && blsErr == nil {
 			emergencyWeighted = append(emergencyWeighted, weightedBLS{addr: addr, stake: votingStake, bls: blsKey})
@@ -229,6 +235,37 @@ func FetchBLSValidatorSelection(transition *state.Transition, _ types.Address) (
 	}
 
 	return &ValidatorSelection{Validators: selected, NoSlash: noSlash}, nil
+}
+
+// RegisteredBLSKeys returns all existing registered keys without eligibility or
+// emergency filtering. Migration coverage must not omit inactive validators.
+func RegisteredBLSKeys(transition *state.Transition) (validators.Validators, error) {
+	lengthRaw := transition.Txn().GetState(staking.AddrStakingContract, types.BytesToHash(big.NewInt(validatorsSlot).Bytes()))
+	length := new(big.Int).SetBytes(lengthRaw[:])
+	if length.BitLen() > 64 || length.Uint64() > 4096 {
+		return nil, fmt.Errorf("registered validator array exceeds migration bound")
+	}
+	set := validators.NewBLSValidatorSet()
+	for _, addr := range readValidators(transition) {
+		if addr == types.ZeroAddress || readStakerValidator(transition, addr) != addr || readStakerPacked(transition, addr).Bit(0) != 1 {
+			return nil, fmt.Errorf("invalid registered validator state")
+		}
+		raw := transition.Txn().GetState(staking.AddrStakingContract, stakerSlotWithOffset(addr, 5))
+		if raw == types.ZeroHash {
+			continue
+		}
+		if new(big.Int).SetBytes(raw[:]).Cmp(big.NewInt(97)) != 0 {
+			return nil, fmt.Errorf("registered BLS key has invalid length")
+		}
+		key := readMetaBLSPubKey(transition, addr)
+		if _, err := crypto.UnmarshalBLSPublicKey(key); err != nil {
+			return nil, err
+		}
+		if err := set.Add(validators.NewBLSValidator(addr, key)); err != nil {
+			return nil, err
+		}
+	}
+	return set, nil
 }
 
 func readValidators(transition *state.Transition) []types.Address {

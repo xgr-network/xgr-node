@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/spf13/cobra"
 	"github.com/umbracle/ethgo"
+	"github.com/umbracle/ethgo/abi"
 	ethgowallet "github.com/umbracle/ethgo/wallet"
 
 	"github.com/xgr-network/xgr-node/command"
@@ -198,7 +199,7 @@ func run(cmd *cobra.Command, _ []string) error {
 
 	// 8) register BLS pubkey if needed
 	if !alreadyRegistered {
-		if err := sendRegisterBLS(relayer, ecdsaKey, blsPub); err != nil {
+		if err := sendRegisterBLS(relayer, ecdsaKey, blsPub, sm); err != nil {
 			outputter.SetError(err)
 			return nil
 		}
@@ -506,7 +507,71 @@ func ensureMethodSelector(methodName, signature string, id []byte) error {
 	return nil
 }
 
-func sendRegisterBLS(relayer txrelayer.TxRelayer, key ethgo.Key, pub []byte) error {
+func sendRegisterBLS(relayer txrelayer.TxRelayer, key ethgo.Key, pub []byte, sm secrets.SecretsManager) error {
+	codeHex, err := relayer.Client().Eth().GetCode(ethgo.Address(staking.AddrStakingContract), ethgo.Latest)
+	if err != nil {
+		return fmt.Errorf("read staking runtime: %w", err)
+	}
+	code, err := hexToBytes(codeHex)
+	if err != nil {
+		return err
+	}
+	legacy, candidate, err := staking.PoPBytecodes()
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(code, candidate) {
+		chainID, err := relayer.Client().Eth().ChainID()
+		if err != nil {
+			return err
+		}
+		addr := types.Address(key.Address())
+		nonceInput := append(crypto.Keccak256([]byte("blsPoPNonce(address)"))[:4], make([]byte, 32)...)
+		copy(nonceInput[16:], addr[:])
+		nonceHex, err := relayer.Call(key.Address(), ethgo.Address(staking.AddrStakingContract), nonceInput)
+		if err != nil {
+			return err
+		}
+		nonceRaw, err := hexToBytes(nonceHex)
+		if err != nil || len(nonceRaw) != 32 {
+			return fmt.Errorf("invalid staking possession nonce response")
+		}
+		secretRaw, err := sm.GetSecret(secrets.ValidatorBLSKey)
+		if err != nil {
+			return err
+		}
+		secret, err := crypto.BytesToBLSSecretKey(secretRaw)
+		if err != nil {
+			return err
+		}
+		localPub, err := crypto.BLSSecretKeyToPubkeyBytes(secret)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(localPub, pub) {
+			return fmt.Errorf("registration public key differs from local BLS key")
+		}
+		proof, err := crypto.CreateStakingPoP(secret, chainID, staking.AddrStakingContract, addr, new(big.Int).SetBytes(nonceRaw))
+		if err != nil {
+			return err
+		}
+		encoded, err := abi.MustNewType("tuple(bytes,bytes)").Encode([]interface{}{pub, proof})
+		if err != nil {
+			return err
+		}
+		to := ethgo.Address(staking.AddrStakingContract)
+		receipt, err := relayer.SendTransaction(&ethgo.Transaction{To: &to, Input: append(crypto.Keccak256([]byte("registerBLSPublicKey(bytes,bytes)"))[:4], encoded...), Type: ethgo.TransactionDynamicFee}, key)
+		if err != nil {
+			return fmt.Errorf("PoP registration transaction failed: %w", err)
+		}
+		if receipt == nil || receipt.Status != uint64(types.ReceiptSuccess) {
+			return fmt.Errorf("PoP registration reverted; no legacy retry was attempted")
+		}
+		return nil
+	}
+	if !bytes.Equal(code, legacy) {
+		return fmt.Errorf("unrecognized staking runtime; refusing registration")
+	}
 	m := abis.StakingABI.Methods["registerBLSPublicKey"]
 	if m == nil {
 		return fmt.Errorf("staking ABI missing registerBLSPublicKey")

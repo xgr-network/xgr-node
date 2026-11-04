@@ -45,6 +45,19 @@ contract StakingV2 {
     mapping(address => uint256) private _validatorDelegatedStakeActive;
     uint256 private _reentrancyStatus;
 
+    // Append-only v3.5 storage. Slots 0..10 and both existing struct layouts
+    // must remain byte-for-byte compatible with the deployed StakingV2.
+    // Keep historical verified keys for macro snapshots that outlive a rotation.
+    mapping(address => mapping(bytes32 => bool)) private _blsPoPVerified;
+    mapping(address => uint256) public blsPoPNonce;
+    // Written exclusively by the deterministic protocol migration.
+    bytes32 public blsPoPMigrationHash;
+
+    bytes32 public constant BLS_POP_DOMAIN = keccak256("XGR_STAKING_BLS_POP_V1");
+    address private constant BLS_VERIFIER = address(0x2040);
+
+    event BLSPublicKeyRegistered(address indexed validator, bytes32 indexed publicKeyHash, uint256 nonce);
+
     event Staked(address indexed account, uint256 amount);
     event Unstaked(address indexed account, uint256 amount);
     event ValidatorActivationChanged(address indexed account, bool active, uint256 blockNumber);
@@ -73,6 +86,8 @@ contract StakingV2 {
     error InvalidCommissionBps();
     error InvalidMinDelegatorStake();
     error DelegatorLimitExceeded();
+    error BLSProofRequired();
+    error InvalidBLSProof();
 
     modifier nonReentrant() {
         require(_reentrancyStatus == 0, "REENTRANT");
@@ -174,11 +189,42 @@ contract StakingV2 {
         return (_epochOf(s.deactivatedAtBlock) + 1) * uint256(epochSize);
     }
 
-    function registerBLSPublicKey(bytes calldata blsPubKey) external nonReentrant {
+    // Retain the old selector with an explicit rejection. No unproved-key path
+    // may remain after the runtime upgrade, including for existing validators.
+    function registerBLSPublicKey(bytes calldata) external pure {
+        revert BLSProofRequired();
+    }
+
+    function blsPoPVerified(address validator, bytes calldata publicKey) external view returns (bool) {
+        return publicKey.length == 48 && _blsPoPVerified[validator][keccak256(publicKey)];
+    }
+
+    function blsPoPMessage(address validator, bytes calldata publicKey) public view returns (bytes32) {
+        return keccak256(abi.encode(
+            BLS_POP_DOMAIN, block.chainid, address(this), validator,
+            keccak256(publicKey), blsPoPNonce[validator]
+        ));
+    }
+
+    function registerBLSPublicKey(bytes calldata blsPubKey, bytes calldata proof) external nonReentrant {
         Staker storage s = _staker[msg.sender];
         if (!s.exists || s.validator != msg.sender) revert ValidatorNotFound();
+        if (blsPubKey.length != 48 || proof.length != 96) revert InvalidBLSProof();
+        bytes[] memory keys = new bytes[](1);
+        keys[0] = blsPubKey;
+        (bool success, bytes memory result) = BLS_VERIFIER.staticcall(abi.encodeWithSignature(
+            "verify(bytes,bytes[],bytes,bytes)",
+            abi.encodePacked(blsPoPMessage(msg.sender, blsPubKey)), keys, hex"01", proof
+        ));
+        // A missing verifier returns empty data; fail closed in that case too.
+        if (!success || result.length != 32 || !abi.decode(result, (bool))) revert InvalidBLSProof();
+        uint256 nonce = blsPoPNonce[msg.sender];
+        blsPoPNonce[msg.sender] = nonce + 1;
+        bytes32 publicKeyHash = keccak256(blsPubKey);
+        _blsPoPVerified[msg.sender][publicKeyHash] = true;
         s.blsPubKey = blsPubKey;
         _poolConfig[msg.sender].blsPubKey = blsPubKey;
+        emit BLSPublicKeyRegistered(msg.sender, publicKeyHash, nonce);
     }
 
     function stake() external payable nonReentrant {

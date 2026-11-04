@@ -90,6 +90,9 @@ type Executor struct {
 
 	PostHook        func(txn *Transition)
 	GenesisPostHook func(*Transition) error
+	// BeginTxnHook applies deterministic protocol upgrades before any user
+	// transaction, for both proposal construction and finalized-block import.
+	BeginTxnHook func(*types.Header, *Transition) error
 }
 
 // NewExecutor creates a new executor
@@ -312,6 +315,14 @@ func (e *Executor) BeginTxn(
 		txn.bridgeBlockList = addresslist.NewAddressList(txn, contracts.BlockListBridgeAddr)
 	}
 
+	if forkConfig.StakingBLSPoP && e.BeginTxnHook == nil {
+		return nil, fmt.Errorf("staking BLS PoP fork requires the IBFT transition hook")
+	}
+	if e.BeginTxnHook != nil {
+		if err := e.BeginTxnHook(header, txn); err != nil {
+			return nil, err
+		}
+	}
 	return txn, nil
 }
 

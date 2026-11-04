@@ -16,6 +16,7 @@ import (
 	"github.com/xgr-network/xgr-node/blockchain"
 	"github.com/xgr-network/xgr-node/chain"
 	"github.com/xgr-network/xgr-node/consensus"
+	stakingPoP "github.com/xgr-network/xgr-node/consensus/ibft/blspop"
 	"github.com/xgr-network/xgr-node/consensus/ibft/fork"
 	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
 	"github.com/xgr-network/xgr-node/consensus/ibft/proto"
@@ -110,8 +111,11 @@ type backendIBFT struct {
 	uptimeCfg          pos.UptimeConfig
 
 	// Channels
-	closeCh         chan struct{} // Channel for closing
-	interchainClose func()        // Optional non-consensus interchain worker shutdown
+	closeCh            chan struct{} // Channel for closing
+	interchainClose    func()        // Optional non-consensus interchain worker shutdown
+	stakingPoPManifest *stakingPoP.Manifest
+	stakingPoPVerified *stakingPoP.VerifiedManifest
+	stakingPoPHeight   uint64
 }
 
 // Factory implements the base consensus Factory method
@@ -183,6 +187,9 @@ func Factory(params *consensus.Params) (consensus.Consensus, error) {
 
 		// Channels
 		closeCh: make(chan struct{}),
+	}
+	if err := p.configureStakingPoP(); err != nil {
+		return nil, err
 	}
 	// Istanbul requires a different header hash function
 	p.SetHeaderHash()
