@@ -242,6 +242,15 @@ func (s *ibftInterchainState) NativeXGRSubmit(key ethgo.Key,to types.Address,dat
 // Destination failures disable only interchain processing; they must never stop
 // XGR block production, validation, finalization, or syncing.
 func (i *backendIBFT) startInterchainRuntime() {
+	// Explicit local service opt-out for isolated consensus/devnet operation.
+	// This does not change consensus, validator membership or proof verification.
+	// Check before loading or constructing any external-chain worker.
+	if i.config != nil && i.config.Config != nil {
+		if disabled, ok := i.config.Config["interchainRuntimeDisabled"].(bool); ok && disabled {
+			i.logger.Info("interchain worker disabled by local node configuration")
+			return
+		}
+	}
 	destinations, err := evmInterchain.LoadAll()
 	if err != nil {
 		i.logger.Warn("interchain disabled: invalid destination configuration", "err", err)

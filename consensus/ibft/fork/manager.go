@@ -5,6 +5,7 @@ import (
 	"math/big"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/xgr-network/xgr-node/chain"
 	"github.com/xgr-network/xgr-node/consensus/ibft/hook"
 	"github.com/xgr-network/xgr-node/consensus/ibft/pos"
 	"github.com/xgr-network/xgr-node/consensus/ibft/signer"
@@ -184,11 +185,45 @@ func (m *ForkManager) GetValidators(height uint64) (validators.Validators, error
 		return nil, ErrValidatorStoreNotFound
 	}
 
-	return set.GetValidators(
+	vals, err := set.GetValidators(
 		height,
 		m.epochSize,
 		fork.From.Value,
 	)
+	if err != nil {
+		return nil, err
+	}
+	provider, ok := m.executor.(interface {
+		GetForksInTime(uint64) chain.ForksInTime
+	})
+	if !ok || !provider.GetForksInTime(height).StakingBLSPoP {
+		return vals, nil
+	}
+	if height == 0 || vals == nil || vals.Len() == 0 || vals.Type() != validators.BLSValidatorType {
+		return nil, errors.New("PoP fork requires a nonempty BLS validator set")
+	}
+	parent, ok := m.blockchain.GetHeaderByNumber(height - 1)
+	if !ok {
+		return nil, errors.New("PoP validation parent state unavailable")
+	}
+	// At H this independently applies the same deterministic migration to a
+	// temporary parent-state transition. It does not commit or trust H's state.
+	queryHeader := parent.Copy()
+	queryHeader.Number = height
+	transition, err := m.executor.BeginTxn(parent.StateRoot, queryHeader, types.ZeroAddress)
+	if err != nil {
+		return nil, err
+	}
+	for idx := 0; idx < vals.Len(); idx++ {
+		validator, ok := vals.At(uint64(idx)).(*validators.BLSValidator)
+		if !ok {
+			return nil, ErrValidatorStoreNotFound
+		}
+		if err := transition.RequireStakingPoP(validator.Addr(), validator.BLSPublicKey); err != nil {
+			return nil, err
+		}
+	}
+	return vals, nil
 }
 
 func (m *ForkManager) GetValidatorStakeSnapshot(height uint64, validatorSet validators.Validators) (map[types.Address]*big.Int, error) {
