@@ -1,7 +1,10 @@
-# XGR-Node v3.5.0 — private security release candidate
+# XGR-Node v3.5.0 — staking BLS possession security release
 
-Status: private review candidate. No Mainnet activation height, public tag,
-deployment, release publication or advisory publication is authorized here.
+Status (2026-11-05): published release; Mainnet activated `stakingBlsPoP` at
+12,586,649 and Testnet at 6,613,834. Five Mainnet and four Testnet keys were
+migrated from individually verified proofs without restaking. The following
+implementation record originated during private review. Current operator
+instructions and public verification evidence: [v3.5.0 activation reference](https://github.com/xgr-network/XGR/blob/main/docs/chain/XGRCHAIN_v3.5.0_Release_and_Activation.md).
 
 Baseline: v3.4.3, `0d9aca695c49784da64736d78620cc1bba4f7daa`.
 Advisory: GHSA-rhv3-x676-72g9. Reported by **alfset**.
@@ -46,5 +49,8 @@ four-validator fork/restart/fresh-sync devnet. See
 `docs/security/v3.5.0.md` and `docs/security/v3.5.0-rollout.md` for the precise
 security boundary, evidence requirements and recovery procedure.
 
-Mainnet rollout still requires production proof collection, final private review,
-an approved activation height and explicit operator authorization.
+Mainnet proof collection, targeted reporter review and authorized activation
+are complete. Read-only checks confirmed the exact runtime, migration digest,
+five verified keys/nonces and the first post-fork epoch snapshot. This does not
+attest every host or publish the advisory; disclosure and rewards remain
+separately coordinated.

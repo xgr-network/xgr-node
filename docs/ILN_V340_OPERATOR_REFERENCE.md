@@ -1,5 +1,7 @@
 # Interchain operator reference — node v3.4.0
 
+> Current node baseline: **v3.5.0**. This retained Interchain command reference describes the inherited Direct-BLS interface; staking admission now uses automatic PoP in `ibft join`. See the [v3.5.0 activation reference](https://github.com/xgr-network/XGR/blob/main/docs/chain/XGRCHAIN_v3.5.0_Release_and_Activation.md). Staking PoP and Registry V3 possession are separate domains.
+
 This file specifies the Interchain CLI and JSON-RPC implemented by the public node. Physical network policy is in `interchain/config.go`; message authorization is Direct-BLS. Contract family suffixes do not change the node release number.
 
 - [Architecture and documentation index](https://github.com/xgr-network/XGR/blob/main/docs/interchain/README.md)
