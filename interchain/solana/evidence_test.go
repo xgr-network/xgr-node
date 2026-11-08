@@ -233,3 +233,55 @@ func TestSolanaPDADerivationKnownInputs(t *testing.T){
         t.Fatal("empty program ID accepted")
     }
 }
+
+
+func TestSyntheticWXGRBurnSourceEvidencePositiveAndNegatives(t *testing.T){
+    o,d,f,m,p:=fixtureCandidate()
+    p.CustodyKind=2
+    p.TokenDecimals=9
+    d.CustodyKind=2
+    d.TokenVault=[32]byte{}
+    // 100 wrapped wXGR base units (9 decimals) become exactly 10^11
+    // canonical native XGR wei (18 decimals); no dust or truncation.
+    d.AmountCanonical=[32]byte{}
+    binary.BigEndian.PutUint64(d.AmountCanonical[24:],100_000_000_000)
+    d.MessageID=canonicalSourceMessageID(d,p.ProgramID,p.Router)
+    derive:=func(seeds ...[]byte)[32]byte{
+        v,e:=deriveXitaPDA(p.ProgramID,seeds...)
+        if e!=nil{t.Fatal(e)}
+        return v
+    }
+    p.FeeReceiptPDA=derive([]byte("xita-fee-receipt"),p.FeeVault[:],d.MessageID[:])
+    p.SourceDispatchPDA=derive([]byte("xita-source-dispatch"),d.MessageID[:])
+    f.MessageID=d.MessageID
+    m.VaultBefore=0;m.VaultAfter=0
+    m.MintSupplyBefore=200;m.MintSupplyAfter=100
+
+    // Transaction fixture contains exactly 17 account keys and the source
+    // instruction. Switch account 8/9 to the new receipt PDAs and account
+    // 12 to router PDA (synthetic path has no collateral vault).
+    o.RawTransaction=append([]byte(nil),o.RawTransaction...)
+    accountStart:=65+3+1
+    for idx,key:=range map[int][32]byte{
+        8:p.FeeReceiptPDA,9:p.SourceDispatchPDA,12:p.Router,
+    }{
+        copy(o.RawTransaction[accountStart+idx*32:accountStart+(idx+1)*32],key[:])
+    }
+    o.TransactionSHA256=sha256.Sum256(o.RawTransaction)
+    if err:=CheckSourceEvidenceCandidate(o,d,f,m,p);err!=nil{
+        t.Fatalf("valid wrapped XGR burn rejected: %v",err)
+    }
+    bad:=d
+    bad.AmountCanonical[31]^=1
+    if CheckSourceEvidenceCandidate(o,bad,f,m,p)==nil{
+        t.Fatal("non-exact XGR 9-to-18 scale accepted")
+    }
+    badMovement:=m;badMovement.MintSupplyAfter++
+    if CheckSourceEvidenceCandidate(o,d,f,badMovement,p)==nil{
+        t.Fatal("incomplete SPL burn accepted")
+    }
+    p.TokenDecimals=10
+    if CheckSourceEvidenceCandidate(o,d,f,m,p)==nil{
+        t.Fatal("unsupported wrapped XGR decimal precision accepted")
+    }
+}
