@@ -19,8 +19,18 @@ func fixtureCandidate()(Observation,SourceDispatch,FeeReceipt,TokenBalanceMoveme
         ValidatorPDA:pubkey(6),NoncePDA:pubkey(7),
         FeeEpochPDA:pubkey(8),FeeReceiptPDA:pubkey(9),
         SourceDispatchPDA:pubkey(10),
-        Mint:pubkey(12),TokenProgram:pubkey(14),
-        SystemProgram:pubkey(15),RentSysvar:pubkey(16),
+        Mint:pubkey(12),
+        TokenProgram:func()[32]byte{
+            k,e:=decodeBase58Pubkey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+            if e!=nil{panic(e)}
+            return k
+        }(),
+        SystemProgram:[32]byte{},
+        RentSysvar:func()[32]byte{
+            k,e:=decodeBase58Pubkey("SysvarRent111111111111111111111111111111111")
+            if e!=nil{panic(e)}
+            return k
+        }(),
         RouteID:pubkey(91),
         CustodyKind:1,TokenDecimals:9,
         ExpectedFeeLamports:10,ExpectedValidatorSet:7,
@@ -88,6 +98,14 @@ func TestCandidateStructuralRequiresAllPinnedAccountsAndSourceMovement(t *testin
     wrongFee:=f;wrongFee.FeeLamports++
     if CheckSourceEvidenceCandidate(o,d,wrongFee,m,p)==nil{
         t.Fatal("fee mismatch accepted")
+    }
+    wrongProgram:=p;wrongProgram.SystemProgram=pubkey(99)
+    if CheckSourceEvidenceCandidate(o,d,f,m,wrongProgram)==nil{
+        t.Fatal("noncanonical System Program accepted")
+    }
+    wrongProgram=p;wrongProgram.TokenProgram=pubkey(99)
+    if CheckSourceEvidenceCandidate(o,d,f,m,wrongProgram)==nil{
+        t.Fatal("wrong SPL Token Program accepted")
     }
     missing:=p;missing.ExpectedFeeLamports=11
     if CheckSourceEvidenceCandidate(o,d,f,m,missing)==nil{

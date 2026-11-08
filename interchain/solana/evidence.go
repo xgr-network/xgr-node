@@ -154,7 +154,7 @@ func CheckSourceEvidenceCandidate(
         policy.NoncePDA==([32]byte{})||
         policy.FeeEpochPDA==([32]byte{})||
         policy.TokenProgram==([32]byte{})||
-        policy.SystemProgram==([32]byte{})||
+        policy.SystemProgram!=([32]byte{})||
         policy.RentSysvar==([32]byte{})||
         policy.FeeReceiptPDA==([32]byte{})||
         policy.SourceDispatchPDA==([32]byte{})||
@@ -162,6 +162,15 @@ func CheckSourceEvidenceCandidate(
         (policy.CustodyKind!=1&&policy.CustodyKind!=2) ||
         policy.ExpectedFeeLamports==0||policy.ExpectedValidatorSet==0{
         return errors.New("source witness policy is incomplete")
+    }
+    // Solana System Program is the canonical ALL-ZERO 32-byte Pubkey.
+    // Requiring a NONZERO System Program would silently reject legitimate
+    // transactions while allowing only fabricated test account identities.
+    tokenID,tokenErr:=decodeBase58Pubkey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+    rentID,rentErr:=decodeBase58Pubkey("SysvarRent111111111111111111111111111111111")
+    if tokenErr!=nil||rentErr!=nil||
+       policy.TokenProgram!=tokenID||policy.RentSysvar!=rentID {
+        return errors.New("foreign SPL token or rent sysvar program")
     }
     if dispatch.RouteID!=policy.RouteID ||
        receipt.RouteID!=policy.RouteID||
