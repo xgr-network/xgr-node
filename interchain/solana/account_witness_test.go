@@ -80,7 +80,7 @@ func TestIndependentFinalizedReceiptAccountWitness(t *testing.T){
     if err!=nil||owner==([32]byte{}){t.Fatalf("bad owner decode: %v",err)}
     o:=accountObserver(t,receipt,receipt,testOwner,105)
     a,err:=o.FinalizedReceiptAccount(
-        context.Background(),testAddress,99,owner
+        context.Background(),testAddress,99,owner,
     )
     if err!=nil{t.Fatal(err)}
     if a.IndependentWitnesses!=2||a.ObservedSlot!=100||
@@ -89,15 +89,15 @@ func TestIndependentFinalizedReceiptAccountWitness(t *testing.T){
     }
     changed:=accountObserver(t,receipt,[]byte{0x44,1,2,4},testOwner,105)
     if _,err:=changed.FinalizedReceiptAccount(
-        context.Background(),testAddress,99,owner
+        context.Background(),testAddress,99,owner,
     );err==nil{t.Fatal("different finalized receipt accepted")}
     invalidOwner:=accountObserver(t,receipt,receipt,testAddress,105)
     if _,err:=invalidOwner.FinalizedReceiptAccount(
-        context.Background(),testAddress,99,owner
+        context.Background(),testAddress,99,owner,
     );err==nil{t.Fatal("foreign account owner accepted")}
     oldSlot:=accountObserver(t,receipt,receipt,testOwner,98)
     if _,err:=oldSlot.FinalizedReceiptAccount(
-        context.Background(),testAddress,99,owner
+        context.Background(),testAddress,99,owner,
     );err==nil{t.Fatal("unfinalized receipt accepted")}
 }
 func TestReceiptBase58AndPolicyRejectMalformedAccounts(t *testing.T){

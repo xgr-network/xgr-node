@@ -100,7 +100,7 @@ func (o *Observer) FinalizedReceiptAccount(
     for i,ep:=range o.endpoints{
         seen,err:=o.finalizedAccount(ctx,ep,address,key,minSlot)
         if err!=nil{return FinalizedAccount{},fmt.Errorf(
-            "Solana account witness %s: %w",ep.OperatorID,err
+            "Solana account witness %s: %w",ep.OperatorID,err,
         )}
         if seen.Owner!=expectedOwner{
             return FinalizedAccount{},errors.New("Solana receipt owner differs from pinned XITA program")
