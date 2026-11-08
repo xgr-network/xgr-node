@@ -189,6 +189,9 @@ func CheckSourceEvidenceCandidate(
        ){
         return errors.New("source/fee evidence mismatch")
     }
+    if err:=checkDerivedSourcePDAs(policy,dispatch);err!=nil{
+        return err
+    }
     if dispatch.Recipient==([32]byte{}) ||
         !bytes.Equal(dispatch.Recipient[:12],make([]byte,12)){
         return errors.New("destination EVM recipient is not zero-padded")

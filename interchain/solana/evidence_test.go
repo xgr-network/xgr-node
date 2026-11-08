@@ -2,6 +2,7 @@ package solana
 
 import (
     "crypto/sha256"
+    "fmt"
     "encoding/binary"
     "strings"
     "testing"
@@ -46,6 +47,27 @@ func fixtureCandidate()(Observation,SourceDispatch,FeeReceipt,TokenBalanceMoveme
         FeeLamports:10,Nonce:1,SourceSlot:99,
         ValidatorSetID:7,CustodyKind:1,
     }
+    // Derive all canonical PDAs from the published Solana Rust seeds,
+    // never trust user-supplied program-owned account addresses.
+    var dom [4]byte
+    binary.BigEndian.PutUint32(dom[:],1643)
+    var epoch [8]byte
+    binary.BigEndian.PutUint64(epoch[:],d.ValidatorSetID)
+    must:=func(parts ...[]byte)[32]byte{
+        x,e:=deriveXitaPDA(p.ProgramID,parts...)
+        if e!=nil{panic(e)}
+        return x
+    }
+    p.RoutePDA=must([]byte("xita-route"),p.Router[:],dom[:])
+    p.FeeVault=must([]byte("xita-fee-vault"),p.RoutePDA[:])
+    p.SourceFeePDA=must([]byte("xita-source-fee"))
+    p.ValidatorPDA=must([]byte("xita-trusted-xgr-validators"))
+    p.NoncePDA=must([]byte("xita-source-nonce"),p.RoutePDA[:],d.Sender[:])
+    p.FeeEpochPDA=must([]byte("xita-fee-epoch"),p.FeeVault[:],epoch[:])
+    d.TokenVault=must([]byte("xita-collateral-vault"),p.Router[:])
+    d.MessageID=canonicalSourceMessageID(d,p.ProgramID,p.Router)
+    p.FeeReceiptPDA=must([]byte("xita-fee-receipt"),p.FeeVault[:],d.MessageID[:])
+    p.SourceDispatchPDA=must([]byte("xita-source-dispatch"),d.MessageID[:])
     f:=FeeReceipt{
         RouteID:d.RouteID,MessageID:d.MessageID,
         ValidatorSetID:7,FeeLamports:10,
@@ -95,7 +117,19 @@ func TestCandidateStructuralRequiresAllPinnedAccountsAndSourceMovement(t *testin
     if CheckSourceEvidenceCandidate(o,changed,f,m,p)==nil{
         t.Fatal("foreign recipient accepted")
     }
-    wrongFee:=f;wrongFee.FeeLamports++
+    wrongPDA:=p;wrongPDA.SourceFeePDA=pubkey(88)
+    if CheckSourceEvidenceCandidate(o,d,f,m,wrongPDA)==nil{
+        t.Fatal("forged source fee PDA accepted")
+    }
+    wrongPDA=p;wrongPDA.FeeReceiptPDA=pubkey(77)
+    if CheckSourceEvidenceCandidate(o,d,f,m,wrongPDA)==nil{
+        t.Fatal("forged fee receipt PDA accepted")
+    }
+    wrongID:=d;wrongID.MessageID=pubkey(70)
+    if CheckSourceEvidenceCandidate(o,wrongID,f,m,p)==nil{
+        t.Fatal("noncanonical source message ID accepted")
+    }
+        wrongFee:=f;wrongFee.FeeLamports++
     if CheckSourceEvidenceCandidate(o,d,wrongFee,m,p)==nil{
         t.Fatal("fee mismatch accepted")
     }
@@ -173,5 +207,29 @@ func TestBorshSourceDispatchAndFeeReceiptStrictDecoder(t *testing.T){
     receipt[0]^=1
     if _,err:=DecodeFeeReceiptBorsh(receipt);err==nil{
         t.Fatal("invalid receipt tag accepted")
+    }
+}
+
+func TestSolanaPDADerivationKnownInputs(t *testing.T){
+    // Reference point computed independently with the Solana PDA SHA-256
+    // domain and Ed25519 decompression rule, not by hardcoding fake keys.
+    var program [32]byte
+    for i:=range program{program[i]=17}
+    fee,err:=deriveXitaPDA(program,[]byte("xita-source-fee"))
+    if err!=nil{t.Fatal(err)}
+    expected:="7b17712335a7150af4e04f0f57ff7436106485d7ec7dd49eff6d207988e2b7df"
+    if fmt.Sprintf("%x",fee)!=expected{
+        t.Fatalf("unexpected Solana PDA %x",fee)
+    }
+    validator,err:=deriveXitaPDA(program,[]byte("xita-trusted-xgr-validators"))
+    if err!=nil{t.Fatal(err)}
+    if fmt.Sprintf("%x",validator)!="f4dbfa8c914254b2c239706fdf89cf673dddd49b6fd2305e45b1a1e64ed68a2e"{
+        t.Fatalf("unexpected validator PDA %x",validator)
+    }
+    if _,err:=deriveXitaPDA(program,make([]byte,33));err==nil{
+        t.Fatal("overlong PDA seed accepted")
+    }
+    if _,err:=deriveXitaPDA([32]byte{},[]byte("xita-source-fee"));err==nil{
+        t.Fatal("empty program ID accepted")
     }
 }
