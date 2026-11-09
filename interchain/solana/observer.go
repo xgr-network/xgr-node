@@ -63,11 +63,16 @@ func NewObserver(endpoints []Endpoint, client *http.Client) (*Observer, error) {
 			u.Fragment != "" || u.RawQuery != "" || u.Path != "" {
 			return nil, errors.New("Solana RPC must be a distinct HTTPS origin without URL credentials")
 		}
-		id := strings.TrimSpace(ep.OperatorID)
-		if id == "" || strings.ContainsAny(id, " /\\") || ids[id] || urls[ep.URL] {
-			return nil, errors.New("Solana RPC witness operator identities must be distinct")
+		// Operator IDs and network origins are policy identities, not
+		// arbitrary labels. Case, trailing DNS dots and default HTTPS ports
+		// must not manufacture independent finalized witnesses.
+		id := strings.ToLower(strings.TrimSpace(ep.OperatorID))
+		host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+		if id == "" || strings.ContainsAny(id, " /\\\t\n\r") ||
+			host == "" || ids[id] || urls[host] {
+			return nil, errors.New("Solana RPC witness operator identities and hosts must be distinct")
 		}
-		ids[id], urls[ep.URL] = true, true
+		ids[id], urls[host] = true, true
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 8 * time.Second}
