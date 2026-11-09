@@ -112,3 +112,50 @@ func TestSignatureAndOperatorPolicy(t *testing.T) {
 		t.Fatal("invalid Solana base58 signature accepted")
 	}
 }
+
+func TestIndependentOperatorsCannotBeFabricatedWithHostOrCaseAliases(t *testing.T) {
+    cases := []struct{
+        name string
+        first Endpoint
+        second Endpoint
+    }{
+        {
+            name:"case-insensitive operator ID",
+            first:Endpoint{URL:"https://first.example",OperatorID:"Alpha"},
+            second:Endpoint{URL:"https://second.example",OperatorID:"alpha"},
+        },
+        {
+            name:"case-insensitive same host",
+            first:Endpoint{URL:"https://SOLANA.EXAMPLE",OperatorID:"one"},
+            second:Endpoint{URL:"https://solana.example",OperatorID:"two"},
+        },
+        {
+            name:"default HTTPS port alias",
+            first:Endpoint{URL:"https://solana.example",OperatorID:"one"},
+            second:Endpoint{URL:"https://solana.example:443",OperatorID:"two"},
+        },
+        {
+            name:"trailing DNS dot alias",
+            first:Endpoint{URL:"https://solana.example",OperatorID:"one"},
+            second:Endpoint{URL:"https://solana.example.",OperatorID:"two"},
+        },
+        {
+            name:"same host different HTTPS ports",
+            first:Endpoint{URL:"https://solana.example:443",OperatorID:"one"},
+            second:Endpoint{URL:"https://solana.example:8443",OperatorID:"two"},
+        },
+    }
+    for _,tc:=range cases{
+        t.Run(tc.name,func(t *testing.T){
+            if _,err:=NewObserver([]Endpoint{tc.first,tc.second},nil);err==nil{
+                t.Fatal("two aliases of the same operator/host accepted as independent RPC witnesses")
+            }
+        })
+    }
+    if _,err:=NewObserver([]Endpoint{
+        {URL:"https://first.example",OperatorID:"one"},
+        {URL:"https://second.example",OperatorID:"two"},
+    },nil);err!=nil {
+        t.Fatalf("genuine distinct witnesses rejected: %v",err)
+    }
+}
