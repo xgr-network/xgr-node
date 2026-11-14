@@ -122,10 +122,25 @@ func (w *Worker) persistILNLocalVote(hash types.Hash, vote ilnCheckpointVote) er
 	}
 	path := filepath.Join(w.ilnVoteDir(), hash.String()+".json")
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o660); err != nil {
+	// A successful rename without fsync is not power-loss durability.
+	// Flush the signed successor payload and its directory entry before a
+	// previous-set vote is ever eligible for retirement (F-20).
+	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o660)
+	if err != nil { return err }
+	if _,err = file.Write(raw);err != nil {
+		_ = file.Close()
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err = file.Sync();err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err = file.Close();err != nil { return err }
+	if err = os.Rename(tmp,path);err != nil { return err }
+	dir,err:=os.Open(w.ilnVoteDir())
+	if err != nil { return err }
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func (w *Worker) recoverILNLocalVotes() error {
