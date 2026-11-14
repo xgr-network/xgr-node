@@ -122,10 +122,25 @@ func (w *Worker) persistILNLocalVote(hash types.Hash, vote ilnCheckpointVote) er
 	}
 	path := filepath.Join(w.ilnVoteDir(), hash.String()+".json")
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o660); err != nil {
+	// A successful rename without fsync is not power-loss durability.
+	// Flush the signed successor payload and its directory entry before a
+	// previous-set vote is ever eligible for retirement (F-20).
+	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o660)
+	if err != nil { return err }
+	if _,err = file.Write(raw);err != nil {
+		_ = file.Close()
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err = file.Sync();err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err = file.Close();err != nil { return err }
+	if err = os.Rename(tmp,path);err != nil { return err }
+	dir,err:=os.Open(w.ilnVoteDir())
+	if err != nil { return err }
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func (w *Worker) recoverILNLocalVotes() error {
@@ -359,6 +374,51 @@ func (w *Worker) writeILNCheckpointAttestation(attestation ilnCheckpointAttestat
 	return os.Rename(archive+".tmp", archive)
 }
 
+// F-20: a nil return from signDirectILNMessage can mean the local
+// validator is not eligible (or that a vote already exists). It does NOT
+// prove an authenticated replacement was written. Keep the obsolete vote
+// unless an exact successor from this local signer is found both in memory
+// and in the persisted vote journal, with the new set ID and same message.
+func (w *Worker) hasDurableILNSuccessorVote(old ilnCheckpointVote,nextSetID uint64) bool {
+ if nextSetID==0{return false}
+ var previous protocol.XITADirectMessage
+ if previous.UnmarshalBinary(old.Payload)!=nil{return false}
+ w.mu.Lock()
+ candidates:=make([]ilnCheckpointVote,0)
+ for _,state:=range w.ilnLocalVotes{
+  if state==nil||state.vote.Signer!=w.localAddr||
+     state.vote.Route!=old.Route||len(state.vote.Signature)==0{continue}
+  copyVote:=state.vote
+  copyVote.Payload=append([]byte(nil),copyVote.Payload...)
+  copyVote.Signature=append([]byte(nil),copyVote.Signature...)
+  candidates=append(candidates,copyVote)
+ }
+ w.mu.Unlock()
+ for _,candidate:=range candidates{
+  var payload protocol.XITADirectMessage
+  if payload.UnmarshalBinary(candidate.Payload)!=nil||
+   payload.SetID!=nextSetID||
+   payload.MessageID!=previous.MessageID||
+   payload.RouteID!=previous.RouteID||
+   payload.SourceBlockNumber!=previous.SourceBlockNumber||
+   payload.SourceChainID!=previous.SourceChainID||
+   payload.SourceDomain!=previous.SourceDomain||
+   payload.DestinationDomain!=previous.DestinationDomain||
+   payload.DestinationRouter!=previous.DestinationRouter{continue}
+  hash:=crypto.Keccak256Hash(candidate.Payload)
+  raw,err:=os.ReadFile(filepath.Join(w.ilnVoteDir(),hash.String()+".json"))
+  if err!=nil||len(raw)>16384{continue}
+  var persisted ilnCheckpointVote
+  if json.Unmarshal(raw,&persisted)!=nil||
+   persisted.Signer!=candidate.Signer||
+   persisted.Route!=candidate.Route||
+   !bytes.Equal(persisted.Payload,candidate.Payload)||
+   !bytes.Equal(persisted.Signature,candidate.Signature){continue}
+  return true
+ }
+ return false
+}
+
 func (w *Worker) rebroadcastILNCheckpointVotes() {
     now:=time.Now()
     var pending []ilnCheckpointVote
@@ -396,10 +456,15 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
             if err:=w.signDirectILNMessage(route,payload.MessageID,payload.SourceBlockNumber);err!=nil{
                 w.logger.Debug("Direct-BLS message awaits current validator set",
                   "route",route.Name,"err",err)
-            }else{
-                // Successor is persisted by the normal signing path before
-                // the obsolete-set vote can be removed.
+            }else if w.hasDurableILNSuccessorVote(vote,set.SetID){
+                // A new signed vote for this exact source message and current
+                // destination set is present in the durable journal.
                 w.removeILNLocalVote(hash)
+            }else{
+                // Ineligible signer or missing/failed successor persistence:
+                // retain original evidence for restart and manual recovery.
+                w.logger.Debug("Direct-BLS obsolete vote retained without durable successor",
+                    "route",route.Name,"messageId",payload.MessageID)
             }
             continue
         }
