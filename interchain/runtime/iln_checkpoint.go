@@ -359,6 +359,51 @@ func (w *Worker) writeILNCheckpointAttestation(attestation ilnCheckpointAttestat
 	return os.Rename(archive+".tmp", archive)
 }
 
+// F-20: a nil return from signDirectILNMessage can mean the local
+// validator is not eligible (or that a vote already exists). It does NOT
+// prove an authenticated replacement was written. Keep the obsolete vote
+// unless an exact successor from this local signer is found both in memory
+// and in the persisted vote journal, with the new set ID and same message.
+func (w *Worker) hasDurableILNSuccessorVote(old ilnCheckpointVote,nextSetID uint64) bool {
+ if nextSetID==0{return false}
+ var previous protocol.XITADirectMessage
+ if previous.UnmarshalBinary(old.Payload)!=nil{return false}
+ w.mu.Lock()
+ candidates:=make([]ilnCheckpointVote,0)
+ for _,state:=range w.ilnLocalVotes{
+  if state==nil||state.vote.Signer!=w.localAddr||
+     state.vote.Route!=old.Route||len(state.vote.Signature)==0{continue}
+  copyVote:=state.vote
+  copyVote.Payload=append([]byte(nil),copyVote.Payload...)
+  copyVote.Signature=append([]byte(nil),copyVote.Signature...)
+  candidates=append(candidates,copyVote)
+ }
+ w.mu.Unlock()
+ for _,candidate:=range candidates{
+  var payload protocol.XITADirectMessage
+  if payload.UnmarshalBinary(candidate.Payload)!=nil||
+   payload.SetID!=nextSetID||
+   payload.MessageID!=previous.MessageID||
+   payload.RouteID!=previous.RouteID||
+   payload.SourceBlockNumber!=previous.SourceBlockNumber||
+   payload.SourceChainID!=previous.SourceChainID||
+   payload.SourceDomain!=previous.SourceDomain||
+   payload.DestinationDomain!=previous.DestinationDomain||
+   payload.DestinationRouter!=previous.DestinationRouter{continue}
+  hash:=crypto.Keccak256Hash(candidate.Payload)
+  raw,err:=os.ReadFile(filepath.Join(w.ilnVoteDir(),hash.String()+".json"))
+  if err!=nil||len(raw)>16384{continue}
+  var persisted ilnCheckpointVote
+  if json.Unmarshal(raw,&persisted)!=nil||
+   persisted.Signer!=candidate.Signer||
+   persisted.Route!=candidate.Route||
+   !bytes.Equal(persisted.Payload,candidate.Payload)||
+   !bytes.Equal(persisted.Signature,candidate.Signature){continue}
+  return true
+ }
+ return false
+}
+
 func (w *Worker) rebroadcastILNCheckpointVotes() {
     now:=time.Now()
     var pending []ilnCheckpointVote
@@ -396,10 +441,15 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
             if err:=w.signDirectILNMessage(route,payload.MessageID,payload.SourceBlockNumber);err!=nil{
                 w.logger.Debug("Direct-BLS message awaits current validator set",
                   "route",route.Name,"err",err)
-            }else{
-                // Successor is persisted by the normal signing path before
-                // the obsolete-set vote can be removed.
+            }else if w.hasDurableILNSuccessorVote(vote,set.SetID){
+                // A new signed vote for this exact source message and current
+                // destination set is present in the durable journal.
                 w.removeILNLocalVote(hash)
+            }else{
+                // Ineligible signer or missing/failed successor persistence:
+                // retain original evidence for restart and manual recovery.
+                w.logger.Debug("Direct-BLS obsolete vote retained without durable successor",
+                    "route",route.Name,"messageId",payload.MessageID)
             }
             continue
         }
