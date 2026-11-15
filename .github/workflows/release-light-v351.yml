@@ -44,10 +44,18 @@ jobs:
           # Historical v3.5.0 documentation fixes were merged after the tag.
           git diff --name-only v3.5.0 HEAD > /tmp/v351-changes
           test -s /tmp/v351-changes
-          if grep -Ev '^(interchain/runtime/iln_checkpoint[.]go|interchain/runtime/iln_f20_successor_test[.]go|README[.]md|RELEASE_NOTES_v3[.]5[.]0[.]md|RELEASE_NOTES_v3[.]5[.]1[.]md|docs/ILN_V340_OPERATOR_REFERENCE[.]md|docs/security/v3[.]5[.]0(-final-review|-rollout|-validation)?[.]md|[.]github/workflows/release-light-v351[.]yml)$' /tmp/v351-changes; then
+          if grep -Ev '^(interchain/runtime/iln_checkpoint[.]go|interchain/runtime/iln_f20_successor_test[.]go|README[.]md|RELEASE_NOTES_v3[.]5[.]0[.]md|RELEASE_NOTES_v3[.]5[.]1[.]md|docs/ILN_V340_OPERATOR_REFERENCE[.]md|docs/security/v3[.]5[.]0(-final-review|-rollout|-validation)?[.]md|[.]github/workflows/release-light-v3(33|34|35|36|37|38|41|42|43|51)[.]yml)$' /tmp/v351-changes; then
             echo "F-20 light release exceeded reviewed interchain and documentation scope" >&2
             exit 1
           fi
+          # Only known superseded historical light-workflow definitions may
+          # disappear in this housekeeping patch; never whitelist arbitrary
+          # new workflow actions, executable code or unrelated sources.
+          for legacy in 333 334 335 336 337 338 341 342 343; do
+            file=".github/workflows/release-light-v${legacy}.yml"
+            test ! -e "$file"
+            git cat-file -e "v3.5.0:$file"
+          done
           # Never label staking, consensus, VM or chain database changes as a light release.
           test -z "$(git diff --name-only v3.5.0 HEAD -- consensus/ blockchain/ state/ chain/ contracts/ command/ crypto/ txpool/ network/)"
           grep -q 'hasDurableILNSuccessorVote' interchain/runtime/iln_checkpoint.go
