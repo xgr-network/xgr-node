@@ -397,14 +397,14 @@ func (w *Worker) hasDurableILNSuccessorVote(old ilnCheckpointVote,nextSetID uint
  for _,candidate:=range candidates{
   var payload protocol.XITADirectMessage
   if payload.UnmarshalBinary(candidate.Payload)!=nil||
-   payload.SetID!=nextSetID||
-   payload.MessageID!=previous.MessageID||
-   payload.RouteID!=previous.RouteID||
-   payload.SourceBlockNumber!=previous.SourceBlockNumber||
-   payload.SourceChainID!=previous.SourceChainID||
-   payload.SourceDomain!=previous.SourceDomain||
-   payload.DestinationDomain!=previous.DestinationDomain||
-   payload.DestinationRouter!=previous.DestinationRouter{continue}
+   payload.SetID!=nextSetID{continue}
+  // Match the ENTIRE authenticated message, except for the authorized
+  // destination validator-set epoch. A copied message ID alone does not
+  // prove that the original native fee, gateways and registry are equal.
+  expected:=previous
+  expected.SetID=nextSetID
+  expectedBytes,err:=expected.MarshalBinary()
+  if err!=nil||!bytes.Equal(candidate.Payload,expectedBytes){continue}
   hash:=crypto.Keccak256Hash(candidate.Payload)
   raw,err:=os.ReadFile(filepath.Join(w.ilnVoteDir(),hash.String()+".json"))
   if err!=nil||len(raw)>16384{continue}
