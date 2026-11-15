@@ -60,4 +60,20 @@ func TestF20DurableSuccessorRequiredBeforeOldVoteDeletion(t *testing.T){
  altered.Route="other-route"
  w.ilnLocalVotes[hash]=&ilnLocalVoteState{vote:altered}
  if w.hasDurableILNSuccessorVote(old,8){t.Fatal("different route accepted")}
+ // Matching message IDs are insufficient: the signed fee, registry,
+ // gateway and destination ISM must be identical across set rotations.
+ var forged protocol.XITADirectMessage
+ if err:=forged.UnmarshalBinary(next.Payload);err!=nil{t.Fatal(err)}
+ forged.ValidatorFeeWei=big.NewInt(1001)
+ raw,err:=forged.MarshalBinary();if err!=nil{t.Fatal(err)}
+ wrongFee:=next
+ wrongFee.Payload=raw
+ forgedHash:=crypto.Keccak256Hash(raw)
+ w.ilnLocalVotes=map[types.Hash]*ilnLocalVoteState{
+  forgedHash:{vote:wrongFee},
+ }
+ if err:=w.persistILNLocalVote(forgedHash,wrongFee);err!=nil{t.Fatal(err)}
+ if w.hasDurableILNSuccessorVote(old,8){
+  t.Fatal("different signed fee accepted as a durable successor")
+ }
 }
