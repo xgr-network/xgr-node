@@ -81,8 +81,15 @@ func TestV341BSCReceiptPinnedAndPolicyActive(t *testing.T) {
  require.Equal(t,"0x70f5752326735b31641f21d174ba035e904db93c",p.Registry)
  require.Equal(t,"0x14d5d33a65a39f96665ed631b04fecf357bcb576",p.SourceRegistry)
  require.Equal(t,uint64(130525341),p.SourceActivationBlock)
- require.Len(t,p.RPCURLs,3)
- require.Len(t,p.IndependentOperatorIDs,3)
+ require.Len(t,p.RPCURLs,4)
+ require.Len(t,p.IndependentOperatorIDs,4)
+ require.Equal(t,[]string{
+  "https://bsc-rpc.publicnode.com",
+  "https://public.1rpc.io/bnb",
+  "https://bsc.drpc.org",
+  "https://bnb.api.onfinality.io/public",
+ },p.RPCURLs)
+ require.Equal(t,[]string{"publicnode","onerpc","drpc","onfinality"},p.IndependentOperatorIDs)
  operators:=map[string]bool{}
  for _,operator:=range p.IndependentOperatorIDs {operators[operator]=true}
  require.GreaterOrEqual(t,len(operators),2)
@@ -123,4 +130,32 @@ func TestV341BSCBindingAndFinalityPolicyFailClosed(t *testing.T) {
  base.SourceRegistry=ZeroRegistryAddress
  base.SourceActivationBlock=0
  require.ErrorContains(t,validatePolicy(base),"placeholder")
+}
+
+func TestBSCAdditionalWitnessPreservesFailClosedPolicy(t *testing.T) {
+ p,err:=Policy("bsc")
+ require.NoError(t,err)
+ require.Len(t,p.RPCURLs,4)
+ require.Equal(t,FinalityFinalized,p.Finality)
+ require.Equal(t,uint64(130525341),p.SourceActivationBlock)
+ require.Equal(t,"0x70f5752326735b31641f21d174ba035e904db93c",p.Registry)
+ require.Equal(t,"0x14d5d33a65a39f96665ed631b04fecf357bcb576",p.SourceRegistry)
+ unique:=make(map[string]bool,len(p.IndependentOperatorIDs))
+ for _,operator:=range p.IndependentOperatorIDs {
+  require.False(t,unique[operator],"RPC operators must not masquerade as independent")
+  unique[operator]=true
+ }
+ // Misaligned arrays and duplicated URLs must never silently dilute quorum.
+ p.IndependentOperatorIDs=p.IndependentOperatorIDs[:3]
+ require.Error(t,validatePolicy(p))
+ p,_=Policy("bsc")
+ p.RPCURLs=append([]string(nil),p.RPCURLs...)
+ p.RPCURLs[1]=p.RPCURLs[0]
+ require.Error(t,validatePolicy(p))
+ // No external RPC may be introduced into local IBFT source verification.
+ native,err:=Policy("xgr")
+ require.NoError(t,err)
+ native.RPCURLs=[]string{"https://public.1rpc.io/bnb"}
+ native.IndependentOperatorIDs=[]string{"onerpc"}
+ require.Error(t,validatePolicy(native))
 }

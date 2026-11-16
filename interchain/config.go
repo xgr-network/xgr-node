@@ -85,8 +85,12 @@ var compiledChains = []ChainPolicy{
  // pass live production preflight before validator activation.
  {Name:"bsc",ChainID:56,Domain:56,Finality:FinalityFinalized,
   VerifierFormat:"eip2537",
-  RPCURLs:[]string{"https://bsc-rpc.publicnode.com","https://bsc.drpc.org","https://bnb.api.onfinality.io/public"},
-  IndependentOperatorIDs:[]string{"publicnode","drpc","onfinality"},
+  // 1RPC passed a receipt/finalized/log preflight for BSC block 133969943
+  // on 2026-11-16; full live fee/registry proof and sustained availability
+  // are still release/operator gates. Independent operator is not proof of
+  // independent upstream node infrastructure.
+  RPCURLs:[]string{"https://bsc-rpc.publicnode.com","https://public.1rpc.io/bnb","https://bsc.drpc.org","https://bnb.api.onfinality.io/public"},
+  IndependentOperatorIDs:[]string{"publicnode","onerpc","drpc","onfinality"},
   Registry:"0x70f5752326735b31641f21d174ba035e904db93c",
   SourceRegistry:"0x14d5d33a65a39f96665ed631b04fecf357bcb576",
   SourceActivationBlock:130525341},
