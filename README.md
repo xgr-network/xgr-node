@@ -1,6 +1,8 @@
 # xgr-node
 
-## v3.5.0 staking BLS possession
+> **Current XGRChain node release: [v3.5.1](https://github.com/xgr-network/xgr-node/releases/tag/v3.5.1)** (15 November 2026). F-20 Direct-BLS recovery persistence; release commit `723ff829d7380a29a116fd2f29c3b808ec073c0d`. No new consensus fork, staking/PoP migration or genesis change. [Current technical reference](https://github.com/xgr-network/XGR/blob/main/docs/chain/XGRCHAIN_v3.5.1_Release_and_Operations.md). Historical version-specific information below remains valid as history.
+
+## v3.5.0 staking BLS possession (retained fork/PoP activation)
 
 XGRChain v3.5.0 activated `stakingBlsPoP` on Mainnet at block **12,586,649**, inclusively, on 5 November 2026. Testnet activation was at **6,613,834**. This single gate upgrades the staking runtime, migrates independently verified public possession proofs and enforces proven BLS keys in consensus. Stakes and delegations remain in the existing contract at `0x0000000000000000000000000000000000001001`; no restaking is required.
 
