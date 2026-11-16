@@ -149,6 +149,7 @@ func TestBSCAdditionalWitnessPreservesFailClosedPolicy(t *testing.T) {
  p.IndependentOperatorIDs=p.IndependentOperatorIDs[:3]
  require.Error(t,validatePolicy(p))
  p,_=Policy("bsc")
+ p.RPCURLs=append([]string(nil),p.RPCURLs...)
  p.RPCURLs[1]=p.RPCURLs[0]
  require.Error(t,validatePolicy(p))
  // No external RPC may be introduced into local IBFT source verification.
