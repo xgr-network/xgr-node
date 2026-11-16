@@ -24,6 +24,24 @@ The independent read-only operator probe observed matching canonical source bloc
 
 **Operator-independence caveat:** 1RPC is a distinct public service/operator but may aggregate third-party upstream RPC nodes. Its upstream infrastructure has not been independently audited. A one-time success cannot establish ongoing `eth_getLogs` availability or a provider SLA.
 
+## Extended keyless RPC candidate results (2026-11-16)
+
+The actual original confirmed BSC transaction was queried sequentially against seven additional operators via `npm run probe:extended`, with the following results. **None passed** all transport/receipt/finality/Gateway-log checks:
+
+| Operator | Observed failure | Decision |
+| --- | --- | --- |
+| bloXroute | `eth_getLogs` HTTP 403 | Excluded |
+| Nodies/POKT | HTTP 403 (chain ID unavailable) | Excluded |
+| MeowRPC | HTTP 429 | Excluded |
+| Ankr keyless | API-key authorization required | Excluded |
+| LlamaNodes | Fetch/network failure | Excluded |
+| OMNIA public | HTTP 521 | Excluded |
+| Blockmachine public | Historical RPC window restricted to most recent 100 blocks; original block 133969943 inaccessible without key | Excluded |
+
+PublicNode passed and matched the previously tested 1RPC operator's historical source block/receipt/log data. This does **not** certify 1RPC's FeeVault/Registry/Dispatch evidence, continuous availability, or independent upstream node ownership. Public 1RPC routes requests randomly among upstream providers, so operator branding is not a proof of underlying infrastructure separation. Separate external monitoring has shown inconsistent keyless 1RPC `eth_getLogs` behavior; the user's successful one-block probe is not a long-term SLA.
+
+**Candidate disposition:** retain only `1RPC` as the fourth *proposed* endpoint; keep dRPC and OnFinality as degraded-but-potentially-recovering fallbacks. Do not add any of the seven failed endpoints or paid/API-key URLs. An operator run of complete Direct-BLS evidence verification remains a gating requirement.
+
 ## Required pre-merge / pre-release gates
 
 1. Run the separate read-only `xita-roundtrip-worker` `npm run probe:extended` tool from its confirmed original transfer journal. Review additional independent keyless public candidate RPC endpoints. Add **only** sources that pass finalized receipt + historical Gateway `eth_getLogs` on the real source block and are genuinely separate operators. Mark rate-limited providers as unavailable.
