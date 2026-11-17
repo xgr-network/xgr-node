@@ -44,6 +44,9 @@ type ChainPolicy struct {
  ChainID uint64
  Domain uint32
  Finality FinalityRule
+ // SignatureScheme selects the cryptographic authorization protocol.
+ // Never infer ECDSA from a missing BLS precompile.
+ SignatureScheme string
  VerifierFormat string
  RPCURLs []string
  // IndependentOperatorIDs aligns with RPCURLs. Multiple URLs operated by the
@@ -61,20 +64,20 @@ var compiledChains = []ChainPolicy{
  {Name:"xgr",ChainID:1643,Domain:1643,Finality:FinalityIBFT,
   // XGR has NO external Interchain RPC policy. All read-only verification
   // of its committed IBFT chain is performed directly by the local validator.
-  VerifierFormat:"compressed",
+  SignatureScheme:"bls",VerifierFormat:"compressed",
   Registry:"0x9b6b92ef1745611f402341965f7fc649cbe0da8c",
   SourceRegistry:"0xea887a7f2f519f291732aaadf578baf3ff374df6",
   SourceActivationBlock:12053797},
  // base receipts: c8b2547d... (ValidatorRegistry), da05fb98... (SourceRegistry).
  {Name:"base",ChainID:8453,Domain:8453,Finality:FinalitySafe,
-  VerifierFormat:"eip2537",RPCURLs:[]string{"https://mainnet.base.org","https://gateway.tenderly.co/public/base","https://base-rpc.publicnode.com","https://base.drpc.org"},
+  SignatureScheme:"bls",VerifierFormat:"eip2537",RPCURLs:[]string{"https://mainnet.base.org","https://gateway.tenderly.co/public/base","https://base-rpc.publicnode.com","https://base.drpc.org"},
   IndependentOperatorIDs:[]string{"base-official","tenderly","publicnode","drpc"},
   Registry:"0x3dc4cc1912792749d320789a67c2c14b7ee4ee33",
   SourceRegistry:"0xf243093350b1b4ef8a9e3b0c13be3495297461b0",
   SourceActivationBlock:53026521},
  // arbitrum receipts: 879889c2... (ValidatorRegistry), 278fb105... (SourceRegistry).
  {Name:"arbitrum",ChainID:42161,Domain:42161,Finality:FinalitySafe,
-  VerifierFormat:"eip2537",RPCURLs:[]string{"https://arb1.arbitrum.io/rpc","https://arbitrum-one-rpc.publicnode.com","https://arbitrum.gateway.tenderly.co","https://arbitrum.drpc.org"},
+  SignatureScheme:"bls",VerifierFormat:"eip2537",RPCURLs:[]string{"https://arb1.arbitrum.io/rpc","https://arbitrum-one-rpc.publicnode.com","https://arbitrum.gateway.tenderly.co","https://arbitrum.drpc.org"},
   IndependentOperatorIDs:[]string{"arbitrum-official","publicnode","tenderly","drpc"},
   Registry:"0x1a6610cc7dd0d0f42e22c3608e025d891065814c",
   SourceRegistry:"0x51e3b684ed61fc88083497e475825a6cecaf21f5",
@@ -84,7 +87,7 @@ var compiledChains = []ChainPolicy{
  // RPC witness independence, finalized-head and log-history checks must still
  // pass live production preflight before validator activation.
  {Name:"bsc",ChainID:56,Domain:56,Finality:FinalityFinalized,
-  VerifierFormat:"eip2537",
+  SignatureScheme:"bls",VerifierFormat:"eip2537",
   // 1RPC passed a receipt/finalized/log preflight for BSC block 133969943
   // on 2026-11-16; full live fee/registry proof and sustained availability
   // are still release/operator gates. Independent operator is not proof of
@@ -96,7 +99,7 @@ var compiledChains = []ChainPolicy{
   SourceActivationBlock:130525341},
  // OP Mainnet: verified receipt bindings; RPC-native L2 source activation.
  {Name:"optimism",ChainID:10,Domain:10,Finality:FinalitySafe,
-  VerifierFormat:"eip2537",
+  SignatureScheme:"bls",VerifierFormat:"eip2537",
   RPCURLs:[]string{"https://mainnet.optimism.io","https://optimism-rpc.publicnode.com","https://optimism.drpc.org","https://optimism.gateway.tenderly.co"},
   IndependentOperatorIDs:[]string{"optimism-official","publicnode","drpc","tenderly"},
   Registry:"0x70f5752326735b31641f21d174ba035e904db93c",
@@ -106,7 +109,7 @@ var compiledChains = []ChainPolicy{
 
 func validatePolicy(p ChainPolicy) error {
  if p.Name==""||p.ChainID==0||p.Domain==0||uint64(p.Domain)!=p.ChainID||
-  (p.VerifierFormat!="compressed"&&p.VerifierFormat!="eip2537") {
+  (p.SignatureScheme!="bls" || (p.VerifierFormat!="compressed"&&p.VerifierFormat!="eip2537")) {
   return fmt.Errorf("invalid compiled XITA chain identity: %q",p.Name)
  }
  // XGR's native verified data source deliberately has no RPC addresses.
