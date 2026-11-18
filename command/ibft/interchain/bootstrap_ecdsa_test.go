@@ -10,7 +10,6 @@ import (
  ecdsaV5 "github.com/xgr-network/xgr-node/interchain/ecdsa"
  "github.com/xgr-network/xgr-node/secrets"
  secretsHelper "github.com/xgr-network/xgr-node/secrets/helper"
- "github.com/xgr-network/xgr-node/types"
 )
 
 func TestECDSAV5BootstrapProofUsesOnlyDedicatedSecret(t *testing.T) {
@@ -65,5 +64,4 @@ func TestECDSAV5BootstrapFailsClosedWithoutSeparateKey(t *testing.T) {
  // The default BLS path is still separate and requires the BLS key.
  _,err=createBootstrapProof(&bootstrapProofParams{dataDir:dir,originChainID:1643,destinationDomain:50,scheme:"bls"})
  require.Error(t,err)
- require.NotEqual(t,types.ZeroAddress,types.StringToAddress("0x0000000000000000000000000000000000000aaa"))
 }
