@@ -29,6 +29,10 @@ const (
 	// ValidatorBLSKey is the bls secret key of the validator node
 	ValidatorBLSKey = "validator-bls-key"
 
+	// ValidatorInterchainECDSAKey is an independent XITA message-signing key.
+	// Never derive or substitute the PoS consensus ValidatorKey.
+	ValidatorInterchainECDSAKey = "validator-interchain-ecdsa-key"
+
 	// NetworkKey is the libp2p private key secret used for networking
 	NetworkKey = "network-key"
 )
@@ -37,6 +41,7 @@ const (
 const (
 	ValidatorKeyLocal    = "validator.key"
 	ValidatorBLSKeyLocal = "validator-bls.key"
+	ValidatorInterchainECDSAKeyLocal = "validator-interchain-ecdsa.key"
 	NetworkKeyLocal      = "libp2p.key"
 )
 
