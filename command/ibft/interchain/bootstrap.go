@@ -38,7 +38,7 @@ type BootstrapProofResult struct {
 
 func (r *BootstrapProofResult) GetOutput() string {
 	if r.SignatureScheme == "ecdsa" {
-		return fmt.Sprintf("\\n[IBFT INTERCHAIN ECDSA BOOTSTRAP-PROOF]\\nValidator|%s\\nDestination ECDSA signer|%s\\nOrigin chain ID|%d\\nDestination domain|%d\\nPayload|%s\\nPossession proof|%s\\n",
+		return fmt.Sprintf("\n[IBFT INTERCHAIN ECDSA BOOTSTRAP-PROOF]\nValidator|%s\nDestination ECDSA signer|%s\nOrigin chain ID|%d\nDestination domain|%d\nPayload|%s\nPossession proof|%s\n",
 			r.Validator,r.ECDSASigner,r.OriginChainID,r.DestinationDomain,r.Payload,r.PossessionProof)
 	}
 	return fmt.Sprintf(
