@@ -20,9 +20,9 @@ func SignDirectV5(key *stdECDSA.PrivateKey, message protocol.XITADirectMessage) 
  return raw,sig,err
 }
 
-// AssembleDirectQuorumV5 recovers every vote against the dedicated ECDSA
-// signer addresses read from the destination's verified V5 registry epoch.
-// Never substitute PoS validator addresses or BLS public keys.
+// AssembleDirectQuorumV5 recovers every vote against the validator ECDSA
+// addresses from the destination's independently verified V5 registry epoch.
+// Never substitute BLS public keys or a validator list from another chain.
 func AssembleDirectQuorumV5(message protocol.XITADirectMessage,signers []types.Address,votes []VoteV5)([]byte,[]byte,error) {
  raw,err:=EncodeDirect(message)
  if err!=nil{return nil,nil,err}

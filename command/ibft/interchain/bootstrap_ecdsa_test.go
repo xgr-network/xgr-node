@@ -12,28 +12,25 @@ import (
  secretsHelper "github.com/xgr-network/xgr-node/secrets/helper"
 )
 
-func TestECDSAV5BootstrapProofUsesOnlyDedicatedSecret(t *testing.T) {
+func TestECDSAV5BootstrapProofUsesExistingValidatorKey(t *testing.T) {
  dir:=t.TempDir()
  sm,err:=secretsHelper.SetupLocalSecretsManager(dir)
  require.NoError(t,err)
- posAddr,err:=secretsHelper.InitECDSAValidatorKey(sm)
+ validator,err:=secretsHelper.InitECDSAValidatorKey(sm)
  require.NoError(t,err)
- keyAddr,err:=secretsHelper.InitInterchainECDSAValidatorKey(sm)
- require.NoError(t,err)
- require.NotEqual(t,posAddr,keyAddr)
  require.False(t,sm.HasSecret(secrets.ValidatorBLSKey))
  p:=&bootstrapProofParams{dataDir:dir,originChainID:1643,destinationDomain:50,scheme:"ecdsa"}
  proof,err:=createBootstrapProof(p)
  require.NoError(t,err)
  require.Equal(t,"ecdsa",proof.SignatureScheme)
- require.Equal(t,posAddr.String(),proof.Validator)
- require.Equal(t,keyAddr.String(),proof.ECDSASigner)
+ require.Equal(t,validator.String(),proof.Validator)
+ require.Equal(t,validator.String(),proof.ECDSASigner)
  require.Empty(t,proof.BLSPublicKey)
  require.Empty(t,proof.BLSPublicKeyEIP2537)
- require.Contains(t,proof.GetOutput(),"Destination ECDSA signer")
+ require.Contains(t,proof.GetOutput(),"Validator ECDSA signer")
  raw,err:=hex.DecodeString(strings.TrimPrefix(proof.Payload,"0x"))
  require.NoError(t,err)
- expected,err:=ecdsaV5.BootstrapPayloadV5(1643,50,posAddr,keyAddr)
+ expected,err:=ecdsaV5.BootstrapPayloadV5(1643,50,validator)
  require.NoError(t,err)
  require.Equal(t,expected,raw)
  sig,err:=hex.DecodeString(strings.TrimPrefix(proof.PossessionProof,"0x"))
@@ -44,24 +41,25 @@ func TestECDSAV5BootstrapProofUsesOnlyDedicatedSecret(t *testing.T) {
  digest:=crypto.Keccak256Hash(raw)
  pub,err:=crypto.RecoverPubkey(sig,digest.Bytes())
  require.NoError(t,err)
- require.Equal(t,keyAddr,crypto.PubKeyToAddress(pub))
- wrong,err:=ecdsaV5.BootstrapPayloadV5(1643,51,posAddr,keyAddr)
+ require.Equal(t,validator,crypto.PubKeyToAddress(pub))
+ wrong,err:=ecdsaV5.BootstrapPayloadV5(1643,51,validator)
  require.NoError(t,err)
  require.NotEqual(t,digest,crypto.Keccak256Hash(wrong))
 }
 
-func TestECDSAV5BootstrapFailsClosedWithoutSeparateKey(t *testing.T) {
+func TestECDSAV5BootstrapRequiresValidatorKeyOnly(t *testing.T) {
  dir:=t.TempDir()
  sm,err:=secretsHelper.SetupLocalSecretsManager(dir)
  require.NoError(t,err)
- _,err=secretsHelper.InitECDSAValidatorKey(sm)
- require.NoError(t,err)
  _,err=createBootstrapProof(&bootstrapProofParams{dataDir:dir,originChainID:1643,destinationDomain:50,scheme:"ecdsa"})
  require.Error(t,err)
- require.False(t,sm.HasSecret(secrets.ValidatorInterchainECDSAKey))
+ _,err=secretsHelper.InitECDSAValidatorKey(sm)
+ require.NoError(t,err)
+ result,err:=createBootstrapProof(&bootstrapProofParams{dataDir:dir,originChainID:1643,destinationDomain:50,scheme:"ecdsa"})
+ require.NoError(t,err)
+ require.Equal(t,result.Validator,result.ECDSASigner)
  _,err=createBootstrapProof(&bootstrapProofParams{dataDir:dir,originChainID:1643,destinationDomain:51,scheme:"ecdsa"})
  require.Error(t,err)
- // The default BLS path is still separate and requires the BLS key.
  _,err=createBootstrapProof(&bootstrapProofParams{dataDir:dir,originChainID:1643,destinationDomain:50,scheme:"bls"})
  require.Error(t,err)
 }

@@ -45,7 +45,7 @@ func Digest(raw []byte) (types.Hash,error) {
 
 // VerifyQuorum checks packed 65-byte r,s,v signatures in ascending bitmap
 // index order (v must be 27/28). Validators must come from the separately
-// verified, current XGR-derived DESTINATION registry snapshot.
+// verified, current chain-local DESTINATION registry snapshot.
 func VerifyQuorum(raw []byte, validators []types.Address, bitmap,sigs []byte) bool {
  digest,err:=Digest(raw)
  if err!=nil{return false}

@@ -1,9 +1,7 @@
 package interchain
 
 // XDCMainnetCandidate is an UNBOUND, NON-ACTIVATING V5 placeholder.
-// The previously receipt-pinned V4 addresses remain in xdc_deployments.go
-// for historical audit ONLY and MUST NOT be used for ECDSA validator signing.
-// V5 constructor and SourceRegistry addresses are not deployed or approved.
+// The destination contract binding is unset until approved V5 deployment.
 func XDCMainnetCandidate() ChainPolicy {
  return ChainPolicy{
   Name:"xdc",ChainID:50,Domain:50,

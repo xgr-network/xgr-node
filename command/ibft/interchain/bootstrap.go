@@ -38,7 +38,7 @@ type BootstrapProofResult struct {
 
 func (r *BootstrapProofResult) GetOutput() string {
 	if r.SignatureScheme == "ecdsa" {
-		return fmt.Sprintf("\n[IBFT INTERCHAIN ECDSA BOOTSTRAP-PROOF]\nValidator|%s\nDestination ECDSA signer|%s\nOrigin chain ID|%d\nDestination domain|%d\nPayload|%s\nPossession proof|%s\n",
+		return fmt.Sprintf("\n[IBFT INTERCHAIN ECDSA BOOTSTRAP-PROOF]\nValidator|%s\nValidator ECDSA signer|%s\nOrigin chain ID|%d\nDestination domain|%d\nPayload|%s\nPossession proof|%s\n",
 			r.Validator,r.ECDSASigner,r.OriginChainID,r.DestinationDomain,r.Payload,r.PossessionProof)
 	}
 	return fmt.Sprintf(
@@ -89,7 +89,7 @@ func getBootstrapProofCommand() *cobra.Command {
 	cmd.Flags().StringVar(&p.config, "config", "", "cloud secrets manager configuration")
 	cmd.Flags().Uint64Var(&p.originChainID, "origin-chain-id", 0, "XGR origin chain ID")
 	cmd.Flags().Uint32Var(&p.destinationDomain, "destination-domain", 0, "destination interchain domain")
-	cmd.Flags().StringVar(&p.scheme, "scheme", "bls", "proof scheme (bls or dedicated interchain ecdsa)")
+	cmd.Flags().StringVar(&p.scheme, "scheme", "bls", "proof scheme (bls or validator-key ecdsa)")
 	return cmd
 }
 
@@ -113,15 +113,11 @@ func createBootstrapProof(p *bootstrapProofParams) (*BootstrapProofResult, error
 
 	if p.scheme == "ecdsa" {
 		if p.originChainID != 1643 || p.destinationDomain != 50 {
-			return nil, fmt.Errorf("dedicated interchain ECDSA V5 bootstrap requires XGR 1643 and XDC 50")
+			return nil, fmt.Errorf("XDC ECDSA V5 bootstrap requires XGR 1643 and XDC 50")
 		}
-		raw, err := sm.GetSecret(secrets.ValidatorInterchainECDSAKey)
-		if err != nil { return nil,fmt.Errorf("load dedicated interchain signer key: %w",err) }
-		key,err:=crypto.BytesToECDSAPrivateKey(raw)
-		if err != nil { return nil,fmt.Errorf("parse dedicated interchain signer key: %w",err) }
-		signer,payload,proof,err:=ecdsaV5.SignBootstrapV5(key,p.originChainID,p.destinationDomain,validator)
+		signer,payload,proof,err:=ecdsaV5.SignBootstrapV5(ecdsaKey,p.originChainID,p.destinationDomain)
 		if err != nil { return nil,fmt.Errorf("sign destination ECDSA bootstrap proof: %w",err) }
-		if signer==validator { return nil,fmt.Errorf("dedicated XITA signer key must differ from PoS key") }
+		if signer!=validator { return nil,fmt.Errorf("ECDSA bootstrap signer must match validator.key identity") }
 		return &BootstrapProofResult{
 			Validator:validator.String(),SignatureScheme:"ecdsa",ECDSASigner:signer.String(),
 			OriginChainID:p.originChainID,DestinationDomain:p.destinationDomain,

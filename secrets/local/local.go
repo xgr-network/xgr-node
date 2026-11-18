@@ -84,12 +84,6 @@ func (l *LocalSecretsManager) Setup() error {
 		secrets.ValidatorBLSKeyLocal,
 	)
 
-	// Dedicated, never shared with the PoS consensus signing key:
-	// baseDir/consensus/validator-interchain-ecdsa.key
-	l.secretPathMap[secrets.ValidatorInterchainECDSAKey] = filepath.Join(
-		l.path, secrets.ConsensusFolderLocal, secrets.ValidatorInterchainECDSAKeyLocal,
-	)
-
 	// baseDir/libp2p/libp2p.key
 	l.secretPathMap[secrets.NetworkKey] = filepath.Join(
 		l.path,
