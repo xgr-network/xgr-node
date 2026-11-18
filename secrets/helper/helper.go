@@ -92,6 +92,46 @@ func InitECDSAValidatorKey(secretsManager secrets.SecretsManager) (types.Address
 	return address, nil
 }
 
+// InitInterchainECDSAValidatorKey creates an independent secp256k1
+// XITA message-signing key, not the XGR PoS consensus validator key.
+// The secret manager enforces no replacement and the local backend saves it
+// with the same restricted file permissions as validator-bls.key.
+func InitInterchainECDSAValidatorKey(sm secrets.SecretsManager) (types.Address, error) {
+ if sm == nil {
+  return types.ZeroAddress, fmt.Errorf("interchain ECDSA secrets manager missing")
+ }
+ if sm.HasSecret(secrets.ValidatorInterchainECDSAKey) {
+  return types.ZeroAddress, fmt.Errorf("interchain ECDSA signing key is already initialized")
+ }
+ if !sm.HasSecret(secrets.ValidatorKey) {
+  return types.ZeroAddress, fmt.Errorf("XGR PoS validator identity must exist before interchain signing key generation")
+ }
+ key, raw, err := crypto.GenerateAndEncodeECDSAPrivateKey()
+ if err != nil { return types.ZeroAddress, err }
+ address := crypto.PubKeyToAddress(&key.PublicKey)
+ posAddress, err := LoadValidatorAddress(sm)
+ if err != nil { return types.ZeroAddress, err }
+ if address == posAddress || posAddress == types.ZeroAddress {
+  return types.ZeroAddress, fmt.Errorf("interchain signing key must differ from XGR PoS validator identity")
+ }
+ if err := sm.SetSecret(secrets.ValidatorInterchainECDSAKey, raw); err != nil {
+  return types.ZeroAddress, fmt.Errorf("store separate interchain ECDSA signer: %w", err)
+ }
+ return address, nil
+}
+
+// LoadInterchainECDSASignerAddress reads only the dedicated key. It never
+// falls back to ValidatorKey, even when that PoS ECDSA key already exists.
+func LoadInterchainECDSASignerAddress(sm secrets.SecretsManager) (types.Address,error) {
+ if sm == nil { return types.ZeroAddress, fmt.Errorf("interchain signer secret manager missing") }
+ if !sm.HasSecret(secrets.ValidatorInterchainECDSAKey) { return types.ZeroAddress,nil }
+ raw, err := sm.GetSecret(secrets.ValidatorInterchainECDSAKey)
+ if err != nil { return types.ZeroAddress,err }
+ key,err:=crypto.BytesToECDSAPrivateKey(raw)
+ if err != nil { return types.ZeroAddress,fmt.Errorf("parse dedicated interchain ECDSA key: %w",err) }
+ return crypto.PubKeyToAddress(&key.PublicKey),nil
+}
+
 func InitBLSValidatorKey(secretsManager secrets.SecretsManager) ([]byte, error) {
 	if secretsManager.HasSecret(secrets.ValidatorBLSKey) {
 		return nil, fmt.Errorf(`secrets "%s" has been already initialized`, secrets.ValidatorBLSKey)
