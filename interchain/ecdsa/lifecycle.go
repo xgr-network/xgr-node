@@ -36,7 +36,6 @@ type MembershipV5 struct {
 	ValidUntil         uint64
 	Action             uint8
 	Validator          types.Address
-	ECDSASigner        types.Address
 }
 
 // VoteV5 holds a validator-indexed secp256k1 proof in Solidity's 65-byte
@@ -63,29 +62,27 @@ func appendU32(buf []byte, n uint32) []byte {
 // BootstrapPayloadV5 EXACTLY matches encodeBootstrapPayload in the V5
 // Solidity contract. No Registry exists yet; the proof is bound to XGR
 // origin, destination domain and validator identity.
-func BootstrapPayloadV5(origin uint64, domain uint32, validator, signer types.Address) ([]byte, error) {
-	if origin == 0 || domain == 0 || validator == types.ZeroAddress || signer == types.ZeroAddress {
+func BootstrapPayloadV5(origin uint64, domain uint32, validator types.Address) ([]byte, error) {
+	if origin == 0 || domain == 0 || validator == types.ZeroAddress {
 		return nil, ErrInvalidLifecycle
 	}
 	out := appendU64([]byte(BootstrapDomainV2), origin)
 	out = appendU32(out, domain)
 	out = append(out, validator.Bytes()...)
-	out = append(out, signer.Bytes()...)
 	return out, nil
 }
 
 // PossessionPayloadV5 EXACTLY matches encodePossessionPayload. A
 // destination-specific, deployed Registry address prevents replay across
 // replacement deployments. Only the validator's ECDSA key can prove this.
-func PossessionPayloadV5(origin uint64, domain uint32, registry, validator, signer types.Address) ([]byte, error) {
-	if origin == 0 || domain == 0 || registry == types.ZeroAddress || validator == types.ZeroAddress || signer == types.ZeroAddress {
+func PossessionPayloadV5(origin uint64, domain uint32, registry, validator types.Address) ([]byte, error) {
+	if origin == 0 || domain == 0 || registry == types.ZeroAddress || validator == types.ZeroAddress {
 		return nil, ErrInvalidLifecycle
 	}
 	out := appendU64([]byte(PossessionDomainV2), origin)
 	out = appendU32(out, domain)
 	out = append(out, registry.Bytes()...)
 	out = append(out, validator.Bytes()...)
-	out = append(out, signer.Bytes()...)
 	return out, nil
 }
 
@@ -95,8 +92,7 @@ func PossessionPayloadV5(origin uint64, domain uint32, registry, validator, sign
 func MembershipPayloadV5(m MembershipV5) ([]byte, error) {
 	if m.OriginChainID == 0 || m.DestinationDomain == 0 ||
 		m.Registry == types.ZeroAddress || m.ExpectedSetID == 0 || m.ValidUntil == 0 ||
-		m.Validator == types.ZeroAddress || m.ECDSASigner == types.ZeroAddress ||
-		(m.Action != MemberAdd && m.Action != MemberRemove) {
+		m.Validator == types.ZeroAddress || (m.Action != MemberAdd && m.Action != MemberRemove) {
 		return nil, ErrInvalidLifecycle
 	}
 	out := appendU64([]byte(MembershipDomainV2), m.OriginChainID)
@@ -106,38 +102,36 @@ func MembershipPayloadV5(m MembershipV5) ([]byte, error) {
 	out = appendU64(out, m.ValidUntil)
 	out = append(out, m.Action)
 	out = append(out, m.Validator.Bytes()...)
-	out = append(out, m.ECDSASigner.Bytes()...)
 	return out, nil
 }
 
-// SignBootstrapV5 signs with a dedicated interchain ECDSA key. The caller
-// supplies the verified XGR PoS validator identity separately; the returned
-// signer address is always derived from this interchain key.
+// SignBootstrapV5 reads only the caller-supplied in-memory local private key.
+// The returned address is derived from the key, never chosen by an RPC caller.
 // This helper does not submit a deployment or activate a validator.
-func SignBootstrapV5(key *stdECDSA.PrivateKey, origin uint64, domain uint32, validator types.Address) (types.Address, []byte, []byte, error) {
+func SignBootstrapV5(key *stdECDSA.PrivateKey, origin uint64, domain uint32) (types.Address, []byte, []byte, error) {
 	if key == nil {
 		return types.ZeroAddress, nil, nil, ErrInvalidLifecycle
 	}
-	signer := crypto.PubKeyToAddress(&key.PublicKey)
-	raw, err := BootstrapPayloadV5(origin, domain, validator, signer)
+	validator := crypto.PubKeyToAddress(&key.PublicKey)
+	raw, err := BootstrapPayloadV5(origin, domain, validator)
 	if err != nil {
 		return types.ZeroAddress, nil, nil, err
 	}
 	sig, err := signTyped(key, raw)
-	return signer, raw, sig, err
+	return validator, raw, sig, err
 }
 
-func SignPossessionV5(key *stdECDSA.PrivateKey, origin uint64, domain uint32, registry, validator types.Address) (types.Address, []byte, []byte, error) {
+func SignPossessionV5(key *stdECDSA.PrivateKey, origin uint64, domain uint32, registry types.Address) (types.Address, []byte, []byte, error) {
 	if key == nil {
 		return types.ZeroAddress, nil, nil, ErrInvalidLifecycle
 	}
-	signer := crypto.PubKeyToAddress(&key.PublicKey)
-	raw, err := PossessionPayloadV5(origin, domain, registry, validator, signer)
+	validator := crypto.PubKeyToAddress(&key.PublicKey)
+	raw, err := PossessionPayloadV5(origin, domain, registry, validator)
 	if err != nil {
 		return types.ZeroAddress, nil, nil, err
 	}
 	sig, err := signTyped(key, raw)
-	return signer, raw, sig, err
+	return validator, raw, sig, err
 }
 
 // SignMembershipV5 only signs a typed, unexpired single-validator transition.
@@ -191,8 +185,7 @@ func verifyOne(payload []byte, signer types.Address, sig []byte) bool {
 
 // AssembleMembershipQuorumV5 sorts verified votes by *destination validator
 // index* and returns Solidity's LITTLE-endian bitmap and concatenated 65-byte
-// ECDSA signatures. The supplied addresses are DEDICATED interchain signers,
-// not XGR PoS validator IDs. BLS bitmap conventions must never be reused.
+// ECDSA signatures. BLS bitmap conventions must never be reused.
 func AssembleMembershipQuorumV5(m MembershipV5, validators []types.Address, votes []VoteV5) ([]byte, []byte, error) {
 	payload, err := MembershipPayloadV5(m)
 	if err != nil {
