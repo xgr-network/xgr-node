@@ -1,6 +1,8 @@
 // XDC mainnet contract addresses pinned to xgr-interchain's receipt-verified
 // deployment index at commit 010e16c33a726d893ac8cdd8dc3d28d8caa538cb.
-// Inventory only: no ECDSA signing or XDC routes are enabled by these records.
+// HISTORICAL V4 INVENTORY ONLY. V4 lacked per-chain opt-in/reserves.
+// Never select its Registry/ISM/SourceRegistry for V5; all V5 bindings
+// remain unset until independently reviewed deployment receipts exist.
 package interchain
 
 const XDCMainnetDeploymentSourceCommit="010e16c33a726d893ac8cdd8dc3d28d8caa538cb"
