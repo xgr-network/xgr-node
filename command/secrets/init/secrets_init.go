@@ -71,6 +71,9 @@ func setFlags(cmd *cobra.Command) {
 		"the flag indicating whether new ECDSA key is created",
 	)
 
+	cmd.Flags().BoolVar(&basicParams.generatesInterchainECDSA, interchainECDSAFlag, false,
+		"create the separate XITA ECDSA signing key (never a PoS validator key)")
+
 	cmd.Flags().BoolVar(
 		&basicParams.generatesNetwork,
 		networkFlag,
@@ -141,6 +144,7 @@ func getParamsList() []initParams {
 			dataDir:            fmt.Sprintf("%s%d", basicParams.dataDir, i),
 			configPath:         basicParams.configPath,
 			generatesECDSA:     basicParams.generatesECDSA,
+			generatesInterchainECDSA: basicParams.generatesInterchainECDSA,
 			generatesBLS:       basicParams.generatesBLS,
 			generatesNetwork:   basicParams.generatesNetwork,
 			insecureLocalStore: basicParams.insecureLocalStore,
