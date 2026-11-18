@@ -10,6 +10,7 @@ import (
 
 type SecretsInitResult struct {
 	Address   types.Address `json:"address"`
+	InterchainECDSASigner types.Address `json:"interchain_ecdsa_signer"`
 	BLSPubkey string        `json:"bls_pubkey"`
 	NodeID    string        `json:"node_id"`
 	Insecure  bool          `json:"insecure"`
@@ -32,6 +33,9 @@ func (r *SecretsInitResult) GetOutput() string {
 		)
 	}
 
+	if r.InterchainECDSASigner != types.ZeroAddress {
+		vals = append(vals,fmt.Sprintf("XITA interchain ECDSA signer|%s",r.InterchainECDSASigner.String()))
+	}
 	vals = append(vals, fmt.Sprintf("Node ID|%s", r.NodeID))
 
 	if r.Insecure {
