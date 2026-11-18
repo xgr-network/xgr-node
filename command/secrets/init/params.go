@@ -12,6 +12,7 @@ const (
 	dataDirFlag            = "data-dir"
 	configFlag             = "config"
 	ecdsaFlag              = "ecdsa"
+	interchainECDSAFlag = "interchain-ecdsa"
 	blsFlag                = "bls"
 	networkFlag            = "network"
 	numFlag                = "num"
@@ -32,6 +33,7 @@ type initParams struct {
 	dataDir            string
 	configPath         string
 	generatesECDSA     bool
+	generatesInterchainECDSA bool
 	generatesBLS       bool
 	generatesNetwork   bool
 	insecureLocalStore bool
@@ -128,6 +130,12 @@ func (ip *initParams) initValidatorKey() error {
 		}
 	}
 
+	if ip.generatesInterchainECDSA {
+		if _, err = helper.InitInterchainECDSAValidatorKey(ip.secretsManager); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -153,6 +161,10 @@ func (ip *initParams) getResult() (command.CommandResult, error) {
 	}
 
 	if res.BLSPubkey, err = helper.LoadBLSPublicKey(ip.secretsManager); err != nil {
+		return nil, err
+	}
+
+	if res.InterchainECDSASigner, err = helper.LoadInterchainECDSASignerAddress(ip.secretsManager); err != nil {
 		return nil, err
 	}
 
