@@ -10,6 +10,7 @@ import (
 	"github.com/xgr-network/xgr-node/command"
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
 	"github.com/xgr-network/xgr-node/crypto"
+	ecdsaV5 "github.com/xgr-network/xgr-node/interchain/ecdsa"
 	"github.com/xgr-network/xgr-node/secrets"
 	secretsHelper "github.com/xgr-network/xgr-node/secrets/helper"
 	"github.com/xgr-network/xgr-node/secrets/local"
@@ -18,21 +19,28 @@ import (
 type bootstrapProofParams struct {
 	dataDir           string
 	config            string
-	originChainID      uint64
+	originChainID     uint64
 	destinationDomain uint32
+	scheme            string
 }
 
 type BootstrapProofResult struct {
-	Validator             string `json:"validator"`
-	OriginChainID         uint64 `json:"originChainId"`
-	DestinationDomain     uint32 `json:"destinationDomain"`
-	BLSPublicKey          string `json:"blsPublicKey"`
-	BLSPublicKeyEIP2537   string `json:"blsPublicKeyEIP2537"`
-	Payload               string `json:"payload"`
-	PossessionProof       string `json:"possessionProof"`
+	Validator           string `json:"validator"`
+	SignatureScheme     string `json:"signatureScheme"`
+	ECDSASigner         string `json:"ecdsaSigner,omitempty"`
+	OriginChainID       uint64 `json:"originChainId"`
+	DestinationDomain   uint32 `json:"destinationDomain"`
+	BLSPublicKey        string `json:"blsPublicKey"`
+	BLSPublicKeyEIP2537 string `json:"blsPublicKeyEIP2537"`
+	Payload             string `json:"payload"`
+	PossessionProof     string `json:"possessionProof"`
 }
 
 func (r *BootstrapProofResult) GetOutput() string {
+	if r.SignatureScheme == "ecdsa" {
+		return fmt.Sprintf("\n[IBFT INTERCHAIN ECDSA BOOTSTRAP-PROOF]\nValidator|%s\nValidator ECDSA signer|%s\nOrigin chain ID|%d\nDestination domain|%d\nPayload|%s\nPossession proof|%s\n",
+			r.Validator, r.ECDSASigner, r.OriginChainID, r.DestinationDomain, r.Payload, r.PossessionProof)
+	}
 	return fmt.Sprintf(
 		"\n[IBFT INTERCHAIN BOOTSTRAP-PROOF]\nValidator|%s\nOrigin chain ID|%d\nDestination domain|%d\nBLS public key|%s\nBLS public key EIP-2537|%s\nPayload|%s\nPossession proof EIP-2537|%s\n",
 		r.Validator, r.OriginChainID, r.DestinationDomain, r.BLSPublicKey,
@@ -44,7 +52,7 @@ func getBootstrapProofCommand() *cobra.Command {
 	p := &bootstrapProofParams{}
 	cmd := &cobra.Command{
 		Use:   "bootstrap-proof",
-		Short: "Create the validator BLS proof required to bootstrap an interchain registry",
+		Short: "Create the validator possession proof required to bootstrap an interchain registry",
 		Args:  cobra.NoArgs,
 		PreRunE: func(_ *cobra.Command, _ []string) error {
 			if p.dataDir == "" && p.config == "" {
@@ -58,6 +66,9 @@ func getBootstrapProofCommand() *cobra.Command {
 			}
 			if p.destinationDomain == 0 {
 				return fmt.Errorf("--destination-domain must be non-zero")
+			}
+			if p.scheme != "bls" && p.scheme != "ecdsa" {
+				return fmt.Errorf("--scheme must be bls or ecdsa")
 			}
 			return nil
 		},
@@ -78,6 +89,7 @@ func getBootstrapProofCommand() *cobra.Command {
 	cmd.Flags().StringVar(&p.config, "config", "", "cloud secrets manager configuration")
 	cmd.Flags().Uint64Var(&p.originChainID, "origin-chain-id", 0, "XGR origin chain ID")
 	cmd.Flags().Uint32Var(&p.destinationDomain, "destination-domain", 0, "destination interchain domain")
+	cmd.Flags().StringVar(&p.scheme, "scheme", "bls", "proof scheme (bls or validator-key ecdsa)")
 	return cmd
 }
 
@@ -97,6 +109,27 @@ func createBootstrapProof(p *bootstrapProofParams) (*BootstrapProofResult, error
 	validator, err := crypto.GetAddressFromKey(ecdsaKey)
 	if err != nil {
 		return nil, fmt.Errorf("derive validator address: %w", err)
+	}
+
+	if p.scheme == "ecdsa" {
+		if p.originChainID != 1643 || p.destinationDomain != 50 {
+			return nil, fmt.Errorf("XDC ECDSA V5 bootstrap requires XGR 1643 and XDC 50")
+		}
+		signer, payload, proof, err := ecdsaV5.SignBootstrapV5(ecdsaKey, p.originChainID, p.destinationDomain)
+		if err != nil {
+			return nil, fmt.Errorf("sign destination ECDSA bootstrap proof: %w", err)
+		}
+		if signer != validator {
+			return nil, fmt.Errorf("ECDSA bootstrap signer must match validator.key identity")
+		}
+		return &BootstrapProofResult{
+			Validator: validator.String(), SignatureScheme: "ecdsa", ECDSASigner: signer.String(),
+			OriginChainID: p.originChainID, DestinationDomain: p.destinationDomain,
+			Payload: "0x" + hex.EncodeToString(payload), PossessionProof: "0x" + hex.EncodeToString(proof),
+		}, nil
+	}
+	if p.scheme != "" && p.scheme != "bls" {
+		return nil, fmt.Errorf("unsupported bootstrap signature scheme")
 	}
 
 	blsRaw, err := sm.GetSecret(secrets.ValidatorBLSKey)
@@ -131,13 +164,14 @@ func createBootstrapProof(p *bootstrapProofParams) (*BootstrapProofResult, error
 	}
 
 	return &BootstrapProofResult{
-		Validator: validator.String(),
-		OriginChainID: p.originChainID,
-		DestinationDomain: p.destinationDomain,
-		BLSPublicKey: "0x" + hex.EncodeToString(blsPub),
+		Validator:           validator.String(),
+		SignatureScheme:     "bls",
+		OriginChainID:       p.originChainID,
+		DestinationDomain:   p.destinationDomain,
+		BLSPublicKey:        "0x" + hex.EncodeToString(blsPub),
 		BLSPublicKeyEIP2537: "0x" + hex.EncodeToString(eipPub),
-		Payload: "0x" + hex.EncodeToString(payload),
-		PossessionProof: "0x" + hex.EncodeToString(eipProof),
+		Payload:             "0x" + hex.EncodeToString(payload),
+		PossessionProof:     "0x" + hex.EncodeToString(eipProof),
 	}, nil
 }
 
@@ -151,6 +185,6 @@ func bootstrapSecretsManager(p *bootstrapProofParams) (secrets.SecretsManager, e
 	}
 	return local.SecretsManagerFactory(nil, &secrets.SecretsManagerParams{
 		Logger: hclog.NewNullLogger(),
-		Extra: map[string]interface{}{secrets.Path: p.dataDir},
+		Extra:  map[string]interface{}{secrets.Path: p.dataDir},
 	})
 }

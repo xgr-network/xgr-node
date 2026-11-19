@@ -76,7 +76,7 @@ func getSetActiveCommand() *cobra.Command {
 		Use:   "set-active",
 		Short: "Activate or deactivate this XGR validator on an interchain destination",
 		Long: "Queues an interchain membership request to the running XGR validator node. " +
-			"The node validates canonical XGR PoS state, signs with the existing validator BLS key, " +
+			"The node validates canonical XGR PoS state, signs with the configured scheme and existing validator key, " +
 			"collects the current interchain quorum, submits the destination transaction, and verifies final state.",
 		Example: "  # Activate this validator for Base\n" +
 			"  xgrchain ibft interchain set-active --chain base --active true --data-dir ./data\n\n" +

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/xgr-network/xgr-node/interchain/authorization"
 	interchainEVM "github.com/xgr-network/xgr-node/interchain/evm"
-	"github.com/xgr-network/xgr-node/types"
 )
 
 // interchainActiveValidatorRPC is an entry in the ordered, destination-side
@@ -14,7 +14,8 @@ import (
 // these indices, so never sort this list by address.
 type interchainActiveValidatorRPC struct {
 	Address      string `json:"address"`
-	BLSPublicKey string `json:"blsPublicKey"`
+	BLSPublicKey string `json:"blsPublicKey,omitempty"`
+	ECDSASigner  string `json:"ecdsaSigner,omitempty"`
 }
 
 // interchainValidatorsRPC describes the on-chain interchain membership set of
@@ -26,6 +27,7 @@ type interchainValidatorsRPC struct {
 	ChainID         uint64                         `json:"chainId"`
 	Domain          uint32                         `json:"domain"`
 	Registry        string                         `json:"registry"`
+	SignatureScheme string                         `json:"signatureScheme"`
 	SetID           uint64                         `json:"setId"`
 	Count           int                            `json:"count"`
 	QuorumThreshold int                            `json:"quorumThreshold"`
@@ -71,34 +73,40 @@ func (x *xgrEndpoint) GetInterchainValidators(destinationName string) (*intercha
 }
 
 func formatInterchainValidators(destination *interchainEVM.Destination, set *interchainEVM.ValidatorSet) (*interchainValidatorsRPC, error) {
-	if destination == nil || set == nil || set.SetID == 0 || len(set.Validators) == 0 ||
-		len(set.Validators) != len(set.BLSPublicKeys) {
+	if destination == nil || set == nil {
 		return nil, fmt.Errorf("invalid interchain registry validator set")
 	}
+	adapter, err := destination.AuthorizationAdapter()
+	if err != nil {
+		return nil, err
+	}
+	if set.Scheme != "" && set.Scheme != adapter.Scheme() {
+		return nil, fmt.Errorf("interchain registry signature scheme differs from configured destination")
+	}
+	canonical := set.AuthorizationSet()
+	if err := adapter.ValidateSet(canonical); err != nil {
+		return nil, fmt.Errorf("invalid interchain registry validator set: %w", err)
+	}
 	out := &interchainValidatorsRPC{
-		Destination: destination.Name,
-		ChainID:     destination.ChainID,
-		Domain:      destination.Domain,
-		Registry:    destination.RegistryAddress,
-		SetID:       set.SetID,
-		Count:       len(set.Validators),
+		Destination:     destination.Name,
+		ChainID:         destination.ChainID,
+		Domain:          destination.Domain,
+		Registry:        destination.RegistryAddress,
+		SignatureScheme: adapter.Scheme(),
+		SetID:           set.SetID,
+		Count:           len(set.Validators),
 		// Solidity Registry V3: ceil(2*n/3), with one-validator sets allowed.
 		QuorumThreshold: (2*len(set.Validators) + 2) / 3,
 		Validators:      make([]interchainActiveValidatorRPC, 0, len(set.Validators)),
 	}
-	seen := make(map[types.Address]struct{}, len(set.Validators))
 	for i, addr := range set.Validators {
-		if addr == types.ZeroAddress || len(set.BLSPublicKeys[i]) != 48 {
-			return nil, fmt.Errorf("invalid interchain validator identity at index %d", i)
+		validator := interchainActiveValidatorRPC{Address: addr.String()}
+		if adapter.Scheme() == authorization.SchemeBLS {
+			validator.BLSPublicKey = "0x" + hex.EncodeToString(canonical.PublicKeys[i])
+		} else {
+			validator.ECDSASigner = addr.String()
 		}
-		if _, exists := seen[addr]; exists {
-			return nil, fmt.Errorf("duplicate interchain validator identity at index %d", i)
-		}
-		seen[addr] = struct{}{}
-		out.Validators = append(out.Validators, interchainActiveValidatorRPC{
-			Address:      addr.String(),
-			BLSPublicKey: "0x" + hex.EncodeToString(set.BLSPublicKeys[i]),
-		})
+		out.Validators = append(out.Validators, validator)
 	}
 	return out, nil
 }

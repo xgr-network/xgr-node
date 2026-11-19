@@ -1,17 +1,16 @@
 package runtime
 
 import (
- "encoding/json"
- "encoding/hex"
+	"encoding/hex"
+	"encoding/json"
 
- protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
- evmInterchain "github.com/xgr-network/xgr-node/interchain/evm"
- "os"
- "path/filepath"
- "strings"
- "time"
+	evmInterchain "github.com/xgr-network/xgr-node/interchain/evm"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
- "github.com/xgr-network/xgr-node/types"
+	"github.com/xgr-network/xgr-node/types"
 )
 
 const ilnSettledRetention = 7 * 24 * time.Hour
@@ -24,176 +23,273 @@ const ilnCleanupBudget = 64
 // deleting a completed attestation and its historical set-specific snapshots.
 // Pending, unreachable, invalid and unknown-route data always survive.
 func (w *Worker) pruneILNQuorumCaches() {
- routesDir:=w.attestationDir()
- routeDirs,err:=os.ReadDir(routesDir);if err!=nil{return}
- budget:=ilnCleanupBudget
- for _,routeEntry:=range routeDirs {
-  if budget<=0{return}
-  if !routeEntry.IsDir(){continue}
-  name:=routeEntry.Name()
-  w.mu.Lock()
-  route:=w.routes[name]
-  w.mu.Unlock()
-  if route==nil {continue}
-  source:=w.destinations[route.SourceNetwork]
-  destination:=w.destinations[route.Destination]
-  if source==nil||destination==nil {continue}
-  dir:=filepath.Join(routesDir,name)
-  entries,err:=os.ReadDir(dir);if err!=nil{continue}
-  if len(entries)==0{continue}
-  // Rotate the bounded candidate window hourly. Otherwise a small number
-  // of old unsettled transfers could permanently starve later archives.
-  start:=int(((time.Now().Unix()/3600)*int64(ilnCleanupBudget))%int64(len(entries)))
-  for offset:=0;offset<len(entries);offset++ {
-   if budget<=0{return}
-   entry:=entries[(start+offset)%len(entries)]
-   if !entry.IsDir(){continue}
-   messageID:=entry.Name()
-   if len(messageID)!=66||!strings.HasPrefix(messageID,"0x"){continue}
-   hash:=types.StringToHash(messageID)
-   if hash==types.ZeroHash||hash.String()!=messageID{continue}
-   info,err:=entry.Info()
-   if err!=nil {continue}
-   aliasPath:=filepath.Join(dir,messageID+".json")
-   aliasInfo,err:=os.Stat(aliasPath)
-   if err!=nil{continue}
-   newest:=info.ModTime()
-   if aliasInfo.ModTime().After(newest){newest=aliasInfo.ModTime()}
-   age:=time.Since(newest)
-   if age<ilnSettledRetention{continue}
-   budget--
-   // The immutable source registry route tuple includes the canonical
-   // destination router. Never trust a local filename or arbitrary caller.
-   snapshot,err:=w.sourceILNRoute(source,destination.Domain,route.RouteID)
-   if err!=nil{
-    // Disabled routes still have pending historical messages: use the
-    // historical source block from a persisted signer-approved attestation.
-    raw,readErr:=os.ReadFile(filepath.Join(dir,messageID+".json"))
-    if readErr!=nil{continue}
-    var a ilnCheckpointAttestation
-    if json.Unmarshal(raw,&a)!=nil||!strings.EqualFold(a.AuthorizedMessageID,messageID)||a.SourceBlockNumber==0{continue}
-    snapshot,err=w.sourceILNRouteAtBlock(source,destination.Domain,route.RouteID,a.SourceBlockNumber)
-    if err!=nil{continue}
-   }
-   delivered,err:=getILNMessageDelivered(destination,snapshot.Route.DestinationRouter,hash)
-   if err!=nil{continue}
-   // F-20: proof of possible reconstruction is NOT a durable successor.
-   // Retain any undelivered attestation until completion is authenticated.
-   if !delivered {continue}
-   // No bridge custody data is needed locally after successful on-chain
-   // delivery; chain logs and receipts remain independently auditable.
-   if err:=os.RemoveAll(filepath.Join(dir,messageID));err!=nil{continue}
-   _=os.Remove(filepath.Join(dir,messageID+".json"))
-   latestPath:=filepath.Join(dir,"latest.json")
-   if raw,err:=os.ReadFile(latestPath);err==nil{
-    var latest ilnCheckpointAttestation
-    if json.Unmarshal(raw,&latest)==nil&&strings.EqualFold(latest.AuthorizedMessageID,messageID){
-     _=os.Remove(latestPath)
-    }
-   }
-  }
- }
+	routesDir := w.attestationDir()
+	routeDirs, err := os.ReadDir(routesDir)
+	if err != nil {
+		return
+	}
+	budget := ilnCleanupBudget
+	for _, routeEntry := range routeDirs {
+		if budget <= 0 {
+			return
+		}
+		if !routeEntry.IsDir() {
+			continue
+		}
+		name := routeEntry.Name()
+		w.mu.Lock()
+		route := w.routes[name]
+		w.mu.Unlock()
+		if route == nil {
+			continue
+		}
+		source := w.destinations[route.SourceNetwork]
+		destination := w.destinations[route.Destination]
+		if source == nil || destination == nil {
+			continue
+		}
+		dir := filepath.Join(routesDir, name)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		if len(entries) == 0 {
+			continue
+		}
+		// Rotate the bounded candidate window hourly. Otherwise a small number
+		// of old unsettled transfers could permanently starve later archives.
+		start := int(((time.Now().Unix() / 3600) * int64(ilnCleanupBudget)) % int64(len(entries)))
+		for offset := 0; offset < len(entries); offset++ {
+			if budget <= 0 {
+				return
+			}
+			entry := entries[(start+offset)%len(entries)]
+			if !entry.IsDir() {
+				continue
+			}
+			messageID := entry.Name()
+			if len(messageID) != 66 || !strings.HasPrefix(messageID, "0x") {
+				continue
+			}
+			hash := types.StringToHash(messageID)
+			if hash == types.ZeroHash || hash.String() != messageID {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			aliasPath := filepath.Join(dir, messageID+".json")
+			aliasInfo, err := os.Stat(aliasPath)
+			if err != nil {
+				continue
+			}
+			newest := info.ModTime()
+			if aliasInfo.ModTime().After(newest) {
+				newest = aliasInfo.ModTime()
+			}
+			age := time.Since(newest)
+			if age < ilnSettledRetention {
+				continue
+			}
+			budget--
+			// The immutable source registry route tuple includes the canonical
+			// destination router. Never trust a local filename or arbitrary caller.
+			snapshot, err := w.sourceILNRoute(source, destination.Domain, route.RouteID)
+			if err != nil {
+				// Disabled routes still have pending historical messages: use the
+				// historical source block from a persisted signer-approved attestation.
+				raw, readErr := os.ReadFile(filepath.Join(dir, messageID+".json"))
+				if readErr != nil {
+					continue
+				}
+				var a ilnCheckpointAttestation
+				if json.Unmarshal(raw, &a) != nil || !strings.EqualFold(a.AuthorizedMessageID, messageID) || a.SourceBlockNumber == 0 {
+					continue
+				}
+				snapshot, err = w.sourceILNRouteAtBlock(source, destination.Domain, route.RouteID, a.SourceBlockNumber)
+				if err != nil {
+					continue
+				}
+			}
+			delivered, err := getILNMessageDelivered(destination, snapshot.Route.DestinationRouter, hash)
+			if err != nil {
+				continue
+			}
+			// F-20: proof of possible reconstruction is NOT a durable successor.
+			// Retain any undelivered attestation until completion is authenticated.
+			if !delivered {
+				continue
+			}
+			// No bridge custody data is needed locally after successful on-chain
+			// delivery; chain logs and receipts remain independently auditable.
+			if err := os.RemoveAll(filepath.Join(dir, messageID)); err != nil {
+				continue
+			}
+			_ = os.Remove(filepath.Join(dir, messageID+".json"))
+			latestPath := filepath.Join(dir, "latest.json")
+			if raw, err := os.ReadFile(latestPath); err == nil {
+				var latest ilnCheckpointAttestation
+				if json.Unmarshal(raw, &latest) == nil && strings.EqualFold(latest.AuthorizedMessageID, messageID) {
+					_ = os.Remove(latestPath)
+				}
+			}
+		}
+	}
 }
 
-
-func (w *Worker) canRegenerateILNQuorum(route *evmInterchain.CheckpointRoute,aliasPath string,messageID types.Hash)bool {
- if route==nil||messageID==types.ZeroHash{return false}
- raw,err:=os.ReadFile(aliasPath)
- if err!=nil||len(raw)>16384{return false}
- var record ilnCheckpointAttestation
- if json.Unmarshal(raw,&record)!=nil||record.Chain!=route.Name||
-   record.Version!=protocol.XITADirectMessageDomain||
-   record.AuthorizedMessageID!=messageID.String()||
-   record.SourceBlockNumber==0||record.Payload==""{return false}
- packed,err:=hex.DecodeString(strings.TrimPrefix(record.Payload,"0x"))
- if err!=nil{return false}
- var payload protocol.XITADirectMessage
- if payload.UnmarshalBinary(packed)!=nil||payload.RouteID!=route.RouteID||
-   payload.MessageID!=messageID||payload.SourceBlockNumber!=record.SourceBlockNumber{return false}
- // Pending signatures may be removed ONLY when the original confirmed
- // fee-qualified source receipt remains independently re-verifiable under
- // the current destination set. A pruned RPC or a source outage retains them.
- ctx,err:=w.verifyDirectILNEvidence(route,messageID,payload.SourceBlockNumber)
- if err!=nil{return false}
- current:=w.directILNPayload(ctx)
- expected,err:=current.MarshalBinary()
- return err==nil&&len(expected)>0&&ctx.set.SetID>0
+func (w *Worker) canRegenerateILNQuorum(route *evmInterchain.CheckpointRoute, aliasPath string, messageID types.Hash) bool {
+	if route == nil || messageID == types.ZeroHash {
+		return false
+	}
+	raw, err := os.ReadFile(aliasPath)
+	if err != nil || len(raw) > 16384 {
+		return false
+	}
+	var record ilnCheckpointAttestation
+	if json.Unmarshal(raw, &record) != nil || record.Chain != route.Name ||
+		record.AuthorizedMessageID != messageID.String() ||
+		record.SourceBlockNumber == 0 || record.Payload == "" {
+		return false
+	}
+	packed, err := hex.DecodeString(strings.TrimPrefix(record.Payload, "0x"))
+	if err != nil {
+		return false
+	}
+	payload, destination, err := w.decodeDirectPayload(packed)
+	if err != nil {
+		return false
+	}
+	adapter, err := destination.AuthorizationAdapter()
+	if err != nil || record.Version != adapter.DirectDomain() {
+		return false
+	}
+	if payload.RouteID != route.RouteID ||
+		payload.MessageID != messageID || payload.SourceBlockNumber != record.SourceBlockNumber {
+		return false
+	}
+	// Pending signatures may be removed ONLY when the original confirmed
+	// fee-qualified source receipt remains independently re-verifiable under
+	// the current destination set. A pruned RPC or a source outage retains them.
+	ctx, err := w.verifyDirectILNEvidence(route, messageID, payload.SourceBlockNumber)
+	if err != nil {
+		return false
+	}
+	current := w.directILNPayload(ctx)
+	expected, err := adapter.EncodeDirect(current)
+	return err == nil && len(expected) > 0 && ctx.set.SetID > 0
 }
 
 func (w *Worker) pruneExpiredILNGovernance() {
- entries,err:=os.ReadDir(w.governanceProposalDir());if err!=nil{return}
- cutoff:=uint64(time.Now().Add(-ilnSettledRetention).Unix())
- for _,entry:=range entries {
-  if entry.IsDir()||!strings.HasSuffix(entry.Name(),".json"){continue}
-  path:=filepath.Join(w.governanceProposalDir(),entry.Name())
-  _,proposal,_,err:=readStoredGovernanceProposal(path)
-  if err!=nil||proposal.ValidUntil>=cutoff{continue}
-  id:=strings.TrimSuffix(entry.Name(),".json")
-  _=os.Remove(path)
-  _=os.Remove(filepath.Join(w.governanceQuorumDir(),id+".json"))
- }
+	entries, err := os.ReadDir(w.governanceProposalDir())
+	if err != nil {
+		return
+	}
+	cutoff := uint64(time.Now().Add(-ilnSettledRetention).Unix())
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(w.governanceProposalDir(), entry.Name())
+		_, proposal, _, err := readStoredGovernanceProposal(path)
+		if err != nil || proposal.ValidUntil >= cutoff {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		_ = os.Remove(path)
+		_ = os.Remove(filepath.Join(w.governanceQuorumDir(), id+".json"))
+	}
 }
 
 // F-32: bounded reclamation of expired, unverified quorum requests for
 // routes not admitted to the active registry. Recent requests and all
 // attestation/vote archives remain untouched.
-func (w *Worker) pruneExpiredUnknownILNRequests(){
- base:=filepath.Join(w.ilnDir(),"quorum-requests")
- dirs,err:=os.ReadDir(base)
- if err!=nil{return}
- remaining:=ilnCleanupBudget
- for _,dir:=range dirs{
-  if remaining<=0{break}
-  if !dir.IsDir(){continue}
-  w.mu.Lock()
-  _,known:=w.routes[dir.Name()]
-  w.mu.Unlock()
-  if known{continue}
-  path:=filepath.Join(base,dir.Name())
-  entries,e:=os.ReadDir(path)
-  if e!=nil{continue}
-  for _,entry:=range entries{
-   if remaining<=0{break}
-   if entry.IsDir()||!strings.HasSuffix(entry.Name(),".json"){continue}
-   info,e:=entry.Info()
-   if e!=nil||time.Since(info.ModTime())<maxILNQuorumHintAge{continue}
-   if os.Remove(filepath.Join(path,entry.Name()))==nil{remaining--}
-  }
-  // Remove empty directories only; never recurse into unknown storage.
-  _=os.Remove(path)
- }
+func (w *Worker) pruneExpiredUnknownILNRequests() {
+	base := filepath.Join(w.ilnDir(), "quorum-requests")
+	dirs, err := os.ReadDir(base)
+	if err != nil {
+		return
+	}
+	remaining := ilnCleanupBudget
+	for _, dir := range dirs {
+		if remaining <= 0 {
+			break
+		}
+		if !dir.IsDir() {
+			continue
+		}
+		w.mu.Lock()
+		_, known := w.routes[dir.Name()]
+		w.mu.Unlock()
+		if known {
+			continue
+		}
+		path := filepath.Join(base, dir.Name())
+		entries, e := os.ReadDir(path)
+		if e != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if remaining <= 0 {
+				break
+			}
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			info, e := entry.Info()
+			if e != nil || time.Since(info.ModTime()) < maxILNQuorumHintAge {
+				continue
+			}
+			if os.Remove(filepath.Join(path, entry.Name())) == nil {
+				remaining--
+			}
+		}
+		// Remove empty directories only; never recurse into unknown storage.
+		_ = os.Remove(path)
+	}
 }
 
 func (w *Worker) storageMaintenanceLoop() {
- defer w.wg.Done()
- ticker:=time.NewTicker(ilnCleanupInterval)
- defer ticker.Stop()
- for {
-  select {
-  case <-w.closeCh: return
-  case <-ticker.C:
-   w.pruneILNQuorumCaches()
-   w.pruneExpiredUnknownILNRequests()
-   w.pruneExpiredILNGovernance()
-   w.pruneCompletedILNControlResults()
-  }
- }
+	defer w.wg.Done()
+	ticker := time.NewTicker(ilnCleanupInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-w.closeCh:
+			return
+		case <-ticker.C:
+			w.pruneILNQuorumCaches()
+			w.pruneExpiredUnknownILNRequests()
+			w.pruneExpiredILNGovernance()
+			w.pruneCompletedILNControlResults()
+		}
+	}
 }
 
 // Completed CLI results are delivery receipts for local control requests,
 // not asset-custody data. Wait seven days so slow CLI readers can collect
 // them, then reclaim their small JSON files. Never delete pending requests.
 func (w *Worker) pruneCompletedILNControlResults() {
- for _,dir:=range []string{w.governanceResultDir(),w.resultDir()} {
-  entries,err:=os.ReadDir(dir)
-  if err!=nil{continue}
-  removed:=0
-  for _,entry:=range entries {
-   if removed>=128 {break}
-   if entry.IsDir()||!strings.HasSuffix(entry.Name(),".json"){continue}
-   info,err:=entry.Info()
-   if err!=nil||time.Since(info.ModTime())<ilnSettledRetention{continue}
-   if os.Remove(filepath.Join(dir,entry.Name()))==nil{removed++}
-  }
- }
+	for _, dir := range []string{w.governanceResultDir(), w.resultDir()} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		removed := 0
+		for _, entry := range entries {
+			if removed >= 128 {
+				break
+			}
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil || time.Since(info.ModTime()) < ilnSettledRetention {
+				continue
+			}
+			if os.Remove(filepath.Join(dir, entry.Name())) == nil {
+				removed++
+			}
+		}
+	}
 }
