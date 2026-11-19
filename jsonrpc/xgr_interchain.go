@@ -1,6 +1,7 @@
 package jsonrpc
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
 	"github.com/xgr-network/xgr-node/crypto"
+	"github.com/xgr-network/xgr-node/interchain/authorization"
+	evmInterchain "github.com/xgr-network/xgr-node/interchain/evm"
 	xgrsvc "github.com/xgr-network/xgr-node/jsonrpc/xgr"
 )
 
@@ -33,8 +36,10 @@ type interchainSourceFeeQuorumRPC struct {
 	ValidUntil                   uint64 `json:"validUntil"`
 	Payload                      string `json:"payload"`
 	SignerBitmap                 string `json:"signerBitmap"`
-	AggregateSignature           string `json:"aggregateSignature"`
-	AggregateSignatureCompressed string `json:"aggregateSignatureCompressed"`
+	AggregateSignature           string `json:"aggregateSignature,omitempty"`
+	AggregateSignatureCompressed string `json:"aggregateSignatureCompressed,omitempty"`
+	SignatureScheme              string `json:"signatureScheme,omitempty"`
+	Signatures                   string `json:"signatures,omitempty"`
 }
 
 type interchainAttestationRPC struct {
@@ -58,8 +63,10 @@ type interchainAttestationRPC struct {
 	DestinationRegistry          string `json:"destinationRegistry"`
 	Payload                      string `json:"payload"`
 	SignerBitmap                 string `json:"signerBitmap"`
-	AggregateSignature           string `json:"aggregateSignature"`
-	AggregateSignatureCompressed string `json:"aggregateSignatureCompressed"`
+	AggregateSignature           string `json:"aggregateSignature,omitempty"`
+	AggregateSignatureCompressed string `json:"aggregateSignatureCompressed,omitempty"`
+	SignatureScheme              string `json:"signatureScheme,omitempty"`
+	Signatures                   string `json:"signatures,omitempty"`
 }
 
 func newXGREndpoint(base *xgrsvc.XGR, dataDir string) *xgrEndpoint {
@@ -67,24 +74,37 @@ func newXGREndpoint(base *xgrsvc.XGR, dataDir string) *xgrEndpoint {
 }
 
 // GetInterchainAttestation returns the latest completed native XGR interchain
-// checkpoint attestation for one configured route. It is read-only and
+// direct-message attestation for one route. It is read-only and
 // never triggers signing.
 func (x *xgrEndpoint) GetInterchainAttestation(chain string) (*interchainAttestationRPC, error) {
+	if x == nil {
+		return nil, fmt.Errorf("interchain attestation storage is unavailable")
+	}
 	normalized, err := normalizeInterchainRPCChain(chain)
 	if err != nil {
 		return nil, err
 	}
-	return x.readInterchainAttestation(filepath.Join(
+	out, err := x.readInterchainAttestation(filepath.Join(
 		x.dataDir, "interchain", "attestations", normalized, "latest.json",
 	))
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(out.Chain, normalized) {
+		return nil, fmt.Errorf("interchain attestation route mismatch")
+	}
+	return out, nil
 }
 
-// GetILNInterchainAttestation returns the completed v3.1.3 attestation for
+// GetILNInterchainAttestation returns a completed direct-message attestation for
 // one fee-qualified Hyperlane message ID. It is read-only.
 func (x *xgrEndpoint) GetILNInterchainAttestation(
 	chain string,
 	messageID string,
 ) (*interchainAttestationRPC, error) {
+	if x == nil {
+		return nil, fmt.Errorf("interchain attestation storage is unavailable")
+	}
 	normalized, err := normalizeInterchainRPCChain(chain)
 	if err != nil {
 		return nil, err
@@ -98,9 +118,16 @@ func (x *xgrEndpoint) GetILNInterchainAttestation(
 			return nil, fmt.Errorf("ILN message id must be hexadecimal")
 		}
 	}
-	return x.readInterchainAttestation(filepath.Join(
+	out, err := x.readInterchainAttestation(filepath.Join(
 		x.dataDir, "interchain", "attestations", normalized, messageID+".json",
 	))
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(out.Chain, normalized) || !strings.EqualFold(out.AuthorizedMessageID, messageID) {
+		return nil, fmt.Errorf("interchain attestation route/message mismatch")
+	}
+	return out, nil
 }
 
 func (x *xgrEndpoint) readInterchainAttestation(path string) (*interchainAttestationRPC, error) {
@@ -125,46 +152,42 @@ func (x *xgrEndpoint) readInterchainAttestation(path string) (*interchainAttesta
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("decode interchain attestation: %w", err)
 	}
-    if out.Version != protocol.XITADirectMessageDomain ||
-        out.Chain==""||out.RouteID==""||out.AuthorizedMessageID==""||
-        out.SourceRouter==""||out.Payload==""||
-        out.DestinationISM==""||out.DestinationRegistry==""||
-        out.AggregateSignature==""||out.AggregateSignatureCompressed==""||
-        out.SignerBitmap=="" {
-        return nil,fmt.Errorf("Direct BLS interchain attestation is incomplete")
-    }
-    rawPayload,err:=hex.DecodeString(strings.TrimPrefix(out.Payload,"0x"))
-    if err!=nil||!strings.HasPrefix(out.Payload,"0x"){
-        return nil,fmt.Errorf("malformed Direct BLS signed payload")
-    }
-    var p protocol.XITADirectMessage
-    if err:=p.UnmarshalBinary(rawPayload);err!=nil{
-        return nil,fmt.Errorf("invalid Direct BLS signing domain/payload: %w",err)
-    }
-    if p.SourceChainID!=out.OriginChainID||p.SourceDomain!=out.OriginDomain||
-       p.DestinationDomain!=out.DestinationDomain||p.SetID!=out.SetID||
-       p.SourceBlockNumber!=out.SourceBlockNumber||
-       !strings.EqualFold(p.RouteID.String(),out.RouteID)||
-       !strings.EqualFold(p.SourceRegistry.String(),out.Registry)||
-       !strings.EqualFold(p.Gateway.String(),out.Gateway)||
-       !strings.EqualFold(p.SourceRouter.String(),out.SourceRouter)||
-       !strings.EqualFold(p.SourceMailbox.String(),out.Mailbox)||
-       !strings.EqualFold(p.DestinationRouter.String(),out.DestinationRouter)||
-       p.ValidatorFeeWei.String()!=out.ValidatorFeeWei||
-       !strings.EqualFold(p.MessageID.String(),out.AuthorizedMessageID)||
-       !strings.EqualFold(p.DestinationISM.String(),out.DestinationISM)||
-       !strings.EqualFold(p.DestinationRegistry.String(),out.DestinationRegistry){
-        return nil,fmt.Errorf("Direct BLS archived fields do not match canonical signed bytes")
-    }
-    if bitmap,e:=hex.DecodeString(strings.TrimPrefix(out.SignerBitmap,"0x"));e!=nil||len(bitmap)==0{
-        return nil,fmt.Errorf("malformed Direct BLS signer bitmap")
-    }
-    if signature,e:=hex.DecodeString(strings.TrimPrefix(out.AggregateSignature,"0x"));e!=nil||len(signature)!=256{
-        return nil,fmt.Errorf("malformed uncompressed Direct BLS aggregate")
-    }
-    if signature,e:=hex.DecodeString(strings.TrimPrefix(out.AggregateSignatureCompressed,"0x"));e!=nil||len(signature)!=96{
-        return nil,fmt.Errorf("malformed compressed Direct BLS aggregate")
-    }
+	adapter, err := archiveAuthorizationAdapter(out.SignatureScheme)
+	if err != nil {
+		return nil, err
+	}
+	if out.Version != adapter.DirectDomain() || out.Chain == "" || out.RouteID == "" || out.AuthorizedMessageID == "" ||
+		out.SourceRouter == "" || out.Payload == "" || out.DestinationISM == "" || out.DestinationRegistry == "" || out.SignerBitmap == "" {
+		return nil, fmt.Errorf("direct interchain attestation is incomplete or uses a different signature scheme")
+	}
+	rawPayload, err := decodeArchiveHex(out.Payload, 2048)
+	if err != nil {
+		return nil, fmt.Errorf("malformed direct signed payload: %w", err)
+	}
+	p, err := adapter.DecodeDirect(rawPayload)
+	if err != nil {
+		return nil, fmt.Errorf("invalid direct signing domain/payload: %w", err)
+	}
+
+	if p.SourceChainID != out.OriginChainID || p.SourceDomain != out.OriginDomain ||
+		p.DestinationDomain != out.DestinationDomain || p.SetID != out.SetID ||
+		p.SourceBlockNumber != out.SourceBlockNumber ||
+		!strings.EqualFold(p.RouteID.String(), out.RouteID) ||
+		!strings.EqualFold(p.SourceRegistry.String(), out.Registry) ||
+		!strings.EqualFold(p.Gateway.String(), out.Gateway) ||
+		!strings.EqualFold(p.SourceRouter.String(), out.SourceRouter) ||
+		!strings.EqualFold(p.SourceMailbox.String(), out.Mailbox) ||
+		!strings.EqualFold(p.DestinationRouter.String(), out.DestinationRouter) ||
+		p.ValidatorFeeWei.String() != out.ValidatorFeeWei ||
+		!strings.EqualFold(p.MessageID.String(), out.AuthorizedMessageID) ||
+		!strings.EqualFold(p.DestinationISM.String(), out.DestinationISM) ||
+		!strings.EqualFold(p.DestinationRegistry.String(), out.DestinationRegistry) {
+		return nil, fmt.Errorf("Direct archived fields do not match canonical signed bytes")
+	}
+	if err := validateArchiveProof(adapter, out.SignerBitmap, out.AggregateSignature, out.AggregateSignatureCompressed, out.Signatures); err != nil {
+		return nil, err
+	}
+
 	return &out, nil
 }
 
@@ -212,8 +235,7 @@ func (x *xgrEndpoint) GetILNGovernanceQuorum(proposalID string) (*interchainSour
 		out.SourceChainID == 0 || out.SourceDomain == 0 ||
 		out.Registry == "" || out.SetID == 0 || out.Nonce == 0 ||
 		out.ValidUntil == 0 || out.ValidatorFeeWei == "" ||
-		out.Payload == "" || out.SignerBitmap == "" ||
-		out.AggregateSignature == "" {
+		out.Payload == "" || out.SignerBitmap == "" {
 		return nil, fmt.Errorf("ILN source fee quorum is incomplete")
 	}
 	if !strings.HasPrefix(out.Payload, "0x") {
@@ -236,7 +258,73 @@ func (x *xgrEndpoint) GetILNGovernanceQuorum(proposalID string) (*interchainSour
 		proposal.ValidatorFeeWei.String() != out.ValidatorFeeWei {
 		return nil, fmt.Errorf("ILN source fee quorum does not match signed proposal")
 	}
+	adapter, err := archiveAuthorizationAdapter(out.SignatureScheme)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateArchiveProof(adapter, out.SignerBitmap, out.AggregateSignature, out.AggregateSignatureCompressed, out.Signatures); err != nil {
+		return nil, err
+	}
 	return &out, nil
+}
+
+// Archive decoding is offline and does not grant signing or execution
+// authority. An absent scheme is the released BLS archive schema; ECDSA must
+// be explicitly tagged. Live configured sets remain mandatory at execution.
+func archiveAuthorizationAdapter(scheme string) (*authorization.Adapter, error) {
+	if scheme == "" {
+		scheme = authorization.SchemeBLS
+	}
+	return authorization.ForScheme(scheme)
+}
+
+func decodeArchiveHex(value string, maxBytes int) ([]byte, error) {
+	if !strings.HasPrefix(value, "0x") || len(value) < 4 || len(value)%2 != 0 || len(value) > 2+2*maxBytes {
+		return nil, fmt.Errorf("invalid bounded quorum hex")
+	}
+	return hex.DecodeString(value[2:])
+}
+
+// validateArchiveProof checks only canonical representation, never membership
+// authority. Raw historical proofs are still AVAILABLE_UNVERIFIED until an
+// executor/worker verifies the current canonical destination registry set.
+func validateArchiveProof(adapter *authorization.Adapter, bitmap, aggregate, compressed, signatures string) error {
+	rawBitmap, err := decodeArchiveHex(bitmap, 256)
+	if err != nil {
+		return fmt.Errorf("malformed signer bitmap: %w", err)
+	}
+	destination := &evmInterchain.Destination{SignatureScheme: adapter.Scheme()}
+	var rawSignature []byte
+	if adapter.Scheme() == authorization.SchemeECDSA {
+		if aggregate != "" || compressed != "" {
+			return fmt.Errorf("ECDSA archive contains BLS signature fields")
+		}
+		rawSignature, err = decodeArchiveHex(signatures, 64*65)
+		if err != nil {
+			return fmt.Errorf("malformed ECDSA signatures: %w", err)
+		}
+		destination.VerifierFormat = evmInterchain.VerifierFormatECDSA
+	} else {
+		if signatures != "" {
+			return fmt.Errorf("BLS archive contains ECDSA signatures")
+		}
+		rawSignature, err = decodeArchiveHex(compressed, 96)
+		if err != nil || len(rawSignature) != 96 {
+			return fmt.Errorf("malformed compressed BLS aggregate")
+		}
+		destination.VerifierFormat = evmInterchain.VerifierFormatEIP2537
+	}
+	formatted, err := evmInterchain.FormatQuorumProof(destination, authorization.Proof{Bitmap: rawBitmap, Signature: rawSignature})
+	if err != nil {
+		return fmt.Errorf("malformed archived quorum proof: %w", err)
+	}
+	if adapter.Scheme() == authorization.SchemeBLS {
+		expanded, err := decodeArchiveHex(aggregate, 256)
+		if err != nil || len(expanded) != 256 || !bytes.Equal(expanded, formatted.Signature) {
+			return fmt.Errorf("BLS archive has mismatched compressed/expanded aggregate")
+		}
+	}
+	return nil
 }
 
 func normalizeInterchainRPCChain(chain string) (string, error) {

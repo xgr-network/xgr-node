@@ -19,27 +19,27 @@ import (
 type bootstrapProofParams struct {
 	dataDir           string
 	config            string
-	originChainID      uint64
+	originChainID     uint64
 	destinationDomain uint32
 	scheme            string
 }
 
 type BootstrapProofResult struct {
-	Validator             string `json:"validator"`
-	SignatureScheme       string `json:"signatureScheme"`
-	ECDSASigner           string `json:"ecdsaSigner,omitempty"`
-	OriginChainID         uint64 `json:"originChainId"`
-	DestinationDomain     uint32 `json:"destinationDomain"`
-	BLSPublicKey          string `json:"blsPublicKey"`
-	BLSPublicKeyEIP2537   string `json:"blsPublicKeyEIP2537"`
-	Payload               string `json:"payload"`
-	PossessionProof       string `json:"possessionProof"`
+	Validator           string `json:"validator"`
+	SignatureScheme     string `json:"signatureScheme"`
+	ECDSASigner         string `json:"ecdsaSigner,omitempty"`
+	OriginChainID       uint64 `json:"originChainId"`
+	DestinationDomain   uint32 `json:"destinationDomain"`
+	BLSPublicKey        string `json:"blsPublicKey"`
+	BLSPublicKeyEIP2537 string `json:"blsPublicKeyEIP2537"`
+	Payload             string `json:"payload"`
+	PossessionProof     string `json:"possessionProof"`
 }
 
 func (r *BootstrapProofResult) GetOutput() string {
 	if r.SignatureScheme == "ecdsa" {
 		return fmt.Sprintf("\n[IBFT INTERCHAIN ECDSA BOOTSTRAP-PROOF]\nValidator|%s\nValidator ECDSA signer|%s\nOrigin chain ID|%d\nDestination domain|%d\nPayload|%s\nPossession proof|%s\n",
-			r.Validator,r.ECDSASigner,r.OriginChainID,r.DestinationDomain,r.Payload,r.PossessionProof)
+			r.Validator, r.ECDSASigner, r.OriginChainID, r.DestinationDomain, r.Payload, r.PossessionProof)
 	}
 	return fmt.Sprintf(
 		"\n[IBFT INTERCHAIN BOOTSTRAP-PROOF]\nValidator|%s\nOrigin chain ID|%d\nDestination domain|%d\nBLS public key|%s\nBLS public key EIP-2537|%s\nPayload|%s\nPossession proof EIP-2537|%s\n",
@@ -52,7 +52,7 @@ func getBootstrapProofCommand() *cobra.Command {
 	p := &bootstrapProofParams{}
 	cmd := &cobra.Command{
 		Use:   "bootstrap-proof",
-		Short: "Create the validator BLS proof required to bootstrap an interchain registry",
+		Short: "Create the validator possession proof required to bootstrap an interchain registry",
 		Args:  cobra.NoArgs,
 		PreRunE: func(_ *cobra.Command, _ []string) error {
 			if p.dataDir == "" && p.config == "" {
@@ -115,16 +115,22 @@ func createBootstrapProof(p *bootstrapProofParams) (*BootstrapProofResult, error
 		if p.originChainID != 1643 || p.destinationDomain != 50 {
 			return nil, fmt.Errorf("XDC ECDSA V5 bootstrap requires XGR 1643 and XDC 50")
 		}
-		signer,payload,proof,err:=ecdsaV5.SignBootstrapV5(ecdsaKey,p.originChainID,p.destinationDomain)
-		if err != nil { return nil,fmt.Errorf("sign destination ECDSA bootstrap proof: %w",err) }
-		if signer!=validator { return nil,fmt.Errorf("ECDSA bootstrap signer must match validator.key identity") }
+		signer, payload, proof, err := ecdsaV5.SignBootstrapV5(ecdsaKey, p.originChainID, p.destinationDomain)
+		if err != nil {
+			return nil, fmt.Errorf("sign destination ECDSA bootstrap proof: %w", err)
+		}
+		if signer != validator {
+			return nil, fmt.Errorf("ECDSA bootstrap signer must match validator.key identity")
+		}
 		return &BootstrapProofResult{
-			Validator:validator.String(),SignatureScheme:"ecdsa",ECDSASigner:signer.String(),
-			OriginChainID:p.originChainID,DestinationDomain:p.destinationDomain,
-			Payload:"0x"+hex.EncodeToString(payload),PossessionProof:"0x"+hex.EncodeToString(proof),
-		},nil
+			Validator: validator.String(), SignatureScheme: "ecdsa", ECDSASigner: signer.String(),
+			OriginChainID: p.originChainID, DestinationDomain: p.destinationDomain,
+			Payload: "0x" + hex.EncodeToString(payload), PossessionProof: "0x" + hex.EncodeToString(proof),
+		}, nil
 	}
-	if p.scheme!="" && p.scheme!="bls" { return nil,fmt.Errorf("unsupported bootstrap signature scheme") }
+	if p.scheme != "" && p.scheme != "bls" {
+		return nil, fmt.Errorf("unsupported bootstrap signature scheme")
+	}
 
 	blsRaw, err := sm.GetSecret(secrets.ValidatorBLSKey)
 	if err != nil {
@@ -158,14 +164,14 @@ func createBootstrapProof(p *bootstrapProofParams) (*BootstrapProofResult, error
 	}
 
 	return &BootstrapProofResult{
-		Validator: validator.String(),
-		SignatureScheme: "bls",
-		OriginChainID: p.originChainID,
-		DestinationDomain: p.destinationDomain,
-		BLSPublicKey: "0x" + hex.EncodeToString(blsPub),
+		Validator:           validator.String(),
+		SignatureScheme:     "bls",
+		OriginChainID:       p.originChainID,
+		DestinationDomain:   p.destinationDomain,
+		BLSPublicKey:        "0x" + hex.EncodeToString(blsPub),
 		BLSPublicKeyEIP2537: "0x" + hex.EncodeToString(eipPub),
-		Payload: "0x" + hex.EncodeToString(payload),
-		PossessionProof: "0x" + hex.EncodeToString(eipProof),
+		Payload:             "0x" + hex.EncodeToString(payload),
+		PossessionProof:     "0x" + hex.EncodeToString(eipProof),
 	}, nil
 }
 
@@ -179,6 +185,6 @@ func bootstrapSecretsManager(p *bootstrapProofParams) (secrets.SecretsManager, e
 	}
 	return local.SecretsManagerFactory(nil, &secrets.SecretsManagerParams{
 		Logger: hclog.NewNullLogger(),
-		Extra: map[string]interface{}{secrets.Path: p.dataDir},
+		Extra:  map[string]interface{}{secrets.Path: p.dataDir},
 	})
 }

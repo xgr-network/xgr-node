@@ -1,6 +1,7 @@
 // Package ecdsa implements the on-chain XGR Interchain ECDSA signature format.
-// The lifecycle codec matches XGRInterchainECDSAValidatorRegistryV5 and does
-// NOT enroll any validator in a running worker. No private key leaves the node.
+// The lifecycle codec matches XGRInterchainECDSAValidatorRegistryV5. Membership
+// policy and activation remain in the shared runtime. No private key leaves
+// the node.
 package ecdsa
 
 import (
@@ -29,13 +30,13 @@ const (
 // MembershipV5 names ONE validator action on ONE destination Registry,
 // not a replacement for the entire destination validator set.
 type MembershipV5 struct {
-	OriginChainID      uint64
-	DestinationDomain  uint32
-	Registry           types.Address
-	ExpectedSetID      uint64
-	ValidUntil         uint64
-	Action             uint8
-	Validator          types.Address
+	OriginChainID     uint64
+	DestinationDomain uint32
+	Registry          types.Address
+	ExpectedSetID     uint64
+	ValidUntil        uint64
+	Action            uint8
+	Validator         types.Address
 }
 
 // VoteV5 holds a validator-indexed secp256k1 proof in Solidity's 65-byte
@@ -105,6 +106,46 @@ func MembershipPayloadV5(m MembershipV5) ([]byte, error) {
 	return out, nil
 }
 
+// ParseMembershipPayloadV5 accepts exactly one canonical registry-bound
+// transition. The configured adapter, never a peer-supplied prefix, selects
+// this decoder.
+func ParseMembershipPayloadV5(raw []byte) (MembershipV5, error) {
+	const tail = 8 + 4 + 20 + 8 + 8 + 1 + 20
+	var m MembershipV5
+	if len(raw) != len(MembershipDomainV2)+tail || !bytes.HasPrefix(raw, []byte(MembershipDomainV2)) {
+		return m, ErrInvalidLifecycle
+	}
+	o := len(MembershipDomainV2)
+	m.OriginChainID = binary.BigEndian.Uint64(raw[o : o+8])
+	o += 8
+	m.DestinationDomain = binary.BigEndian.Uint32(raw[o : o+4])
+	o += 4
+	m.Registry = types.BytesToAddress(raw[o : o+20])
+	o += 20
+	m.ExpectedSetID = binary.BigEndian.Uint64(raw[o : o+8])
+	o += 8
+	m.ValidUntil = binary.BigEndian.Uint64(raw[o : o+8])
+	o += 8
+	m.Action = raw[o]
+	o++
+	m.Validator = types.BytesToAddress(raw[o : o+20])
+	if _, err := MembershipPayloadV5(m); err != nil {
+		return MembershipV5{}, err
+	}
+	return m, nil
+}
+
+// VerifyMembershipVoteV5 authenticates one vote without claiming a quorum.
+func VerifyMembershipVoteV5(m MembershipV5, signer types.Address, signature []byte) bool {
+	raw, err := MembershipPayloadV5(m)
+	return err == nil && verifyOne(raw, signer, signature)
+}
+
+func VerifyPossessionV5(origin uint64, domain uint32, registry, validator types.Address, signature []byte) bool {
+	raw, err := PossessionPayloadV5(origin, domain, registry, validator)
+	return err == nil && verifyOne(raw, validator, signature)
+}
+
 // SignBootstrapV5 reads only the caller-supplied in-memory local private key.
 // The returned address is derived from the key, never chosen by an RPC caller.
 // This helper does not submit a deployment or activate a validator.
@@ -145,7 +186,7 @@ func SignMembershipV5(key *stdECDSA.PrivateKey, membership MembershipV5, now tim
 		return nil, nil, err
 	}
 	nowUnix := now.Unix()
-	if nowUnix < 0 || membership.ValidUntil <= uint64(nowUnix) ||
+	if nowUnix < 0 || membership.ValidUntil < uint64(nowUnix) ||
 		membership.ValidUntil-uint64(nowUnix) > uint64(maxMembershipAge/time.Second) {
 		return nil, nil, fmt.Errorf("%w: stale or excessive membership deadline", ErrInvalidLifecycle)
 	}
