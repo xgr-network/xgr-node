@@ -115,7 +115,24 @@ func (w *Worker) signDirectILNMessage(
 // evidence, destination-set, delivery and signing guards.
 func (w *Worker) signDirectILNMessageWithTx(
     route *evm.CheckpointRoute,messageID types.Hash,sourceBlock uint64,sourceTx types.Hash,
-)error{
+)(result error){
+    // Message-scoped, crash-durable source RPC budget. Every caller
+    // (observer, its retry journal, public hints and validator gossip) enters
+    // through this gate. A deferred result never authorizes signing.
+    if route==nil{return fmt.Errorf("missing Direct-BLS route")}
+    // Native XGRChain source is verified against the locally committed IBFT
+    // state and MUST remain outside external-RPC throttling.
+    if source:=w.destinations[route.SourceNetwork];source!=nil&&source.ChainID!=1643 {
+        finish,err:=w.beginILNEvidenceRetry(route.Name,messageID,sourceBlock,sourceTx)
+        if err!=nil{return err}
+        defer func(){
+            if saveErr:=finish(result);saveErr!=nil{
+                if result!=nil{
+                    result=fmt.Errorf("%v; retry state unavailable: %w",result,saveErr)
+                }else{result=saveErr}
+            }
+        }()
+    }
     // M-03: recheck synchronization in the signing entry point, not only
     // in the periodic worker tick. RPC requests and gossip can arrive anytime.
     if w.state==nil||!w.state.IsSynchronized(){

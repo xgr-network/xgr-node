@@ -128,6 +128,11 @@ type Worker struct {
 	wg      sync.WaitGroup
 
 	rpcCancel context.CancelFunc
+	// Message-scoped source verification backpressure, shared by every ILN
+	// signing entry point. Never protect this with w.mu: verification performs
+	// independently locked vote and network operations.
+	ilnRetryMu sync.Mutex
+	ilnRetryInFlight map[string]bool
 	mu               sync.Mutex
 	requests         map[types.Hash]*requestState
 	reserveWarned    map[string]bool

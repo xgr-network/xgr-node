@@ -33,6 +33,9 @@ type pinnedReceiptRPCFixture struct {
  badFeeAllocation atomic.Bool
  badReceipt atomic.Bool
  badHeadTag atomic.Bool
+ rejectReceipt atomic.Bool
+ receiptSeen atomic.Bool
+ registryBeforeReceipt atomic.Int32
 }
 
 func newPinnedReceiptRPCFixture(chain uint64)*pinnedReceiptRPCFixture{
@@ -137,6 +140,8 @@ func (f *pinnedReceiptRPCFixture) handle(t *testing.T,w http.ResponseWriter,r *h
   }
   rpcError(-32602,"forbidden finality downgrade or incorrect block tag: "+tag)
  case "eth_getTransactionReceipt":
+  f.receiptSeen.Store(true)
+  if f.rejectReceipt.Load(){rpcError(-32005,"receipt temporarily unavailable");return}
   if len(req.Params)!=1 {rpcError(-32602,"missing transaction locator");return}
   var tx string
   if json.Unmarshal(req.Params[0],&tx)!=nil||!strings.EqualFold(tx,f.operation.TransactionHash.String()){
@@ -147,6 +152,7 @@ func (f *pinnedReceiptRPCFixture) handle(t *testing.T,w http.ResponseWriter,r *h
   f.logRequests.Add(1)
   rpcError(-32601,"eth_getLogs intentionally unavailable: receipt pinning must not use it")
  case "eth_call":
+  if !f.receiptSeen.Load(){f.registryBeforeReceipt.Add(1)}
   if len(req.Params)!=2{rpcError(-32602,"invalid eth_call params");return}
   var call struct{To string `json:"to"`;Data string `json:"data"`}
   if json.Unmarshal(req.Params[0],&call)!=nil||len(call.Data)<10{
@@ -254,6 +260,31 @@ func TestReceiptPinnedDirectBLSFullRPCSecurityMatrix(t *testing.T){
    require.ErrorContains(t,err,"quorum not reached")
    require.Zero(t,a.logRequests.Load())
    require.Zero(t,b.logRequests.Load())
+  })
+ }
+}
+
+func TestPinnedReceiptUnavailableSkipsExpensiveRegistryAndFeeVaultCalls(t *testing.T){
+ for _,chain:=range []uint64{56,8453,42161,10}{
+  t.Run(fmt.Sprint(chain),func(t *testing.T){
+   fixture:=newPinnedReceiptRPCFixture(chain)
+   fixture.rejectReceipt.Store(true)
+   server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+    fixture.handle(t,w,r)
+   }))
+   defer server.Close()
+   source:=&Destination{
+    Name:"receipt-first",ChainID:chain,Domain:uint32(chain),
+    ILNRegistryAddress:fixture.registry.String(),RPCURLs:[]string{server.URL},
+   }
+   route:=&CheckpointRoute{RouteID:fixture.operation.RouteID}
+   _,_,_,err:=GetDirectILNOperationByTx(source,route,1643,
+    fixture.operation.MessageID,fixture.operation.BlockNumber,
+    fixture.operation.TransactionHash)
+   require.Error(t,err,"an inaccessible receipt never authorizes any source operation")
+   require.True(t,fixture.receiptSeen.Load())
+   require.Zero(t,fixture.registryBeforeReceipt.Load())
+   require.Zero(t,fixture.logRequests.Load())
   })
  }
 }

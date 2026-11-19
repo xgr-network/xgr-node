@@ -18,6 +18,8 @@ const primaryRecoveryProbes = 3
 const rpcRateLimitCooldown = 30*time.Second
 const rpcTransportCooldown = 5*time.Second
 const rpcMaximumCooldown = 3*time.Minute
+const rpcQuotaCooldown = 30*time.Minute
+const rpcForbiddenCooldown = 10*time.Minute
 
 type rpcHealth struct {
     mu sync.Mutex
@@ -110,7 +112,7 @@ func rpcProviderState(d *Destination,url string)*rpcProviderHealth{
 func rpcRateLimited(err error)bool{
     if err==nil{return false}
     s:=strings.ToLower(err.Error())
-    for _,v:=range []string{"429","too many requests","rate limit","rate-limit","quota exceeded"}{
+    for _,v:=range []string{"429","too many requests","rate limit","rate-limit","quota exceeded","usage limit","current plan","resource exhausted","daily limit","monthly limit"}{
         if strings.Contains(s,v){return true}
     }
     return false
@@ -153,10 +155,32 @@ func rpcRecordFailure(d *Destination,url string,err error,read bool){
     if rpcRateLimited(err){p.rateLimited++}
     delay:=rpcTransportCooldown
     if rpcRateLimited(err){delay=rpcRateLimitCooldown}
+    // Access-denied and plan-exhausted endpoints should not be re-probed
+    // every few seconds. A finalized head is not proof of receipt access.
+    message:=strings.ToLower(err.Error())
+    if strings.Contains(message,"usage limit")||
+       strings.Contains(message,"current plan")||
+       strings.Contains(message,"quota exceeded")||
+       strings.Contains(message,"daily limit")||
+       strings.Contains(message,"monthly limit"){
+        delay=rpcQuotaCooldown
+    }else if strings.Contains(message,"403")||strings.Contains(message,"forbidden"){
+        delay=rpcForbiddenCooldown
+    }
     // Retry state is per provider and per observed RPC read. A successful
     // safe-head preflight must not erase repeated eth_getLogs 429 failures.
     for n:=uint32(1);n<streak;n++{delay*=2}
-    if delay>rpcMaximumCooldown{delay=rpcMaximumCooldown}
+    cap:=rpcMaximumCooldown
+    if strings.Contains(message,"usage limit")||
+       strings.Contains(message,"current plan")||
+       strings.Contains(message,"quota exceeded")||
+       strings.Contains(message,"daily limit")||
+       strings.Contains(message,"monthly limit"){
+        cap=rpcQuotaCooldown
+    }else if strings.Contains(message,"403")||strings.Contains(message,"forbidden"){
+        cap=rpcForbiddenCooldown
+    }
+    if delay>cap{delay=cap}
     next:=time.Now().Add(delay)
     if next.After(p.retryAfter){p.retryAfter=next}
 }

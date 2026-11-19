@@ -8,6 +8,7 @@ import (
  "strings"
  "encoding/hex"
  "time"
+ "errors"
 
  evmInterchain "github.com/xgr-network/xgr-node/interchain/evm"
  "github.com/xgr-network/xgr-node/types"
@@ -165,6 +166,9 @@ func (w *Worker) processRequestedILNQuorums() {
    }
    processed++
    if err:=w.processRequestedILNQuorumWithTx(route,types.StringToHash(messageID),request.SourceBlockNumber,request.SourceTxHash);err!=nil {
+    // A deferred message is intentionally still pending; preserve the
+    // previous real proof failure and do not replace it with a synthetic one.
+    if errors.Is(err,errILNEvidenceDeferred){continue}
     w.logger.Debug("ILN quorum request pending validation", "route",routeName,"message",messageID,"err",err)
     w.trackILNQuorumRetry(routeName,messageID,request.SourceBlockNumber,err)
     msg:=strings.ToLower(err.Error())
@@ -217,9 +221,6 @@ func (w *Worker) processRequestedILNQuorumWithTx(route *evmInterchain.Checkpoint
     }
     source:=w.destinations[route.SourceNetwork]
     if source==nil{return fmt.Errorf("ILN source unavailable")}
-    confirmed,err:=w.sourceILNHead(source)
-    if err!=nil{return err}
-    if sourceBlock>confirmed{return fmt.Errorf("hint source transaction is not confirmed")}
     sourceTx:=types.ZeroHash
     if sourceTxHash!="" {
         if len(sourceTxHash)!=66||!strings.HasPrefix(sourceTxHash,"0x")||
@@ -228,6 +229,17 @@ func (w *Worker) processRequestedILNQuorumWithTx(route *evmInterchain.Checkpoint
             return fmt.Errorf("invalid untrusted source transaction hash")
         }
         sourceTx=types.StringToHash(sourceTxHash)
+    }
+    // Known external receipts already require a separately verified safe or
+    // finalized head from EACH independent operator inside the canonical
+    // evidence reader. Do not perform an additional single-provider head
+    // preflight here: it doubles provider selection and can exhaust quota.
+    // Unknown-transaction discovery and native XGR IBFT keep the original
+    // bounded source-head gate.
+    if sourceTx==types.ZeroHash||source.ChainID==1643 {
+        confirmed,err:=w.sourceILNHead(source)
+        if err!=nil{return err}
+        if sourceBlock>confirmed{return fmt.Errorf("hint source transaction is not confirmed")}
     }
     return w.signDirectILNMessageWithTx(route,messageID,sourceBlock,sourceTx)
 }
