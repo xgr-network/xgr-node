@@ -50,7 +50,7 @@ func ilnEvidenceRetryDelay(failures uint32,seed string)time.Duration{
 
 func (w *Worker) ilnEvidenceRetryPath(route string,id,tx types.Hash)(string,error){
 	if w==nil||w.dataDir==""||route==""||len(route)>150||
-		strings.ContainsAny(route,"/\")||route=="."||route==".."||
+		strings.ContainsAny(route,"/\\")||route=="."||route==".."||
 		id==types.ZeroHash{
 		return "",fmt.Errorf("invalid Direct-BLS retry identity")
 	}
