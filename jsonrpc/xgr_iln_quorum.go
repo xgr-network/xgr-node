@@ -166,7 +166,8 @@ func (x *xgrEndpoint) requestILNQuorumWithSourceTx(route, messageID string, sour
   raw,readErr:=os.ReadFile(target)
   if readErr!=nil{return nil,readErr}
   var existing ilnQuorumRequestRPC
-  if json.Unmarshal(raw,&existing)!=nil || existing.Route!=normalized || existing.MessageID!=normalizedID || existing.SourceBlockNumber!=sourceBlockNumber {
+  if json.Unmarshal(raw,&existing)!=nil || existing.Route!=normalized || existing.MessageID!=normalizedID || existing.SourceBlockNumber!=sourceBlockNumber ||
+    existing.SourceTxHash!=sourceTxHash {
    return nil,fmt.Errorf("ILN request exists with a different source block or invalid content")
   }
   return status,nil
