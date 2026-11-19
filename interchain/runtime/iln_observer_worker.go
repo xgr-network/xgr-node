@@ -38,8 +38,8 @@ func (w *Worker) knownObserverRoute(source *evm.Destination,route *evm.Checkpoin
 // count tests; production always binds the canonical scan/signing functions.
 var observerRemoteWindow = evm.ScanILNMultiGatewayWindow
 var observerNativeWindow = evm.ScanNativeXGRMultiGatewayWindow
-var observerSignMessage = func(w *Worker,r *evm.CheckpointRoute,id types.Hash,n uint64)error{
- return w.signDirectILNMessage(r,id,n)
+var observerSignMessage = func(w *Worker,r *evm.CheckpointRoute,id types.Hash,n uint64,sourceTx types.Hash)error{
+ return w.signDirectILNMessageWithTx(r,id,n,sourceTx)
 }
 
 // ensureObserverCatalogRoute bootstraps a previously uncataloged configured
@@ -136,7 +136,7 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   for _,r:=range routes{bindingByRoute[r.Route.Name]=r}
   for _,event:=range dispatched{
    if event.Operation.BlockNumber<=cursors[event.Route.Name]{continue}
-   err:=observerSignMessage(w,event.Route,event.Operation.MessageID,event.Operation.BlockNumber)
+   err:=observerSignMessage(w,event.Route,event.Operation.MessageID,event.Operation.BlockNumber,event.Operation.TransactionHash)
    if err!=nil&&err.Error()!="Interchain message already delivered"{
     // Do not trust the observed event to authorize signing. A failed proof
     // advances its shared cursor ONLY after crash-safe retry admission.
