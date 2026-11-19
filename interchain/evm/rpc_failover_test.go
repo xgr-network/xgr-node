@@ -153,3 +153,32 @@ func TestGetLogs429SurvivesSuccessfulSafeHeadPreflight(t *testing.T){
  p.mu.Unlock()
  require.Equal(t,uint32(2),twice)
 }
+
+func TestRPCProviderPlanQuotaAndForbiddenCooldown(t *testing.T){
+ for _,tc:=range []struct{name,message string; min time.Duration}{
+  {"onerpc","You've reached the usage limit for your current plan",29*time.Minute},
+  {"explicit_quota","quota exceeded",29*time.Minute},
+  {"forbidden_receipt","eth_getTransactionReceipt HTTP 403",9*time.Minute},
+ }{
+  t.Run(tc.name,func(t *testing.T){
+   endpoint:="https://"+tc.name+".invalid/rpc"
+   d:=&Destination{Name:"bsc",ChainID:56,Domain:56,
+    RPCURLs:[]string{endpoint}}
+   rpcRecordFailure(d,endpoint,fmt.Errorf("%s",tc.message),true)
+   require.ErrorContains(t,rpcCooldown(d,endpoint),"cooldown")
+   state:=rpcProviderState(d,endpoint)
+   state.mu.Lock()
+   until:=state.retryAfter
+   limited:=state.rateLimited
+   state.mu.Unlock()
+   require.Greater(t,time.Until(until),tc.min)
+   if tc.name=="onerpc"{require.Positive(t,limited)}
+   // Verified chain ID and finalized head do not erase downstream quota.
+   rpcRecordReady(d,endpoint)
+   require.ErrorContains(t,rpcCooldown(d,endpoint),"cooldown")
+   // Other providers remain usable for independent witness verification.
+   other:="https://healthy-"+tc.name+".invalid/rpc"
+   require.NoError(t,rpcCooldown(d,other))
+  })
+ }
+}
