@@ -28,6 +28,23 @@ func GetQuorumVerifiedDirectILNOperation(
     )
 }
 
+// GetQuorumVerifiedDirectILNOperationByTx binds independent providers to the
+// SAME caller-supplied transaction locator, then compares their COMPLETE
+// canonical evidence. The transaction hash is never treated as authorization.
+func GetQuorumVerifiedDirectILNOperationByTx(
+    source *Destination, route *CheckpointRoute,
+    destinationDomain uint32, messageID types.Hash, sourceBlock uint64,
+    sourceTx types.Hash,
+) (*ILNOperation, []byte, *ILNRouteSnapshot, error) {
+    if sourceTx==types.ZeroHash{return nil,nil,nil,fmt.Errorf("missing source transaction hash")}
+    reader:=func(one *Destination, route *CheckpointRoute, domain uint32,
+        id types.Hash, block uint64)(*ILNOperation,[]byte,*ILNRouteSnapshot,error){
+        return GetDirectILNOperationByTx(one,route,domain,id,block,sourceTx)
+    }
+    return quorumVerifiedDirectILNOperation(
+        source,route,destinationDomain,messageID,sourceBlock,reader)
+}
+
 func quorumVerifiedDirectILNOperation(
     source *Destination, route *CheckpointRoute,
     destinationDomain uint32, messageID types.Hash, sourceBlock uint64,
