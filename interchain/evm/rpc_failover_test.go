@@ -8,6 +8,7 @@ import (
  "strings"
  "sync/atomic"
  "testing"
+ "time"
  "github.com/stretchr/testify/require"
     "github.com/xgr-network/xgr-node/types"
 )
