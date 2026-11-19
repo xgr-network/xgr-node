@@ -17,6 +17,7 @@ type requestedILNQuorum struct {
  Route string `json:"route"`
  MessageID string `json:"messageId"`
  SourceBlockNumber uint64 `json:"sourceBlockNumber"`
+ SourceTxHash string `json:"sourceTxHash,omitempty"`
  RouteID string `json:"routeId,omitempty"`
  SourceDomain uint32 `json:"sourceDomain,omitempty"`
  DestinationDomain uint32 `json:"destinationDomain,omitempty"`
@@ -151,8 +152,19 @@ func (w *Worker) processRequestedILNQuorums() {
    invalid:=false
    for _,ch:=range messageID[2:] {if (ch<'0'||ch>'9')&&(ch<'a'||ch>'f'){invalid=true;break}}
    if invalid { _=os.Remove(path);continue }
+   // A hint is never an authorization, but malformed hashes must fail
+   // before reaching expensive source RPC reads or cross-validator gossip.
+   if request.SourceTxHash!="" {
+    if len(request.SourceTxHash)!=66||!strings.HasPrefix(request.SourceTxHash,"0x")||
+       !observerHexLower(request.SourceTxHash[2:])||
+       request.SourceTxHash=="0x"+strings.Repeat("0",64){
+      w.logger.Warn("invalid ILN source transaction hint","route",routeName)
+      _=os.Remove(path)
+      continue
+    }
+   }
    processed++
-   if err:=w.processRequestedILNQuorum(route,types.StringToHash(messageID),request.SourceBlockNumber);err!=nil {
+   if err:=w.processRequestedILNQuorumWithTx(route,types.StringToHash(messageID),request.SourceBlockNumber,request.SourceTxHash);err!=nil {
     w.logger.Debug("ILN quorum request pending validation", "route",routeName,"message",messageID,"err",err)
     w.trackILNQuorumRetry(routeName,messageID,request.SourceBlockNumber,err)
     msg:=strings.ToLower(err.Error())
@@ -193,6 +205,9 @@ func (w *Worker) processRequestedILNQuorums() {
 }
 
 func (w *Worker) processRequestedILNQuorum(route *evmInterchain.CheckpointRoute,messageID types.Hash,sourceBlock uint64) error {
+    return w.processRequestedILNQuorumWithTx(route,messageID,sourceBlock,"")
+}
+func (w *Worker) processRequestedILNQuorumWithTx(route *evmInterchain.CheckpointRoute,messageID types.Hash,sourceBlock uint64,sourceTxHash string) error {
     // A public RPC hint is neither proof nor an order to sign. The supplied
     // transaction block is only a SOURCE RPC locator. Independent
     // canonical Gateway/Dispatch/fee receipts, current destination ISM and
@@ -205,7 +220,16 @@ func (w *Worker) processRequestedILNQuorum(route *evmInterchain.CheckpointRoute,
     confirmed,err:=w.sourceILNHead(source)
     if err!=nil{return err}
     if sourceBlock>confirmed{return fmt.Errorf("hint source transaction is not confirmed")}
-    return w.signDirectILNMessage(route,messageID,sourceBlock)
+    sourceTx:=types.ZeroHash
+    if sourceTxHash!="" {
+        if len(sourceTxHash)!=66||!strings.HasPrefix(sourceTxHash,"0x")||
+           !observerHexLower(sourceTxHash[2:])||
+           sourceTxHash=="0x"+strings.Repeat("0",64){
+            return fmt.Errorf("invalid untrusted source transaction hash")
+        }
+        sourceTx=types.StringToHash(sourceTxHash)
+    }
+    return w.signDirectILNMessageWithTx(route,messageID,sourceBlock,sourceTx)
 }
 
 func (w *Worker) acceptRequestedILNQuorum(request requestedILNQuorum) error {
@@ -235,7 +259,7 @@ func (w *Worker) acceptRequestedILNQuorum(request requestedILNQuorum) error {
  if messageID==types.ZeroHash{return fmt.Errorf("empty peer ILN message ID")}
  // A peer's request never authorizes arbitrary signing. It is resolved through
  // exactly the same source event, fee, set and delivered guards as local RPC.
- return w.processRequestedILNQuorum(route,messageID,request.SourceBlockNumber)
+ return w.processRequestedILNQuorumWithTx(route,messageID,request.SourceBlockNumber,request.SourceTxHash)
 }
 
 func (w *Worker) quorumHintLoop() {
