@@ -44,6 +44,7 @@ func TestObserverRetryDurableDedupConflictAndReverification(t *testing.T){
  attempts:=0
  observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,id types.Hash,block uint64,tx types.Hash)error{
   attempts++;require.Equal(t,route.Route.Name,r.Name)
+   require.Equal(t,op.TransactionHash,tx,"durable source transaction must survive retry")
   require.Equal(t,op.MessageID,id);require.Equal(t,op.BlockNumber,block)
   if attempts==1{return errors.New("temporary RPC quorum failure")}
   return nil
