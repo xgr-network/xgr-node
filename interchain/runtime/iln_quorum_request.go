@@ -8,6 +8,7 @@ import (
  "strings"
  "encoding/hex"
  "time"
+ "errors"
 
  evmInterchain "github.com/xgr-network/xgr-node/interchain/evm"
  "github.com/xgr-network/xgr-node/types"
@@ -165,6 +166,9 @@ func (w *Worker) processRequestedILNQuorums() {
    }
    processed++
    if err:=w.processRequestedILNQuorumWithTx(route,types.StringToHash(messageID),request.SourceBlockNumber,request.SourceTxHash);err!=nil {
+    // A deferred message is intentionally still pending; preserve the
+    // previous real proof failure and do not replace it with a synthetic one.
+    if errors.Is(err,errILNEvidenceDeferred){continue}
     w.logger.Debug("ILN quorum request pending validation", "route",routeName,"message",messageID,"err",err)
     w.trackILNQuorumRetry(routeName,messageID,request.SourceBlockNumber,err)
     msg:=strings.ToLower(err.Error())
