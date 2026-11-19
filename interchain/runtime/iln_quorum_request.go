@@ -221,9 +221,6 @@ func (w *Worker) processRequestedILNQuorumWithTx(route *evmInterchain.Checkpoint
     }
     source:=w.destinations[route.SourceNetwork]
     if source==nil{return fmt.Errorf("ILN source unavailable")}
-    confirmed,err:=w.sourceILNHead(source)
-    if err!=nil{return err}
-    if sourceBlock>confirmed{return fmt.Errorf("hint source transaction is not confirmed")}
     sourceTx:=types.ZeroHash
     if sourceTxHash!="" {
         if len(sourceTxHash)!=66||!strings.HasPrefix(sourceTxHash,"0x")||
@@ -232,6 +229,17 @@ func (w *Worker) processRequestedILNQuorumWithTx(route *evmInterchain.Checkpoint
             return fmt.Errorf("invalid untrusted source transaction hash")
         }
         sourceTx=types.StringToHash(sourceTxHash)
+    }
+    // Known external receipts already require a separately verified safe or
+    // finalized head from EACH independent operator inside the canonical
+    // evidence reader. Do not perform an additional single-provider head
+    // preflight here: it doubles provider selection and can exhaust quota.
+    // Unknown-transaction discovery and native XGR IBFT keep the original
+    // bounded source-head gate.
+    if sourceTx==types.ZeroHash||source.ChainID==1643 {
+        confirmed,err:=w.sourceILNHead(source)
+        if err!=nil{return err}
+        if sourceBlock>confirmed{return fmt.Errorf("hint source transaction is not confirmed")}
     }
     return w.signDirectILNMessageWithTx(route,messageID,sourceBlock,sourceTx)
 }
