@@ -54,6 +54,7 @@ type ilnQuorumRequestRPC struct {
  Route string `json:"route"`
  MessageID string `json:"messageId"`
  SourceBlockNumber uint64 `json:"sourceBlockNumber"`
+ SourceTxHash string `json:"sourceTxHash,omitempty"`
 }
 
 type ilnQuorumStatusRPC struct {
@@ -68,6 +69,18 @@ type ilnQuorumStatusRPC struct {
 }
 
 func (x *xgrEndpoint) RequestILNQuorum(route, messageID string, sourceBlockNumber uint64) (*ilnQuorumStatusRPC, error) {
+ return x.requestILNQuorumWithSourceTx(route,messageID,sourceBlockNumber,"")
+}
+
+// SourceTxHash is an optional UNTRUSTED lookup hint, never source evidence.
+// The validator checks a complete canonical receipt with two independent RPC
+// operators before any BLS signing, exactly as for the legacy request path.
+func (x *xgrEndpoint) RequestILNQuorumWithSourceTx(route, messageID string, sourceBlockNumber uint64, sourceTxHash string) (*ilnQuorumStatusRPC, error) {
+ tx,err:=normalizedILNMessageID(sourceTxHash)
+ if err!=nil{return nil,fmt.Errorf("invalid source transaction hash: %w",err)}
+ return x.requestILNQuorumWithSourceTx(route,messageID,sourceBlockNumber,tx)
+}
+func (x *xgrEndpoint) requestILNQuorumWithSourceTx(route, messageID string, sourceBlockNumber uint64, sourceTxHash string) (*ilnQuorumStatusRPC, error) {
  normalized, err := normalizeInterchainRPCChain(route)
  if err != nil { return nil, err }
  normalizedID, err := normalizedILNMessageID(messageID)
@@ -128,7 +141,8 @@ func (x *xgrEndpoint) RequestILNQuorum(route, messageID string, sourceBlockNumbe
    _=os.Remove(target)
   } else {
    var existing ilnQuorumRequestRPC
-   if json.Unmarshal(raw,&existing)!=nil || existing.Route!=normalized || existing.MessageID!=normalizedID || existing.SourceBlockNumber!=sourceBlockNumber {
+   if json.Unmarshal(raw,&existing)!=nil || existing.Route!=normalized || existing.MessageID!=normalizedID || existing.SourceBlockNumber!=sourceBlockNumber ||
+    existing.SourceTxHash!=sourceTxHash {
     return nil,fmt.Errorf("ILN request exists with a different source block or invalid content")
    }
    return status,nil
@@ -158,7 +172,7 @@ func (x *xgrEndpoint) RequestILNQuorum(route, messageID string, sourceBlockNumbe
   return status,nil
  }
  if err!=nil{return nil,err}
- encoded,err:=json.Marshal(ilnQuorumRequestRPC{Route:normalized,MessageID:normalizedID,SourceBlockNumber:sourceBlockNumber})
+ encoded,err:=json.Marshal(ilnQuorumRequestRPC{Route:normalized,MessageID:normalizedID,SourceBlockNumber:sourceBlockNumber,SourceTxHash:sourceTxHash})
  if err!=nil{file.Close();os.Remove(target);return nil,err}
  _,err=file.Write(encoded)
  closeErr:=file.Close()
