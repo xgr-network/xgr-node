@@ -120,15 +120,19 @@ func (w *Worker) signDirectILNMessageWithTx(
     // (observer, its retry journal, public hints and validator gossip) enters
     // through this gate. A deferred result never authorizes signing.
     if route==nil{return fmt.Errorf("missing Direct-BLS route")}
-    finish,err:=w.beginILNEvidenceRetry(route.Name,messageID,sourceBlock,sourceTx)
-    if err!=nil{return err}
-    defer func(){
-        if saveErr:=finish(result);saveErr!=nil{
-            if result!=nil{
-                result=fmt.Errorf("%v; retry state unavailable: %w",result,saveErr)
-            }else{result=saveErr}
-        }
-    }()
+    // Native XGRChain source is verified against the locally committed IBFT
+    // state and MUST remain outside external-RPC throttling.
+    if source:=w.destinations[route.SourceNetwork];source!=nil&&source.ChainID!=1643 {
+        finish,err:=w.beginILNEvidenceRetry(route.Name,messageID,sourceBlock,sourceTx)
+        if err!=nil{return err}
+        defer func(){
+            if saveErr:=finish(result);saveErr!=nil{
+                if result!=nil{
+                    result=fmt.Errorf("%v; retry state unavailable: %w",result,saveErr)
+                }else{result=saveErr}
+            }
+        }()
+    }
     // M-03: recheck synchronization in the signing entry point, not only
     // in the periodic worker tick. RPC requests and gossip can arrive anytime.
     if w.state==nil||!w.state.IsSynchronized(){
