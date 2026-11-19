@@ -188,7 +188,7 @@ func (w *Worker) retryObserverSource(source *evm.Destination,routes []observerRo
    if !validObserverRetryRecord(entry,route,source,item.name){continue}
    processed++
    perRoute++
-   err=observerSignMessage(w,route.Route,types.StringToHash(entry.MessageID),entry.SourceBlock)
+   err=observerSignMessage(w,route.Route,types.StringToHash(entry.MessageID),entry.SourceBlock,types.StringToHash(entry.SourceTxHash))
    if err==nil||err.Error()=="Interchain message already delivered"{
     if err=os.Remove(path);err!=nil{return err}
     d,e:=os.Open(dir)
