@@ -3,6 +3,7 @@ package runtime
 import (
  "bytes"
  "encoding/json"
+ "errors"
  "fmt"
  "os"
  "path/filepath"
@@ -189,6 +190,11 @@ func (w *Worker) retryObserverSource(source *evm.Destination,routes []observerRo
    processed++
    perRoute++
    err=observerSignMessage(w,route.Route,types.StringToHash(entry.MessageID),entry.SourceBlock,types.StringToHash(entry.SourceTxHash))
+   if errors.Is(err,errILNEvidenceDeferred){
+    // Do not modify the immutable journal or its age when the shared
+    // source verification budget has not yet elapsed.
+    continue
+   }
    if err==nil||err.Error()=="Interchain message already delivered"{
     if err=os.Remove(path);err!=nil{return err}
     d,e:=os.Open(dir)
