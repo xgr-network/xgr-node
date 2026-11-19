@@ -134,6 +134,66 @@ func GetDirectILNOperation(
     return operation,raw,snapshot,nil
 }
 
+// GetDirectILNOperationByTx verifies a caller-supplied transaction HASH as an
+// untrusted locator. It never trusts indexer, relayer or peer event contents.
+// All source receipt, finality, immutable route and FeeVault checks are the
+// same as GetDirectILNOperation. In particular the receipt's canonical block
+// must equal the claimed source block. No eth_getLogs query is required.
+func GetDirectILNOperationByTx(
+    source *Destination, route *CheckpointRoute, destinationDomain uint32,
+    messageID types.Hash, sourceBlock uint64, sourceTx types.Hash,
+)(*ILNOperation,[]byte,*ILNRouteSnapshot,error){
+    if source==nil||route==nil||source.ChainID==1643||
+        messageID==types.ZeroHash||sourceBlock==0||sourceTx==types.ZeroHash {
+        return nil,nil,nil,fmt.Errorf("invalid receipt-pinned direct source identity")
+    }
+    client,head,err:=newVerifiedRPCClientWithHead(source)
+    if err!=nil{return nil,nil,nil,err}
+    defer client.Close()
+    if sourceBlock>head{return nil,nil,nil,fmt.Errorf("source block beyond finalized head")}
+    snapshot,err:=getILNRouteAtBlock(client,source,destinationDomain,route.RouteID,sourceBlock,true)
+    if err!=nil{
+        recordInterchainRPCReadError(source,source.RPCURL,err)
+        return nil,nil,nil,err
+    }
+    receipt,err:=ilnRPCReceipt(client,ethgo.Hash(sourceTx))
+    if err!=nil{
+        recordInterchainRPCReadError(source,source.RPCURL,err)
+        return nil,nil,nil,fmt.Errorf("canonical source transaction receipt unavailable: %w",err)
+    }
+    if receipt==nil||receipt.TransactionHash!=ethgo.Hash(sourceTx)||
+        receipt.BlockNumber!=sourceBlock {
+        return nil,nil,nil,fmt.Errorf("source receipt transaction/block identity mismatch")
+    }
+    if err:=verifyFinalizedReceiptWithHead(client,receipt,head);err!=nil{
+        return nil,nil,nil,fmt.Errorf("source receipt is not canonical and final: %w",err)
+    }
+    // A receipt may contain several unrelated operations. Only one matching
+    // registered Gateway event may bind the requested message and route.
+    var operation *ILNOperation
+    for _,log:=range receipt.Logs {
+        if log==nil||types.Address(log.Address)!=snapshot.Route.Gateway{continue}
+        if len(log.Topics)==0||log.Topics[0]!=ethgo.Hash(crypto.Keccak256Hash([]byte(ilnOperationEventSignature))){continue}
+        op,parseErr:=parseILNOperationLog(log)
+        if parseErr!=nil{return nil,nil,nil,parseErr}
+        if op.MessageID!=messageID||op.RouteID!=route.RouteID||
+            op.DestinationDomain!=destinationDomain{continue}
+        if operation!=nil{return nil,nil,nil,fmt.Errorf("duplicate direct source Gateway operation")}
+        candidate:=op
+        operation=&candidate
+    }
+    if operation==nil{return nil,nil,nil,fmt.Errorf("direct ILN message not found in source receipt")}
+    operation.CanonicalBlockHash=types.Hash(receipt.BlockHash)
+    raw,err:=VerifyDirectILNReceipt(*operation,receipt,source.Domain,
+        snapshot.Route.Gateway,snapshot.Route.Mailbox,snapshot.Route.SourceRouter,
+        snapshot.Route.DestinationRouter)
+    if err!=nil{return nil,nil,nil,err}
+    if err:=verifyConfirmedILNFeeAllocationOnClient(client,source,snapshot,messageID,sourceBlock,head);err!=nil{
+        return nil,nil,nil,fmt.Errorf("immutable Gateway FeeVault allocation not proven: %w",err)
+    }
+    return operation,raw,snapshot,nil
+}
+
 // GetDirectILNDestinationISM resolves the exact currently effective recipient
 // ISM and checks its immutable validator registry and domain. Signature
 // domain separation uses this address, never a user-provided contract.
