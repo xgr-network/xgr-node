@@ -151,11 +151,9 @@ func GetDirectILNOperationByTx(
     if err!=nil{return nil,nil,nil,err}
     defer client.Close()
     if sourceBlock>head{return nil,nil,nil,fmt.Errorf("source block beyond finalized head")}
-    snapshot,err:=getILNRouteAtBlock(client,source,destinationDomain,route.RouteID,sourceBlock,true)
-    if err!=nil{
-        recordInterchainRPCReadError(source,source.RPCURL,err)
-        return nil,nil,nil,err
-    }
+    // Fail quickly when an upstream can serve finalized headers but refuses
+    // the actual transaction receipt (HTTP 403/429). Expensive immutable
+    // Registry and FeeVault reads follow only a canonical source receipt.
     receipt,err:=ilnRPCReceipt(client,ethgo.Hash(sourceTx))
     if err!=nil{
         recordInterchainRPCReadError(source,source.RPCURL,err)
@@ -167,6 +165,11 @@ func GetDirectILNOperationByTx(
     }
     if err:=verifyFinalizedReceiptWithHead(client,receipt,head);err!=nil{
         return nil,nil,nil,fmt.Errorf("source receipt is not canonical and final: %w",err)
+    }
+    snapshot,err:=getILNRouteAtBlock(client,source,destinationDomain,route.RouteID,sourceBlock,true)
+    if err!=nil{
+        recordInterchainRPCReadError(source,source.RPCURL,err)
+        return nil,nil,nil,err
     }
     operation,err:=findPinnedDirectILNOperation(receipt,snapshot.Route.Gateway,
         route.RouteID,messageID,destinationDomain,sourceTx,sourceBlock)
