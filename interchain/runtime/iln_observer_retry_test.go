@@ -42,8 +42,9 @@ func TestObserverRetryDurableDedupConflictAndReverification(t *testing.T){
  old:=observerSignMessage
  defer func(){observerSignMessage=old}()
  attempts:=0
- observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,id types.Hash,block uint64)error{
+ observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,id types.Hash,block uint64,tx types.Hash)error{
   attempts++;require.Equal(t,route.Route.Name,r.Name)
+   require.Equal(t,op.TransactionHash,tx,"durable source transaction must survive retry")
   require.Equal(t,op.MessageID,id);require.Equal(t,op.BlockNumber,block)
   if attempts==1{return errors.New("temporary RPC quorum failure")}
   return nil
@@ -70,7 +71,7 @@ func TestObserverRetryRejectsCorruptJournalWithoutSigning(t *testing.T){
  require.NoError(t,os.Chtimes(path,stamp,stamp))
  original:=observerSignMessage
  defer func(){observerSignMessage=original}()
- observerSignMessage=func(_ *Worker,_ *evm.CheckpointRoute,_ types.Hash,_ uint64)error{
+ observerSignMessage=func(_ *Worker,_ *evm.CheckpointRoute,_ types.Hash,_ uint64,tx types.Hash)error{
   t.Fatal("unverified/invalid retry must never be signed")
   return nil
  }
@@ -112,7 +113,7 @@ func TestF04CorruptRouteDoesNotStarveHealthySibling(t *testing.T){
  original:=observerSignMessage
  defer func(){observerSignMessage=original}()
  attempts:=0
- observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64)error{
+ observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64,tx types.Hash)error{
   require.Equal(t,"healthy",r.Name)
   attempts++
   return nil

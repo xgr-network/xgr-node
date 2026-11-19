@@ -41,7 +41,7 @@ func TestSharedILNObserverReducesExternalRequestsAndPreservesDurableCursors(t *t
    ValidatorFeeWei:big.NewInt(1),BlockNumber:100,TransactionHash:tx,LogIndex:0}
   return 100,100,100,[]evm.ILNObservedGatewayOperation{{Gateway:addrA,Operation:op}},nil
  }
- observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64)error{
+ observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64,tx types.Hash)error{
   require.Equal(t,"a",r.Name);signed++;return nil
  }
  require.NoError(t,w.scanSharedILNSource(src,[]observerRoute{a,b}))
@@ -69,7 +69,7 @@ func TestSharedILNObserverRejectsUnverifiedWorkWithoutAdvancingCursor(t *testing
    Operation:evm.ILNOperation{RouteID:id,MessageID:msg,DestinationDomain:1643,
     BlockNumber:12,TransactionHash:tx,ValidatorFeeWei:big.NewInt(1)}}},nil
  }
- observerSignMessage=func(_ *Worker,_ *evm.CheckpointRoute,_ types.Hash,_ uint64)error{
+ observerSignMessage=func(_ *Worker,_ *evm.CheckpointRoute,_ types.Hash,_ uint64,tx types.Hash)error{
   return errors.New("independent source witness mismatch")
  }
  err:=w.scanSharedILNSource(source,[]observerRoute{{Route:route,Gateway:gateway,DestinationDomain:1643}})
@@ -109,7 +109,7 @@ func TestSharedILNObserverLateRouteBackfillsWithoutRepeatingExistingVotes(t *tes
    {Gateway:gwOld,Operation:oldOp},{Gateway:gwNew,Operation:newOp},
   },nil
  }
- observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64)error{
+ observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64,tx types.Hash)error{
   signs++;require.Equal(t,"new",r.Name);return nil
  }
  require.NoError(t,w.scanSharedILNSource(src,[]observerRoute{
@@ -163,7 +163,7 @@ func TestSharedObserverContinuesSigningHealthySiblingButNeverAdvancesFailedWindo
   },nil
  }
  attempts:=map[string]int{}
- observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64)error{
+ observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64,tx types.Hash)error{
   attempts[r.Name]++
   if r.Name=="a"{return errors.New("independent source witness mismatch")}
   return nil

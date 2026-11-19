@@ -27,6 +27,15 @@ type directILNEvidence struct {
 func (w *Worker) verifyDirectILNEvidence(
     route *evm.CheckpointRoute, messageID types.Hash, sourceBlock uint64,
 ) (*directILNEvidence,error){
+    return w.verifyDirectILNEvidenceWithTx(route,messageID,sourceBlock,types.ZeroHash)
+}
+
+// A sourceTx is only a locator; the full independent canonical source proof
+// remains mandatory and is checked before any validator signature.
+func (w *Worker) verifyDirectILNEvidenceWithTx(
+    route *evm.CheckpointRoute, messageID types.Hash, sourceBlock uint64,
+    sourceTx types.Hash,
+) (*directILNEvidence,error){
     if route==nil||messageID==types.ZeroHash||sourceBlock==0 {
         return nil,fmt.Errorf("invalid direct Interchain message")
     }
@@ -39,8 +48,12 @@ func (w *Worker) verifyDirectILNEvidence(
         local,ok:=w.state.(evm.NativeXGRReader)
         if !ok{return nil,fmt.Errorf("native XGR source reader unavailable")}
         operation,_,snapshot,err=evm.VerifyNativeXGROperation(local,source,route,destination.Domain,messageID,sourceBlock)
+    } else if sourceTx!=types.ZeroHash {
+        operation,_,snapshot,err=evm.GetQuorumVerifiedDirectILNOperationByTx(
+            source,route,destination.Domain,messageID,sourceBlock,sourceTx)
     } else {
-        operation,_,snapshot,err=evm.GetQuorumVerifiedDirectILNOperation(source,route,destination.Domain,messageID,sourceBlock)
+        operation,_,snapshot,err=evm.GetQuorumVerifiedDirectILNOperation(
+            source,route,destination.Domain,messageID,sourceBlock)
     }
     if err!=nil{return nil,err}
     if snapshot.Route.Key.RouteID!=route.RouteID ||
@@ -95,12 +108,20 @@ func (w *Worker) directILNPayload(c *directILNEvidence) protocol.XITADirectMessa
 func (w *Worker) signDirectILNMessage(
     route *evm.CheckpointRoute,messageID types.Hash,sourceBlock uint64,
 )error{
+    return w.signDirectILNMessageWithTx(route,messageID,sourceBlock,types.ZeroHash)
+}
+
+// Both indexed observer operations and RPC quorum hints use the SAME canonical
+// evidence, destination-set, delivery and signing guards.
+func (w *Worker) signDirectILNMessageWithTx(
+    route *evm.CheckpointRoute,messageID types.Hash,sourceBlock uint64,sourceTx types.Hash,
+)error{
     // M-03: recheck synchronization in the signing entry point, not only
     // in the periodic worker tick. RPC requests and gossip can arrive anytime.
     if w.state==nil||!w.state.IsSynchronized(){
         return fmt.Errorf("Direct-BLS signing paused: XGR validator not synchronized")
     }
-    ctx,err:=w.verifyDirectILNEvidence(route,messageID,sourceBlock)
+    ctx,err:=w.verifyDirectILNEvidenceWithTx(route,messageID,sourceBlock,sourceTx)
     if err!=nil{return err}
     eligible,err:=w.interchainSignerEligible(ctx.set,w.localAddr)
     if err!=nil{return err}
@@ -155,7 +176,7 @@ func (w *Worker) scanDirectILNOperations(route *evm.CheckpointRoute) error {
  }
  process:=func(ops []evm.ILNOperation)error{
   for _,op:=range ops{
-   err:=w.signDirectILNMessage(route,op.MessageID,op.BlockNumber)
+   err:=w.signDirectILNMessageWithTx(route,op.MessageID,op.BlockNumber,op.TransactionHash)
    if err!=nil{
     if err.Error()=="Interchain message already delivered"{continue}
     return err
