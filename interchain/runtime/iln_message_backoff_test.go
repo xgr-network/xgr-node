@@ -3,6 +3,7 @@ package runtime
 import (
  "errors"
  "os"
+ "path/filepath"
  "strings"
  "testing"
  "time"
@@ -64,7 +65,7 @@ func TestILNEvidenceRetryInvalidJournalFailsClosed(t *testing.T){
  tx:=types.StringToHash("0x"+strings.Repeat("d",64))
  path,err:=w.ilnEvidenceRetryPath("iln_56_1643_test",id,tx)
  require.NoError(t,err)
- require.NoError(t,os.MkdirAll(strings.TrimSuffix(path,strings.Split(path,"/")[len(strings.Split(path,"/"))-1]),0o770))
+ require.NoError(t,os.MkdirAll(filepath.Dir(path),0o770))
  require.NoError(t,os.WriteFile(path,[]byte("{bad"),0o660))
  _,err=w.beginILNEvidenceRetry("iln_56_1643_test",id,123,tx)
  require.Error(t,err)
