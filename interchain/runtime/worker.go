@@ -32,8 +32,11 @@ const (
 	TopicID                    = "/xgr/interchain/direct-bls/1.0.0"
 	defaultPollInterval        = 2 * time.Second // local state / gossip, no periodic external RPC
 	// XGR v3.2.1: external RPC traffic must not follow the fast 2s loop.
-	ilnExternalCheckpointInterval = 30 * time.Second
-	ilnExternalDiscoveryInterval  = 60 * time.Second
+	// The XITA finalized indexer submits source-tx-pinned untrusted hints via
+	// xgr_requestILNQuorumWithSourceTx. Keep independent RPC-native polling as
+	// a slow censorship/outage fallback, never a signing trust assumption.
+	ilnExternalCheckpointInterval = 10 * time.Minute
+	ilnExternalDiscoveryInterval  = 5 * time.Minute
 	ilnExternalMembershipInterval = 60 * time.Second
 	ilnExternalRetryInterval      = 30 * time.Second
 	ilnLocalHealthInterval        = 10 * time.Second
