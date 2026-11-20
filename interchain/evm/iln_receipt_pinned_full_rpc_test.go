@@ -148,6 +148,15 @@ func (f *pinnedReceiptRPCFixture) handle(t *testing.T,w http.ResponseWriter,r *h
    reply(nil);return
   }
   reply(f.receiptResult())
+ case "eth_getTransactionByHash":
+  reply(map[string]interface{}{
+   "hash":f.operation.TransactionHash.String(),
+   "from":f.router.String(),"to":f.gateway.String(),
+   "blockHash":f.receipt.BlockHash.String(),
+   "blockNumber":fmt.Sprintf("0x%x",f.operation.BlockNumber),
+   "input":"0x","nonce":"0x0","value":"0x0",
+   "gas":"0x5208","gasPrice":"0x1","transactionIndex":"0x0",
+  })
  case "eth_getLogs":
   f.logRequests.Add(1)
   rpcError(-32601,"eth_getLogs intentionally unavailable: receipt pinning must not use it")
