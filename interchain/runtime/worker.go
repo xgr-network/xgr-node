@@ -339,8 +339,9 @@ func (w *Worker) Start() error {
  // A single explicitly opted-in node collects operational delivery state.
  // Ordinary validators do not run this loop or its foreign-chain reads.
  if os.Getenv("XGR_ILN_READ_INDEX")=="1"{
-  w.wg.Add(1)
+  w.wg.Add(2)
   go w.indexedDeliveryLoop()
+  go w.indexedEscrowLoop()
  }
 	go w.storageMaintenanceLoop()
 	go w.governanceExecuteLoop()
