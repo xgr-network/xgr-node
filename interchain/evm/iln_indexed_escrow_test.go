@@ -59,6 +59,7 @@ func TestReadOnlyIndexedExternalEscrowUsesOneFinalizedHead(t *testing.T){
  got,err:=GetIndexedILNEscrowSnapshot(chain,watch)
  require.NoError(t,err)
  require.Equal(t,uint64(100),got.FinalizedHeadBlock)
+ require.Equal(t,uint64(116),got.LatestHeadBlock)
  require.Equal(t,blockHash,got.FinalizedHeadHash)
  require.Equal(t,"0x"+fmt.Sprintf("%064x",100),got.TokenBalance)
  require.Equal(t,"FINALIZED_ESCROW_READ_MODEL_NOT_BLS_EVIDENCE",got.EvidenceStatus)
