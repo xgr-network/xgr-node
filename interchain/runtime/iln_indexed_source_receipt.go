@@ -17,9 +17,8 @@ import (
 func (w *Worker) persistIndexedSourceReceipt(source *evm.Destination,
  gateway types.Address,op evm.ILNOperation)error{
  if w==nil||source==nil{return fmt.Errorf("invalid indexed source receipt")}
- // Native XGR receipts are served by the locally committed XGR JSON-RPC
- // and do not require another external RPC evidence collector.
- if source.ChainID==1643{return nil}
+ // XGR uses the locally committed native reader; external chains use
+ // one independently chain-ID-verified provider for operational snapshots.
  if !ilnIndexSourceName.MatchString(source.Name)||
   op.MessageID==types.ZeroHash||op.TransactionHash==types.ZeroHash{
   return fmt.Errorf("invalid indexed receipt identity")
@@ -33,12 +32,18 @@ func (w *Worker) persistIndexedSourceReceipt(source *evm.Destination,
    saved.SourceChainID!=source.ChainID||
    !strings.EqualFold(saved.SourceTxHash,op.TransactionHash.String())||
    saved.SourceBlockNumber!=op.BlockNumber||
-   saved.VerifiedAs!="FINALIZED_SINGLE_OPERATOR_OBSERVATION_NOT_BLS_EVIDENCE"{
+   (saved.VerifiedAs!="FINALIZED_SINGLE_OPERATOR_OBSERVATION_NOT_BLS_EVIDENCE"&&
+    saved.VerifiedAs!="FINALIZED_LOCAL_IBFT_OBSERVATION_NOT_BLS_EVIDENCE"){
    return fmt.Errorf("conflicting persisted source receipt observation")
   }
   return nil
  }else if !os.IsNotExist(err){return err}
- snapshot,err:=evm.GetIndexedILNSourceReceipt(source,op,gateway)
+ var snapshot *evm.IndexedILNSourceReceipt
+ if source.ChainID==1643{
+  snapshot,err=evm.GetIndexedNativeILNSourceReceipt(source,op)
+ }else{
+  snapshot,err=evm.GetIndexedILNSourceReceipt(source,op,gateway)
+ }
  if err!=nil{return fmt.Errorf("indexed source receipt unavailable: %w",err)}
  raw,err:=json.Marshal(snapshot);if err!=nil{return err}
  if len(raw)>4<<20{return fmt.Errorf("indexed receipt snapshot exceeds safe size")}
