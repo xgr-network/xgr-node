@@ -145,14 +145,16 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
     }
    }
   }
-  // Persist the same bounded Gateway observations used by the validator.
-  // Fail closed on disk failure BEFORE committing any source cursor.
-  // These hints never substitute for independent BLS source witnesses.
-  for _,event:=range dispatched{
-   if event.Operation.BlockNumber<=cursors[event.Route.Name]{continue}
-   origin:=bindingByRoute[event.Route.Name]
-   if err:=w.persistILNIndexedOperation(source,event.Route,origin.Gateway,event.Operation);err!=nil{
-    return fmt.Errorf("persist ILN index observation: %w",err)
+  // Opt-in ONLY on an explicitly configured indexer node. The validators'
+  // normal independent witness fallback does not accrue an extra read model.
+  if os.Getenv("XGR_ILN_READ_INDEX")=="1"{
+   for _,event:=range dispatched{
+    if event.Operation.BlockNumber<=cursors[event.Route.Name]{continue}
+    origin:=bindingByRoute[event.Route.Name]
+    if err:=w.persistILNIndexedOperation(source,event.Route,origin.Gateway,event.Operation);err!=nil{
+     // Never commit a cursor if the opt-in index did not persist its events.
+     return fmt.Errorf("persist ILN index observation: %w",err)
+    }
    }
   }
   // A crash repeats the source window idempotently. All failed operations
