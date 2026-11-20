@@ -47,6 +47,10 @@ func TestILNIndexedOperationReadAndBoundedPagination(t *testing.T){
  require.Equal(t,a,second.Operations[0].MessageID)
  require.Empty(t,second.NextCursor)
  require.Equal(t,"00000000000000000002",second.Operations[0].Cursor)
+ // Missing durable sequence is corruption, never silently skipped.
+ require.NoError(t,os.Remove(filepath.Join(feed,"00000000000000000001.json")))
+ _,err=ep.GetILNIndexedOperations(source,"",5)
+ require.ErrorContains(t,err,"sequence gap")
  _,err=ep.GetILNIndexedOperations(source,"",101)
  require.Error(t,err)
  _,err=ep.GetILNIndexedOperation("../private",a)
