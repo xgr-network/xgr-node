@@ -1,0 +1,135 @@
+name: Release Light (XGR v3.5.5 Indexer-First Observer Fallback)
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: "Reviewed XGR3.0 40-character commit SHA"
+        required: true
+        type: string
+      confirmation:
+        description: "Type RELEASE-v3.5.5 to publish"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xgr-v355-light-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ github.ref == 'refs/heads/XGR3.0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact indexer-first observer-only release scope
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/XGR3.0'
+          test "$CONFIRMATION" = 'RELEASE-v3.5.5'
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          git rev-parse -q --verify refs/tags/v3.5.4 >/dev/null
+          git merge-base --is-ancestor "$(git rev-parse v3.5.4)" HEAD
+          if git rev-parse -q --verify refs/tags/v3.5.5 >/dev/null; then
+            echo "v3.5.5 already exists: refusing overwrite" >&2
+            exit 1
+          fi
+          git diff --name-only v3.5.4 HEAD > /tmp/v355-changes
+          test -s /tmp/v355-changes
+          # Only the two reviewed observer cadence files and these release
+          # metadata files. No other node behaviour may enter this binary.
+          if grep -Ev '^(interchain/runtime/(worker|iln_v321_polling_test)[.]go|RELEASE_NOTES_v3[.]5[.]5[.]md|[.]github/workflows/release-light-v35[1-5][.]yml)$' /tmp/v355-changes; then
+            echo "v3.5.5 includes changes outside indexer-first observer fallback" >&2
+            exit 1
+          fi
+          test "$(wc -l < /tmp/v355-changes)" -eq 8
+          for file in interchain/runtime/worker.go interchain/runtime/iln_v321_polling_test.go \
+            RELEASE_NOTES_v3.5.5.md .github/workflows/release-light-v355.yml; do
+            grep -Fxq "$file" /tmp/v355-changes
+          done
+          # Retired dispatch workflows only; no changes to generic CI.
+          for version in 351 352 353 354; do
+            file=".github/workflows/release-light-v${version}.yml"
+            git cat-file -e "v3.5.4:$file"
+            test ! -e "$file"
+            test "$(git diff --diff-filter=D --name-only v3.5.4 HEAD -- "$file")" = "$file"
+          done
+          # Exact cryptographic, EVM verifier and public JSON-RPC paths must
+          # remain BYTE-FOR-BYTE identical to the audited v3.5.4 baseline.
+          git diff --quiet v3.5.4 HEAD -- \
+            interchain/config.go interchain/evm/ interchain/verification/ \
+            jsonrpc/ consensus/ blockchain/ state/ chain/ contracts/ \
+            command/ crypto/ txpool/ network/
+          grep -Eq 'ilnExternalCheckpointInterval[[:space:]]*=[[:space:]]*10[[:space:]]*[*][[:space:]]*time[.]Minute' interchain/runtime/worker.go
+          grep -Eq 'ilnExternalDiscoveryInterval[[:space:]]*=[[:space:]]*5[[:space:]]*[*][[:space:]]*time[.]Minute' interchain/runtime/worker.go
+          grep -q 'func TestILNIndexerFirstObserverFallbackIntervals' interchain/runtime/iln_v321_polling_test.go
+          grep -q 'func GetQuorumVerifiedDirectILNOperationByTx' interchain/evm/rpc_evidence_quorum.go
+          grep -Fq 'RequestILNQuorumWithSourceTx(route, messageID string' jsonrpc/xgr_iln_quorum.go
+          test -f RELEASE_NOTES_v3.5.5.md
+          echo "Reviewed v3.5.5 indexer-first observer release scope verified"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Full interchain and Direct-BLS compatibility regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=3 -timeout 15m ./interchain/... ./consensus/ibft/interchain ./jsonrpc
+      - name: Repeat indexer-first observer timing, source witness and fail-closed matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=8 -timeout 8m ./interchain/runtime -run '^(TestV321ILNExternalPollingDoesNotFollowTwoSecondTick|TestV321ILNExternalBackgroundRetryBackoff|TestILNIndexerFirstObserverFallbackIntervals)$'
+          go test -count=5 -timeout 10m ./interchain/evm -run '^(TestReceiptPinnedDirectBLSFullRPCSecurityMatrix|TestPinnedSourceReceiptUnavailableSkipsExpensiveRegistryAndFeeVaultCalls|TestRPCProviderPlanQuotaAndForbiddenCooldown|TestPinnedSourceReceipt|TestTwoIndependentOperatorsWithFailover|TestOneOperatorAndConflictingProvidersFailClosed)'
+          go test -count=5 -timeout 8m ./interchain/runtime -run '^(TestILNEvidenceRetry|TestObserverRetry|TestSharedILNObserver|TestSharedObserver)'
+          go test -count=5 -timeout 8m ./jsonrpc -run '^(TestReceiptPinnedQuorumHint|TestILNQuorumRequest)'
+      - name: Build verified immutable Linux release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          COMMIT="$(git rev-parse --short HEAD)"
+          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          PKG="$(go list -m)/versioning"
+          go build -trimpath -o dist/xgrchain-v3.5.5-linux-amd64 \
+            -ldflags "-X $PKG.Version=v3.5.5 -X $PKG.Commit=$COMMIT -X $PKG.Branch=XGR3.0 -X $PKG.BuildTime=$TIME" .
+          chmod 755 dist/xgrchain-v3.5.5-linux-amd64
+          VERSION_OUTPUT="$(./dist/xgrchain-v3.5.5-linux-amd64 version)"
+          printf '%s\n' "$VERSION_OUTPUT"
+          grep -Fq 'Release version' <<< "$VERSION_OUTPUT"
+          grep -Fq 'v3.5.5' <<< "$VERSION_OUTPUT"
+          grep -Fq "$COMMIT" <<< "$VERSION_OUTPUT"
+          printf '%s\n' v3.5.5 > dist/version.txt
+          git rev-parse HEAD > dist/commit.txt
+          go version > dist/toolchain.txt
+          (cd dist && sha256sum xgrchain-v3.5.5-linux-amd64 version.txt commit.txt toolchain.txt > sha256sums.txt)
+          (cd dist && sha256sum -c sha256sums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xgr-v3.5.5-indexer-first-observer-light-amd64
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish immutable v3.5.5 GitHub release (no validator deployment)
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v3.5.5
+          name: v3.5.5
+          commit: ${{ github.sha }}
+          allowUpdates: false
+          makeLatest: true
+          generateReleaseNotes: false
+          artifacts: dist/*
+          bodyFile: RELEASE_NOTES_v3.5.5.md
