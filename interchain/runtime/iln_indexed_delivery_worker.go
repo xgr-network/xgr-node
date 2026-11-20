@@ -74,7 +74,8 @@ func (w *Worker) updateILNIndexedDeliveries(retry map[string]time.Time)error{
    if e!=nil{return e}
    var evidence evm.IndexedILNSourceReceipt
    if json.Unmarshal(evidenceRaw,&evidence)!=nil||
-    evidence.VerifiedAs!="FINALIZED_SINGLE_OPERATOR_OBSERVATION_NOT_BLS_EVIDENCE"||
+    (evidence.VerifiedAs!="FINALIZED_SINGLE_OPERATOR_OBSERVATION_NOT_BLS_EVIDENCE"&&
+     evidence.VerifiedAs!="FINALIZED_LOCAL_IBFT_OBSERVATION_NOT_BLS_EVIDENCE")||
     !strings.EqualFold(evidence.SourceTxHash,op.SourceTxHash)||
     types.IsValidAddress(evidence.DestinationRouter)!=nil{
     return fmt.Errorf("invalid archived source route binding")
