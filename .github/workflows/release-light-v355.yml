@@ -64,11 +64,11 @@ jobs:
             interchain/config.go interchain/evm/ interchain/verification/ \
             jsonrpc/ consensus/ blockchain/ state/ chain/ contracts/ \
             command/ crypto/ txpool/ network/
-          grep -Eq 'ilnExternalCheckpointInterval[[:space:]]*=[[:space:]]*10[[:space:]]*\\*[[:space:]]*time.Minute' interchain/runtime/worker.go
-          grep -Eq 'ilnExternalDiscoveryInterval[[:space:]]*=[[:space:]]*5[[:space:]]*\\*[[:space:]]*time.Minute' interchain/runtime/worker.go
+          grep -Eq 'ilnExternalCheckpointInterval[[:space:]]*=[[:space:]]*10[[:space:]]*[*][[:space:]]*time[.]Minute' interchain/runtime/worker.go
+          grep -Eq 'ilnExternalDiscoveryInterval[[:space:]]*=[[:space:]]*5[[:space:]]*[*][[:space:]]*time[.]Minute' interchain/runtime/worker.go
           grep -q 'func TestILNIndexerFirstObserverFallbackIntervals' interchain/runtime/iln_v321_polling_test.go
           grep -q 'func GetQuorumVerifiedDirectILNOperationByTx' interchain/evm/rpc_evidence_quorum.go
-          grep -q 'func (x \\*xgrEndpoint) RequestILNQuorumWithSourceTx' jsonrpc/xgr_iln_quorum.go
+          grep -Fq 'RequestILNQuorumWithSourceTx(route, messageID string' jsonrpc/xgr_iln_quorum.go
           test -f RELEASE_NOTES_v3.5.5.md
           echo "Reviewed v3.5.5 indexer-first observer release scope verified"
       - uses: actions/setup-go@v5
