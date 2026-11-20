@@ -30,7 +30,8 @@ func (x *xgrEndpoint) GetILNIndexedEscrow(asset string)(*evm.IndexedILNEscrowSna
  if item.Version!=1||item.Asset!=asset||
   item.EvidenceStatus!="FINALIZED_ESCROW_READ_MODEL_NOT_BLS_EVIDENCE"||
   item.Chain==""||item.ChainID==0||item.Router==""||
-  item.FinalizedHeadBlock==0||item.FinalizedHeadHash==""||
+  item.FinalizedHeadBlock==0||item.LatestHeadBlock<item.FinalizedHeadBlock||
+  item.FinalizedHeadHash==""||
   item.RouterCode==""{
   return nil,fmt.Errorf("invalid escrow index identity")
  }
