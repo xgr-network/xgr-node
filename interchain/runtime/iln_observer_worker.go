@@ -165,6 +165,12 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
    for _,event:=range dispatched{
     if event.Operation.BlockNumber<=indexCursor{continue}
     origin:=bindingByRoute[event.Route.Name]
+    // One operational source receipt per new external message. Persist it
+    // BEFORE publishing the feed entry so SQL consumers never see partial
+    // source snapshots. Independent signing witnesses are unchanged.
+    if err:=w.persistIndexedSourceReceipt(source,origin.Gateway,event.Operation);err!=nil{
+     return fmt.Errorf("capture indexed source receipt: %w",err)
+    }
     if err:=w.persistILNIndexedOperation(source,event.Route,origin.Gateway,event.Operation);err!=nil{
      return fmt.Errorf("persist ILN index observation: %w",err)
     }
