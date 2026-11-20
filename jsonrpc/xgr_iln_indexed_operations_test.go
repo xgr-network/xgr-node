@@ -61,8 +61,11 @@ func TestILNIndexedOperationNeverPromotesCorruptRecord(t *testing.T){
  path:=filepath.Join(dir,"interchain","iln","observed","base")
  require.NoError(t,os.MkdirAll(path,0o700))
  id:="0x"+strings.Repeat("a",64)
- require.NoError(t,os.WriteFile(filepath.Join(path,id+".json"),
-  []byte(`{"version":1,"source":"base","messageId":"0xdead","evidenceStatus":"VERIFIED"}`),0o600))
+ corrupt:=[]byte(`{"version":1,"source":"base","messageId":"0xdead","evidenceStatus":"VERIFIED"}`)
+ require.NoError(t,os.WriteFile(filepath.Join(path,id+".json"),corrupt,0o600))
+ feed:=filepath.Join(path,"feed")
+ require.NoError(t,os.MkdirAll(feed,0o700))
+ require.NoError(t,os.WriteFile(filepath.Join(feed,"00000000000000000001.json"),corrupt,0o600))
  ep:=newXGREndpoint(nil,dir)
  _,err:=ep.GetILNIndexedOperation("base",id)
  require.Error(t,err)
