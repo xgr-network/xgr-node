@@ -4,6 +4,7 @@ import (
  "bytes"
  "encoding/json"
  "fmt"
+ "strings"
 
  "github.com/umbracle/ethgo"
  "github.com/xgr-network/xgr-node/types"
@@ -78,10 +79,21 @@ func GetIndexedILNSourceReceipt(source *Destination,op ILNOperation,gateway type
  if len(txRaw)<2||len(txRaw)>maxILNIndexedReceiptBytes||bytes.Equal(txRaw,[]byte("null")){
   return nil,fmt.Errorf("indexed source transaction missing")
  }
- var tx ethgo.Transaction
+ // A source read model needs the canonical transaction locator and sender,
+ // NOT a fully signature-decoded ethgo.Transaction (legacy and typed RPC
+ // transaction encoding differs by chain/provider).
+ var tx struct{
+  Hash string `json:"hash"`
+  From string `json:"from"`
+  BlockHash string `json:"blockHash"`
+  BlockNumber string `json:"blockNumber"`
+ }
  if err=json.Unmarshal(txRaw,&tx);err!=nil{return nil,err}
- if tx.Hash!=ethgo.Hash(op.TransactionHash)||tx.From==ethgo.ZeroAddress||
-  tx.BlockNumber!=op.BlockNumber||tx.BlockHash!=receipt.BlockHash {
+ if !strings.EqualFold(tx.Hash,op.TransactionHash.String())||
+    types.IsValidAddress(tx.From)!=nil||
+    types.StringToAddress(tx.From)==types.ZeroAddress||
+    !strings.EqualFold(tx.BlockHash,receipt.BlockHash.String())||
+    tx.BlockNumber!=fmt.Sprintf("0x%x",op.BlockNumber){
   return nil,fmt.Errorf("indexed transaction hash/sender/block mismatch")
  }
  var sourceBlockRaw json.RawMessage
