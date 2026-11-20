@@ -56,6 +56,7 @@ func TestIndexedGasOnlyLooksUpExactFinalizedMessage(t *testing.T){
     "transactionHash":tx,"transactionIndex":"0x0",
     "blockHash":observed,"blockNumber":"0x4d","status":"0x1",
     "gasUsed":"0x5208","cumulativeGasUsed":"0x5208",
+    "from":"0x"+strings.Repeat("a",40),"to":mailbox.String(),"contractAddress":nil,
     "logsBloom":"0x"+strings.Repeat("0",512),
     "logs":[]interface{}{},
    })
