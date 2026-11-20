@@ -15,7 +15,9 @@ func TestV321ILNExternalPollingDoesNotFollowTwoSecondTick(t *testing.T){
  for i:=1;i<15;i++{
   require.False(t,dueILNPeriodicPolling(now.Add(time.Duration(i)*2*time.Second),&last,ilnExternalCheckpointInterval))
  }
- require.True(t,dueILNPeriodicPolling(now.Add(30*time.Second),&last,ilnExternalCheckpointInterval))
+ require.False(t,dueILNPeriodicPolling(now.Add(30*time.Second),&last,ilnExternalCheckpointInterval))
+ require.False(t,dueILNPeriodicPolling(now.Add(5*time.Minute),&last,ilnExternalCheckpointInterval))
+ require.True(t,dueILNPeriodicPolling(now.Add(10*time.Minute),&last,ilnExternalCheckpointInterval))
 }
 func TestV321ILNExternalBackgroundRetryBackoff(t *testing.T){
  now:=time.Unix(1000,0)
@@ -32,5 +34,16 @@ func TestV321ILNExternalBackgroundRetryBackoff(t *testing.T){
  require.True(t,dueILNPeriodicPolling(now.Add(30*time.Second),&retry,ilnExternalRetryInterval))
  require.False(t,dueILNPeriodicPolling(now.Add(30*time.Second),&membership,ilnExternalMembershipInterval))
  require.True(t,dueILNPeriodicPolling(now.Add(60*time.Second),&membership,ilnExternalMembershipInterval))
- require.True(t,dueILNPeriodicPolling(now.Add(60*time.Second),&discovery,ilnExternalDiscoveryInterval))
+ require.False(t,dueILNPeriodicPolling(now.Add(60*time.Second),&discovery,ilnExternalDiscoveryInterval))
+ require.True(t,dueILNPeriodicPolling(now.Add(5*time.Minute),&discovery,ilnExternalDiscoveryInterval))
+}
+
+func TestILNIndexerFirstObserverFallbackIntervals(t *testing.T){
+ require.Equal(t,10*time.Minute,ilnExternalCheckpointInterval)
+ require.Equal(t,5*time.Minute,ilnExternalDiscoveryInterval)
+ // Validator membership safety, submission and direct quorum admission are
+ // NOT delayed by the background observer fallback policy.
+ require.Equal(t,60*time.Second,ilnExternalMembershipInterval)
+ require.Equal(t,30*time.Second,ilnExternalRetryInterval)
+ require.Equal(t,2*time.Second,defaultPollInterval)
 }
