@@ -131,3 +131,33 @@ func GetIndexedILNSourceReceipt(source *Destination,op ILNOperation,gateway type
   VerifiedAs:"FINALIZED_SINGLE_OPERATOR_OBSERVATION_NOT_BLS_EVIDENCE",
  },nil
 }
+
+// GetIndexedNativeILNSourceReceipt extracts the same canonical route binding
+// from the LOCAL committed IBFT chain for XGR->external routes. It performs
+// ZERO foreign RPC reads, and it is not a source witness for any EVM chain.
+func GetIndexedNativeILNSourceReceipt(source *Destination,op ILNOperation)(
+ *IndexedILNSourceReceipt,error){
+ if source==nil||source.ChainID!=1643||op.MessageID==types.ZeroHash||
+  op.RouteID==types.ZeroHash||op.BlockNumber==0||
+  op.TransactionHash==types.ZeroHash{
+  return nil,fmt.Errorf("invalid native XGR source observation")
+ }
+ reader,err:=source.nativeAccess()
+ if err!=nil{return nil,err}
+ verified,_,snapshot,err:=VerifyNativeXGROperation(reader,source,
+  &CheckpointRoute{RouteID:op.RouteID},op.DestinationDomain,
+  op.MessageID,op.BlockNumber)
+ if err!=nil{return nil,err}
+ if verified.TransactionHash!=op.TransactionHash||
+  verified.CanonicalBlockHash==types.ZeroHash{
+  return nil,fmt.Errorf("native source receipt identity mismatch")
+ }
+ return &IndexedILNSourceReceipt{
+  Version:1,SourceChainID:1643,SourceTxHash:op.TransactionHash.String(),
+  SourceBlockNumber:op.BlockNumber,SourceBlockHash:verified.CanonicalBlockHash.String(),
+  SourceRouter:snapshot.Route.SourceRouter.String(),
+  DestinationRouter:snapshot.Route.DestinationRouter.String(),
+  SourceMailbox:snapshot.Route.Mailbox.String(),
+  VerifiedAs:"FINALIZED_LOCAL_IBFT_OBSERVATION_NOT_BLS_EVIDENCE",
+ },nil
+}
