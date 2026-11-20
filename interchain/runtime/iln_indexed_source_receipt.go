@@ -39,6 +39,7 @@ func (w *Worker) persistIndexedSourceReceipt(source *evm.Destination,
   return nil
  }else if !os.IsNotExist(err){return err}
  var snapshot *evm.IndexedILNSourceReceipt
+ var err error
  if source.ChainID==1643{
   snapshot,err=evm.GetIndexedNativeILNSourceReceipt(source,op)
  }else{
