@@ -126,8 +126,22 @@ func (x *xgrEndpoint) GetILNIndexedOperations(source,cursor string,limit uint64)
   names=append(names,seq)
  }
  sort.Strings(names)
+ // An invalid cursor or missing feed entry is never an empty history page.
+ // No automatic pruning is supported while clients depend on these cursors.
+ expected:=uint64(1)
+ if cursor!=""{
+  n,e:=strconv.ParseUint(cursor,10,64)
+  if e!=nil||n==^uint64(0){return nil,fmt.Errorf("invalid feed cursor")}
+  cursorFile:=filepath.Join(dir,cursor+".json")
+  stat,e:=os.Lstat(cursorFile)
+  if e!=nil||!stat.Mode().IsRegular(){return nil,fmt.Errorf("unknown or pruned feed cursor")}
+  expected=n+1
+ }
  out:=&ilnIndexedOperationsRPC{Version:1,Source:normalized,Operations:[]ilnIndexedOperationRPC{}}
  for _,sequence:=range names{
+  n,e:=strconv.ParseUint(sequence,10,64)
+  if e!=nil||n!=expected{return nil,fmt.Errorf("ILN index feed sequence gap")}
+  expected++
   path:=filepath.Join(dir,sequence+".json")
   info,err:=os.Lstat(path)
   if err!=nil||!info.Mode().IsRegular()||info.Size()<1||info.Size()>4096{
