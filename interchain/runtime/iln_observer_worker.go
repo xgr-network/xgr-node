@@ -41,6 +41,9 @@ var observerNativeWindow = evm.ScanNativeXGRMultiGatewayWindow
 var observerSignMessage = func(w *Worker,r *evm.CheckpointRoute,id types.Hash,n uint64,sourceTx types.Hash)error{
  return w.signDirectILNMessageWithTx(r,id,n,sourceTx)
 }
+var observerPersistIndexedReceipt = func(w *Worker,source *evm.Destination,gateway types.Address,op evm.ILNOperation)error{
+ return w.persistIndexedSourceReceipt(source,gateway,op)
+}
 
 // ensureObserverCatalogRoute bootstraps a previously uncataloged configured
 // route once from the confirmed source Registry. It does NOT perform a
@@ -168,7 +171,7 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
     // One operational source receipt per new external message. Persist it
     // BEFORE publishing the feed entry so SQL consumers never see partial
     // source snapshots. Independent signing witnesses are unchanged.
-    if err:=w.persistIndexedSourceReceipt(source,origin.Gateway,event.Operation);err!=nil{
+    if err:=observerPersistIndexedReceipt(w,source,origin.Gateway,event.Operation);err!=nil{
      return fmt.Errorf("capture indexed source receipt: %w",err)
     }
     if err:=w.persistILNIndexedOperation(source,event.Route,origin.Gateway,event.Operation);err!=nil{
