@@ -21,6 +21,7 @@ const (
 type indexedGasCursor struct {
  NextTo uint64 `json:"nextTo"`
  LastAttemptUnix int64 `json:"lastAttemptUnix"`
+ NextAttemptUnix int64 `json:"nextAttemptUnix"`
  Completed bool `json:"completed"`
 }
 type indexedGasJob struct {
@@ -110,7 +111,7 @@ func (w *Worker) updateILNIndexedGas()error{
     if json.Unmarshal(existing,&c)!=nil{return fmt.Errorf("invalid gas cursor")}
    }else if !os.IsNotExist(e){return e}
    if c.Completed||c.NextTo==0||c.NextTo>d.FinalizedBlockNumber{continue}
-   if c.LastAttemptUnix>0&&now.Sub(time.Unix(c.LastAttemptUnix,0))<ilnGasScanInterval{continue}
+   if c.NextAttemptUnix>now.Unix(){continue}
    jobs=append(jobs,indexedGasJob{Source:source.Name(),MessageID:id,
     Folder:folder,Destination:op.Destination,Mailbox:types.StringToAddress(d.Mailbox),
     FirstFinalized:d.FinalizedBlockNumber,Cursor:c})
@@ -119,8 +120,8 @@ func (w *Worker) updateILNIndexedGas()error{
  // Oldest due attempt first avoids starving new messages behind a
  // long-lived historical search, even after restarting the Node process.
  sort.Slice(jobs,func(i,j int)bool{
-  if jobs[i].Cursor.LastAttemptUnix!=jobs[j].Cursor.LastAttemptUnix{
-   return jobs[i].Cursor.LastAttemptUnix<jobs[j].Cursor.LastAttemptUnix
+  if jobs[i].Cursor.NextAttemptUnix!=jobs[j].Cursor.NextAttemptUnix{
+   return jobs[i].Cursor.NextAttemptUnix<jobs[j].Cursor.NextAttemptUnix
   }
   if jobs[i].Source!=jobs[j].Source{return jobs[i].Source<jobs[j].Source}
   return jobs[i].MessageID<jobs[j].MessageID
@@ -132,6 +133,7 @@ func (w *Worker) updateILNIndexedGas()error{
   if min<1{return fmt.Errorf("gas read-model destination activation unavailable")}
   cursor:=job.Cursor
   cursor.LastAttemptUnix=now.Unix()
+  cursor.NextAttemptUnix=now.Add(ilnGasScanInterval).Unix()
   cursorPath:=filepath.Join(job.Folder,"gas-cursor",job.MessageID+".json")
   if cursor.NextTo<min{
    cursor.Completed=true
@@ -139,13 +141,14 @@ func (w *Worker) updateILNIndexedGas()error{
    continue
   }
   from:=min
-  if cursor.NextTo-min+1>=indexedGasWindow{
-   from=cursor.NextTo-indexedGasWindow+1
+  if cursor.NextTo-min+1>=150{
+   from=cursor.NextTo-150+1
   }
   found,e:=evm.ScanIndexedILNGasWindow(dest,job.Mailbox,
    types.StringToHash(job.MessageID),from,cursor.NextTo)
   if e!=nil{
    // Keep the exact window unchanged and suppress immediate RPC retries.
+   cursor.NextAttemptUnix=now.Add(ilnGasRetryDelay).Unix()
    if err=saveIndexedGasJSON(cursorPath,cursor);err!=nil{return err}
    continue
   }
