@@ -21,6 +21,9 @@ type IndexedILNSourceReceipt struct {
  SourceTxHash string `json:"sourceTxHash"`
  SourceBlockNumber uint64 `json:"sourceBlockNumber"`
  SourceBlockHash string `json:"sourceBlockHash"`
+ SourceRouter string `json:"sourceRouter"`
+ DestinationRouter string `json:"destinationRouter"`
+ SourceMailbox string `json:"sourceMailbox"`
  Transaction json.RawMessage `json:"transaction"`
  Receipt json.RawMessage `json:"receipt"`
  SourceBlock json.RawMessage `json:"sourceBlock"`
@@ -97,11 +100,20 @@ func GetIndexedILNSourceReceipt(source *Destination,op ILNOperation,gateway type
  if safeBlock.Number!=head||safeBlock.Hash==ethgo.ZeroHash{
   return nil,fmt.Errorf("indexed source finality head unavailable")
  }
+ route,err:=getILNRouteAtBlock(client,source,op.DestinationDomain,op.RouteID,op.BlockNumber,true)
+ if err!=nil{return nil,fmt.Errorf("indexed route binding unavailable: %w",err)}
+ if route.Route.Gateway!=gateway||route.Route.DestinationRouter==types.ZeroAddress||
+  route.Route.SourceRouter==types.ZeroAddress||route.Route.Mailbox==types.ZeroAddress{
+  return nil,fmt.Errorf("indexed source Registry route/gateway mismatch")
+ }
  return &IndexedILNSourceReceipt{
   Version:1,SourceChainID:source.ChainID,
   SourceTxHash:op.TransactionHash.String(),
   SourceBlockNumber:op.BlockNumber,
   SourceBlockHash:receipt.BlockHash.String(),
+  SourceRouter:route.Route.SourceRouter.String(),
+  DestinationRouter:route.Route.DestinationRouter.String(),
+  SourceMailbox:route.Route.Mailbox.String(),
   Transaction:txRaw,Receipt:receiptRaw,
   SourceBlock:sourceBlockRaw,FinalizedHeadBlock:safeBlockRaw,
   VerifiedAs:"FINALIZED_SINGLE_OPERATOR_OBSERVATION_NOT_BLS_EVIDENCE",
