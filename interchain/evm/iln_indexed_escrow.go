@@ -107,10 +107,8 @@ func GetIndexedILNEscrowSnapshot(chain *Destination,watch IndexedILNEscrowWatch)
   if err=client.Call("eth_getCode",&code,token.String(),tag);err!=nil{return nil,err}
   decimals,e:=indexedILNCall(client,token,"decimals()",nil,head)
   if e!=nil{return nil,e}
+  // balanceOf(router), NOT balanceOf(token).
   word:=make([]byte,32)
-  copy(word[12:],token.Bytes())
-  // balanceOf(router), NOT balanceOf(token)
-  for i:=range word{word[i]=0}
   copy(word[12:],router.Bytes())
   balance,e:=indexedILNCall(client,token,"balanceOf(address)",word,head)
   if e!=nil{return nil,e}
