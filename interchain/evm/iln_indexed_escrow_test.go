@@ -25,6 +25,7 @@ func TestReadOnlyIndexedExternalEscrowUsesOneFinalizedHead(t *testing.T){
   reply:=func(v interface{}){x,_:=json.Marshal(v);_,_=fmt.Fprintf(w,`{"jsonrpc":"2.0","id":%s,"result":%s}`,req.ID,x)}
   switch req.Method{
   case "eth_chainId":reply("0xa4b1")
+  case "eth_blockNumber":reply("0x74")
   case "eth_getBlockByNumber":
    var tag string
    _=json.Unmarshal(req.Params[0],&tag)
