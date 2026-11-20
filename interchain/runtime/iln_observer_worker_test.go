@@ -3,6 +3,8 @@ package runtime
 import (
  "errors"
  "math/big"
+ "os"
+ "path/filepath"
  "testing"
 
  "github.com/stretchr/testify/require"
@@ -11,6 +13,7 @@ import (
 )
 
 func TestSharedILNObserverReducesExternalRequestsAndPreservesDurableCursors(t *testing.T){
+ t.Setenv("XGR_ILN_READ_INDEX","1")
  idA:=types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
  idB:=types.StringToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
  tx:=types.StringToHash("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
@@ -47,6 +50,11 @@ func TestSharedILNObserverReducesExternalRequestsAndPreservesDurableCursors(t *t
  require.NoError(t,w.scanSharedILNSource(src,[]observerRoute{a,b}))
  require.Equal(t,1,reads,"two routes must not double the source RPC query")
  require.Equal(t,1,signed)
+ // The index output is an opt-in projection of the ALREADY scanned event.
+ indexPath:=filepath.Join(w.ilnDir(),"observed","base",mid.String()+".json")
+ raw,e:=os.ReadFile(indexPath)
+ require.NoError(t,e)
+ require.Contains(t,string(raw),"\"UNTRUSTED_FINALITY_BOUNDED_HINT\"")
  for _,route:=range []*evm.CheckpointRoute{routeA,routeB}{
   cur,exists,e:=w.readILNCursor("_direct_"+route.Name)
   require.NoError(t,e);require.True(t,exists);require.Equal(t,uint64(100),cur)
