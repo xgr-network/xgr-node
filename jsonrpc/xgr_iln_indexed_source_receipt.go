@@ -28,12 +28,25 @@ func (x *xgrEndpoint) GetILNIndexedSourceReceipt(source,messageID string)(
  raw,err:=os.ReadFile(path);if err!=nil{return nil,err}
  var evidence evm.IndexedILNSourceReceipt
  if err=json.Unmarshal(raw,&evidence);err!=nil{return nil,err}
- if evidence.Version!=1||evidence.VerifiedAs!="FINALIZED_SINGLE_OPERATOR_OBSERVATION_NOT_BLS_EVIDENCE"||
+ if evidence.Version!=1||
   !strings.EqualFold(evidence.SourceTxHash,indexed.SourceTxHash)||
   evidence.SourceBlockNumber!=indexed.SourceBlockNumber||
-  len(evidence.Transaction)==0||len(evidence.Receipt)==0||
-  len(evidence.SourceBlock)==0||len(evidence.FinalizedHeadBlock)==0{
+  evidence.DestinationRouter==""||evidence.SourceRouter==""||
+  evidence.SourceMailbox==""||len(evidence.SourceBlockHash)!=66{
   return nil,fmt.Errorf("indexed source receipt is incomplete or mismatched")
+ }
+ switch evidence.VerifiedAs{
+ case "FINALIZED_SINGLE_OPERATOR_OBSERVATION_NOT_BLS_EVIDENCE":
+  if evidence.SourceChainID==1643||len(evidence.Transaction)==0||
+   len(evidence.Receipt)==0||len(evidence.SourceBlock)==0||
+   len(evidence.FinalizedHeadBlock)==0{
+   return nil,fmt.Errorf("external source receipt is incomplete")
+  }
+ case "FINALIZED_LOCAL_IBFT_OBSERVATION_NOT_BLS_EVIDENCE":
+  if evidence.SourceChainID!=1643{
+   return nil,fmt.Errorf("native source receipt has wrong chain identity")
+  }
+ default:return nil,fmt.Errorf("unknown indexed source evidence class")
  }
  return &evidence,nil
 }
