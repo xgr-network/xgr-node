@@ -29,6 +29,7 @@ type IndexedILNEscrowSnapshot struct{
  Router string `json:"router"`
  Token string `json:"token,omitempty"`
  FinalizedHeadBlock uint64 `json:"finalizedHeadBlock"`
+ LatestHeadBlock uint64 `json:"latestHeadBlock"`
  FinalizedHeadHash string `json:"finalizedHeadHash"`
  ObservedAt string `json:"observedAt"`
  RouterCode string `json:"routerCode"`
@@ -77,6 +78,14 @@ func GetIndexedILNEscrowSnapshot(chain *Destination,watch IndexedILNEscrowWatch)
  if err!=nil||block==nil||block.Hash==ethgo.ZeroHash||block.Number!=head{
   return nil,fmt.Errorf("escrow finality head unavailable")
  }
+ // The XITA collateral reconciler separately checks its historical cursor
+ // against the ordinary live head minus protocol confirmations. Do not feed
+ // the finalized height AS the live height or confirmations get subtracted
+ // twice. All contract balances themselves stay pinned to the safe block.
+ var latestHex string
+ if err=client.Call("eth_blockNumber",&latestHex);err!=nil{return nil,err}
+ latest,err:=ilnRPCHexUint(latestHex)
+ if err!=nil||latest<head{return nil,fmt.Errorf("invalid latest escrow head")}
  tag:=fmt.Sprintf("0x%x",head)
  router:=types.StringToAddress(watch.Router)
  var routerCode string
@@ -87,7 +96,7 @@ func GetIndexedILNEscrowSnapshot(chain *Destination,watch IndexedILNEscrowWatch)
  out:=&IndexedILNEscrowSnapshot{Version:1,Asset:watch.Asset,
   Chain:watch.Chain,ChainID:chain.ChainID,Kind:watch.Kind,
   Router:router.String(),Token:watch.Token,
-  FinalizedHeadBlock:head,FinalizedHeadHash:block.Hash.String(),
+  FinalizedHeadBlock:head,LatestHeadBlock:latest,FinalizedHeadHash:block.Hash.String(),
   ObservedAt:time.Now().UTC().Format(time.RFC3339),
   RouterCode:routerCode,
   EvidenceStatus:"FINALIZED_ESCROW_READ_MODEL_NOT_BLS_EVIDENCE",
