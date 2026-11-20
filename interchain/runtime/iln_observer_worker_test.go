@@ -32,7 +32,12 @@ func TestSharedILNObserverReducesExternalRequestsAndPreservesDurableCursors(t *t
  a,err:=w.knownObserverRoute(src,routeA);require.NoError(t,err)
  b,err:=w.knownObserverRoute(src,routeB);require.NoError(t,err)
  originalRemote,originalSigner:=observerRemoteWindow,observerSignMessage
- defer func(){observerRemoteWindow=originalRemote;observerSignMessage=originalSigner}()
+ originalReceipt:=observerPersistIndexedReceipt
+ defer func(){observerRemoteWindow=originalRemote;observerSignMessage=originalSigner
+  observerPersistIndexedReceipt=originalReceipt}()
+ // This test exercises shared scans and durable indexing, not a remote
+ // receipt transport; the latter has its own verified HTTP fixture.
+ observerPersistIndexedReceipt=func(_ *Worker,_ *evm.Destination,_ types.Address,_ evm.ILNOperation)error{return nil}
  reads,signed:=0,0
  observerRemoteWindow=func(_ *evm.Destination,gateways []types.Address,cursor,window uint64)(
   uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error){
