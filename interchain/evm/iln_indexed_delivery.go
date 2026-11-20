@@ -33,6 +33,9 @@ func GetIndexedILNDelivery(destination *Destination,router types.Address,message
   if err!=nil{return nil,err}
   head,err:=native.NativeXGRHead()
   if err!=nil||head==0{return nil,fmt.Errorf("native committed destination head unavailable")}
+  view:=func(to types.Address,data []byte)([]byte,error){return DestinationCall(destination,to,data)}
+  mailbox,err:=viewILNAddress(view,router,"mailbox()")
+  if err!=nil{return nil,err}
   delivered,err:=GetILNMessageDelivered(destination,router,messageID)
   if err!=nil{return nil,err}
   block,err:=native.NativeXGRBlock(head)
@@ -40,7 +43,7 @@ func GetIndexedILNDelivery(destination *Destination,router types.Address,message
    return nil,fmt.Errorf("native committed destination block unavailable")
   }
   return &IndexedILNDelivery{
-   Version:1,DestinationChainID:1643,DestinationRouter:router.String(),
+   Version:1,DestinationChainID:1643,DestinationRouter:router.String(),Mailbox:mailbox.String(),
    MessageID:messageID.String(),Delivered:delivered,
    FinalizedBlockNumber:head,FinalizedBlockHash:block.Hash.String(),
    ObservedAt:time.Now().UTC().Format(time.RFC3339),
