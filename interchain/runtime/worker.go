@@ -383,6 +383,12 @@ func (w *Worker) loop() {
 // dueILNPeriodicPolling updates a loop-local schedule before performing a
 // potentially failing RPC operation. A 429 must never cause a 2-second retry
 // storm. On-demand quorum and membership requests bypass this background gate.
+// The explicit read-index node polls more often; all other validators keep
+// the v3.5.5 10-minute independent censorship/outage fallback unchanged.
+func ilnGatewayObservationInterval()time.Duration{
+ if os.Getenv("XGR_ILN_READ_INDEX")=="1"{return 60*time.Second}
+ return ilnExternalCheckpointInterval
+}
 func dueILNPeriodicPolling(now time.Time,last *time.Time,interval time.Duration)bool{
 	if !last.IsZero()&&now.Sub(*last)<interval{return false}
 	*last=now
@@ -424,7 +430,7 @@ func (w *Worker) tick() {
 		w.discoverILNRoutes()
 		w.publishVerifiedILNRoutes()
 	}
-	if dueILNPeriodicPolling(now,&w.ilnLastCheckpointPoll,ilnExternalCheckpointInterval) {
+	if dueILNPeriodicPolling(now,&w.ilnLastCheckpointPoll,ilnGatewayObservationInterval()) {
         w.mu.Lock()
         activeRoutes:=make([]*evmInterchain.CheckpointRoute,0,len(w.routes))
         for _,route:=range w.routes{activeRoutes=append(activeRoutes,route)}
