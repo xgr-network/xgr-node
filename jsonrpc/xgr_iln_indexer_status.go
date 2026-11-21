@@ -6,6 +6,8 @@ import (
  "os"
  "path/filepath"
  "time"
+
+ "github.com/xgr-network/xgr-node/interchain/evm"
 )
 
 type ilnIndexerRouteStatusRPC struct{
@@ -28,6 +30,7 @@ type ilnIndexerStatusRPC struct {
  WorkerAlive bool `json:"workerAlive"`
  State string `json:"state"`
  Routes []ilnIndexerRouteStatusRPC `json:"routes"`
+ RPCProviders []evm.PublicRPCObservation `json:"rpcProviders,omitempty"`
 }
 func (x *xgrEndpoint) GetILNIndexerStatus()(*ilnIndexerStatusRPC,error){
  if x==nil||x.dataDir==""{return nil,fmt.Errorf("ILN monitoring data dir unavailable")}
@@ -45,6 +48,7 @@ func (x *xgrEndpoint) GetILNIndexerStatus()(*ilnIndexerStatusRPC,error){
  if time.Since(time.Unix(status.UpdatedUnix,0))>2*time.Minute ||
     time.Now().Before(time.Unix(status.UpdatedUnix,0).Add(-30*time.Second)){
    status.State="stalled";status.WorkerAlive=false
+   status.RPCProviders=nil
  }else if !status.WorkerAlive{status.State="stalled"
  }else{status.State="ok"}
  for _,route:=range status.Routes{

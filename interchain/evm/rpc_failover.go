@@ -46,6 +46,8 @@ type rpcProviderHealth struct {
     // a provider may serve headers while continuously rejecting eth_getLogs.
     readConsecutive uint32
     retryAfter time.Time
+    observedAt time.Time
+    observation string
 }
 var rpcProviderHealthByURL sync.Map
 
@@ -60,6 +62,8 @@ type RPCProviderStats struct {
     RateLimited uint64
     ReadFailures uint64
     CooldownUntilUnix int64
+    ObservedUnix int64
+    Observation string
 }
 
 // InterchainRPCProviderStats exposes provider selection / 429 diagnosis without
@@ -71,7 +75,8 @@ func InterchainRPCProviderStats() []RPCProviderStats {
         p.mu.Lock()
         item:=RPCProviderStats{ChainID:p.chainID,URL:p.url,
             DialAttempts:p.attempted,Ready:p.ready,Failures:p.failed,
-            RateLimited:p.rateLimited,ReadFailures:p.readFailures}
+            RateLimited:p.rateLimited,ReadFailures:p.readFailures,Observation:p.observation}
+        if !p.observedAt.IsZero(){item.ObservedUnix=p.observedAt.Unix()}
         if time.Now().Before(p.retryAfter){item.CooldownUntilUnix=p.retryAfter.Unix()}
         p.mu.Unlock()
         out=append(out,item)
@@ -143,6 +148,9 @@ func rpcRecordFailure(d *Destination,url string,err error,read bool){
     p.mu.Lock()
     defer p.mu.Unlock()
     p.failed++
+    p.observedAt=time.Now()
+    p.observation="unavailable"
+    if rpcRateLimited(err){p.observation="rate-limited"}
     var streak uint32
     if read {
         p.readFailures++
@@ -188,6 +196,10 @@ func rpcRecordReady(d *Destination,url string){
     p:=rpcProviderState(d,url)
     p.mu.Lock()
     p.ready++
+    if p.readConsecutive==0 && !time.Now().Before(p.retryAfter){
+        p.observedAt=time.Now()
+        p.observation="ok"
+    }
     p.consecutive=0
     // The validated safe head is NOT evidence that the provider can serve
     // archive logs. Do not reset readConsecutive here.
@@ -201,6 +213,10 @@ func rpcRecordReadSuccess(d *Destination,url string){
     p:=rpcProviderState(d,url)
     p.mu.Lock()
     p.readConsecutive=0
+    if !time.Now().Before(p.retryAfter){
+        p.observedAt=time.Now()
+        p.observation="ok"
+    }
     if !time.Now().Before(p.retryAfter){p.retryAfter=time.Time{}}
     p.mu.Unlock()
 }
