@@ -93,9 +93,8 @@ func (x *xgrEndpoint) requestILNQuorumWithSourceTx(route, messageID string, sour
   return nil, fmt.Errorf("ILN worker not available")
  }
  // Do not let random public callers create arbitrary route directories.
- cursor, cursorErr := os.Stat(filepath.Join(x.dataDir,"interchain","iln","cursors",normalized+".cursor"))
- registered, routeErr := os.Stat(filepath.Join(x.dataDir,"interchain","iln","registered-routes",normalized+".route"))
- if (cursorErr!=nil||!cursor.Mode().IsRegular()) && (routeErr!=nil||!registered.Mode().IsRegular()) {
+ knownRoute:=x.hasLocalILNRoute(normalized)
+ if !knownRoute {
   // Serialize unverified hint + request admission so concurrent RPC calls
   // cannot evade the global on-disk directory bound.
   unverifiedILNAdmissionMu.Lock()
@@ -137,7 +136,7 @@ func (x *xgrEndpoint) requestILNQuorumWithSourceTx(route, messageID string, sour
  // Check existing request BEFORE enforcing the queue limit. Otherwise a full
  // queue makes even an idempotent status retry fail.
  if raw,readErr:=os.ReadFile(target); readErr==nil {
-  if info,statErr:=os.Stat(target);statErr==nil && time.Since(info.ModTime())>ilnQuorumHintLease {
+  if info,statErr:=os.Stat(target);!knownRoute && statErr==nil && time.Since(info.ModTime())>ilnQuorumHintLease {
    _=os.Remove(target)
   } else {
    var existing ilnQuorumRequestRPC
@@ -154,7 +153,7 @@ func (x *xgrEndpoint) requestILNQuorumWithSourceTx(route, messageID string, sour
  for _,entry:=range entries {
   if entry.IsDir()||!strings.HasSuffix(entry.Name(),".json"){continue}
   info,statErr:=entry.Info()
-  if statErr==nil && time.Since(info.ModTime())>ilnQuorumHintLease {
+  if !knownRoute && statErr==nil && time.Since(info.ModTime())>ilnQuorumHintLease {
    _=os.Remove(filepath.Join(dir,entry.Name()))
   }else {live++}
  }
@@ -181,6 +180,15 @@ func (x *xgrEndpoint) requestILNQuorumWithSourceTx(route, messageID string, sour
  return status,nil
 }
 
+// Only local route evidence can promote a public hint to the durable queue.
+func (x *xgrEndpoint) hasLocalILNRoute(route string) bool {
+ root:=filepath.Join(x.dataDir,"interchain","iln")
+ registered,err:=os.Stat(filepath.Join(root,"registered-routes",route+".route"))
+ if err==nil&&registered.Mode().IsRegular(){return true}
+ cursor,err:=os.Stat(filepath.Join(root,"cursors",route+".cursor"))
+ return err==nil&&cursor.Mode().IsRegular()
+}
+
 func normalizedILNMessageID(value string)(string,error){
  value=strings.ToLower(strings.TrimSpace(value))
  if len(value)!=66 || !strings.HasPrefix(value,"0x"){return "",fmt.Errorf("invalid message ID")}
@@ -204,6 +212,7 @@ func (x *xgrEndpoint) GetILNQuorum(route,messageID string)(*ilnQuorumStatusRPC,e
  // The worker may already have signed and removed the admission hint
  // without collecting 2/3 signatures. Persistent progress is therefore
  // authoritative for *diagnostics*, never for creating an attestation.
+ requestPath:=filepath.Join(x.dataDir,"interchain","iln","quorum-requests",route,messageID+".json")
  statusPath:=filepath.Join(x.dataDir,"interchain","iln","quorum-status",route,messageID+".json")
  if progressRaw,progressErr:=os.ReadFile(statusPath);progressErr==nil&&len(progressRaw)<=4096 {
   var progress struct{
@@ -225,6 +234,14 @@ func (x *xgrEndpoint) GetILNQuorum(route,messageID string)(*ilnQuorumStatusRPC,e
     (progress.Status=="PARTIAL_QUORUM"||
      progress.Status=="RETRYING_VALIDATION"||
      progress.Status=="AVAILABLE_UNVERIFIED"){
+   // A diagnostic failure must not hide an expired or removed admission.
+   // The observer can re-enqueue EXPIRED_RETRY with the original source tx.
+   if progress.Status=="RETRYING_VALIDATION" {
+    info,err:=os.Stat(requestPath)
+    if os.IsNotExist(err)||(err==nil&&!x.hasLocalILNRoute(route)&&time.Since(info.ModTime())>ilnQuorumHintLease) {
+     progress.Status="EXPIRED_RETRY"
+    }else if err!=nil{return nil,err}
+   }
    return &ilnQuorumStatusRPC{
     Route:route,MessageID:messageID,SourceBlockNumber:progress.SourceBlockNumber,
     Status:progress.Status,Votes:progress.Votes,
@@ -233,9 +250,9 @@ func (x *xgrEndpoint) GetILNQuorum(route,messageID string)(*ilnQuorumStatusRPC,e
    },nil
   }
  }
- raw,err:=os.ReadFile(filepath.Join(x.dataDir,"interchain","iln","quorum-requests",route,messageID+".json"))
+ raw,err:=os.ReadFile(requestPath)
  if err!=nil{return &ilnQuorumStatusRPC{Route:route,MessageID:messageID,Status:"NOT_FOUND"},nil}
- if info,statErr:=os.Stat(filepath.Join(x.dataDir,"interchain","iln","quorum-requests",route,messageID+".json"));statErr==nil && time.Since(info.ModTime())>ilnQuorumHintLease {
+ if info,statErr:=os.Stat(requestPath);statErr==nil && !x.hasLocalILNRoute(route) && time.Since(info.ModTime())>ilnQuorumHintLease {
   return &ilnQuorumStatusRPC{Route:route,MessageID:messageID,Status:"EXPIRED_RETRY"},nil
  }
  var req ilnQuorumRequestRPC

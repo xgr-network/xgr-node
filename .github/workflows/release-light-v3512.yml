@@ -1,4 +1,4 @@
-name: Release Light (XGR v3.5.11 Passive RPC Health)
+name: Release Light (XGR v3.5.12 Quorum Request Retry)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       confirmation:
-        description: "Type RELEASE-v3.5.11 to publish"
+        description: "Type RELEASE-v3.5.12 to publish"
         required: true
         type: string
 
@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: xgr-v3511-light-release
+  group: xgr-v3512-light-release
   cancel-in-progress: false
 
 jobs:
@@ -36,31 +36,35 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = 'refs/heads/XGR3.0'
-          test "$CONFIRMATION" = 'RELEASE-v3.5.11'
+          test "$CONFIRMATION" = 'RELEASE-v3.5.12'
           [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
-          test "$(git rev-parse refs/tags/v3.5.10)" = '906ff77f2a26efde21d42d8d41e3ebc53ad70240'
-          git merge-base --is-ancestor refs/tags/v3.5.10 HEAD
-          if git rev-parse -q --verify refs/tags/v3.5.11 >/dev/null; then
-            echo "v3.5.11 already exists: refusing overwrite" >&2
+          test "$(git rev-parse refs/tags/v3.5.11)" = '4dcef338b2ec7acc3d7fd50fc89db8227395bafb'
+          git merge-base --is-ancestor refs/tags/v3.5.11 HEAD
+          if git rev-parse -q --verify refs/tags/v3.5.12 >/dev/null; then
+            echo "v3.5.12 already exists: refusing overwrite" >&2
             exit 1
           fi
           diff -u <(printf '%s\n' \
-            '.github/workflows/release-light-v3510.yml' \
             '.github/workflows/release-light-v3511.yml' \
-            'RELEASE_NOTES_v3.5.11.md' \
-            'interchain/evm/rpc_health_snapshot.go' \
-            'interchain/evm/rpc_health_snapshot_test.go' | LC_ALL=C sort) \
-            <(git diff --no-renames --name-only refs/tags/v3.5.10 HEAD | LC_ALL=C sort)
-          test "$(git diff --diff-filter=D --name-only refs/tags/v3.5.10 HEAD -- .github/workflows/release-light-v3510.yml)" = '.github/workflows/release-light-v3510.yml'
+            '.github/workflows/release-light-v3512.yml' \
+            'RELEASE_NOTES_v3.5.12.md' \
+            'interchain/runtime/iln_message_backoff_test.go' \
+            'interchain/runtime/iln_quorum_request.go' \
+            'jsonrpc/xgr_iln_quorum.go' \
+            'jsonrpc/xgr_iln_quorum_test.go' | LC_ALL=C sort) \
+            <(git diff --no-renames --name-only refs/tags/v3.5.11 HEAD | LC_ALL=C sort)
+          test "$(git diff --diff-filter=D --name-only refs/tags/v3.5.11 HEAD -- .github/workflows/release-light-v3511.yml)" = '.github/workflows/release-light-v3511.yml'
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
           cache: true
       - name: Interchain, Direct-BLS and JSON-RPC regression
         run: go test -count=1 -timeout 15m ./interchain/... ./consensus/ibft/interchain ./jsonrpc
-      - name: Repeat passive RPC inventory and endpoint privacy checks
-        run: go test -count=3 -timeout 8m ./interchain/evm -run '^TestPublicRPC'
+      - name: Repeat quorum queue and retry regressions
+        run: |
+          go test -count=3 -timeout 8m ./interchain/runtime -run '^TestILN(QueuedQuorum|EvidenceRetry)'
+          go test -count=3 -timeout 8m ./jsonrpc -run '^TestILN(RegisteredQuorum|QuorumProgress)'
       - name: Build verified immutable Linux release
         shell: bash
         run: |
@@ -69,33 +73,33 @@ jobs:
           COMMIT="$(git rev-parse --short HEAD)"
           TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           PKG="$(go list -m)/versioning"
-          go build -trimpath -o dist/xgrchain-v3.5.11-linux-amd64 \
-            -ldflags "-X $PKG.Version=v3.5.11 -X $PKG.Commit=$COMMIT -X $PKG.Branch=XGR3.0 -X $PKG.BuildTime=$TIME" .
-          chmod 755 dist/xgrchain-v3.5.11-linux-amd64
-          VERSION_OUTPUT="$(./dist/xgrchain-v3.5.11-linux-amd64 version)"
+          go build -trimpath -o dist/xgrchain-v3.5.12-linux-amd64 \
+            -ldflags "-X $PKG.Version=v3.5.12 -X $PKG.Commit=$COMMIT -X $PKG.Branch=XGR3.0 -X $PKG.BuildTime=$TIME" .
+          chmod 755 dist/xgrchain-v3.5.12-linux-amd64
+          VERSION_OUTPUT="$(./dist/xgrchain-v3.5.12-linux-amd64 version)"
           printf '%s\n' "$VERSION_OUTPUT"
           grep -Fq 'Release version' <<< "$VERSION_OUTPUT"
-          grep -Fq 'v3.5.11' <<< "$VERSION_OUTPUT"
+          grep -Fq 'v3.5.12' <<< "$VERSION_OUTPUT"
           grep -Fq "$COMMIT" <<< "$VERSION_OUTPUT"
-          printf '%s\n' v3.5.11 > dist/version.txt
+          printf '%s\n' v3.5.12 > dist/version.txt
           git rev-parse HEAD > dist/commit.txt
           go version > dist/toolchain.txt
-          (cd dist && sha256sum xgrchain-v3.5.11-linux-amd64 version.txt commit.txt toolchain.txt > sha256sums.txt)
+          (cd dist && sha256sum xgrchain-v3.5.12-linux-amd64 version.txt commit.txt toolchain.txt > sha256sums.txt)
           (cd dist && sha256sum -c sha256sums.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: xgr-v3.5.11-passive-rpc-health-light-amd64
+          name: xgr-v3.5.12-quorum-request-retry-light-amd64
           path: dist/
           retention-days: 30
           if-no-files-found: error
-      - name: Publish immutable v3.5.11 GitHub release (no validator deployment)
+      - name: Publish immutable v3.5.12 GitHub release (no validator deployment)
         uses: ncipollo/release-action@v1
         with:
-          tag: v3.5.11
-          name: v3.5.11
+          tag: v3.5.12
+          name: v3.5.12
           commit: ${{ github.sha }}
           allowUpdates: false
           makeLatest: true
           generateReleaseNotes: false
           artifacts: dist/*
-          bodyFile: RELEASE_NOTES_v3.5.11.md
+          bodyFile: RELEASE_NOTES_v3.5.12.md
