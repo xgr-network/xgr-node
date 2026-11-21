@@ -75,7 +75,7 @@ func TestILNQuorumRequestFromNonSignerWithDiscoveredRoute(t *testing.T) {
 }
 
 
-func TestILNQuorumHintLeaseUnblocksStaleSourceBlock(t *testing.T) {
+func TestILNRegisteredQuorumRequestSurvivesHintExpiry(t *testing.T) {
  dir:=t.TempDir()
  hb:=filepath.Join(dir,"interchain","worker.heartbeat")
  cursor:=filepath.Join(dir,"interchain","iln","cursors","base_to_xgr.cursor")
@@ -90,12 +90,10 @@ func TestILNQuorumHintLeaseUnblocksStaleSourceBlock(t *testing.T) {
  require.NoError(t,os.Chtimes(filename,past,past))
  status,err:=ep.GetILNQuorum("base_to_xgr",quorumTestMessage)
  require.NoError(t,err)
- require.Equal(t,"EXPIRED_RETRY",status.Status)
- // Replacing an unverified hint never re-locks or re-pays a transfer.
- status,err=ep.RequestILNQuorum("base_to_xgr",quorumTestMessage,11)
- require.NoError(t,err)
- require.Equal(t,uint64(11),status.SourceBlockNumber)
  require.Equal(t,"PENDING",status.Status)
+ // Re-admission cannot evict the existing durable request.
+ _,err=ep.RequestILNQuorum("base_to_xgr",quorumTestMessage,11)
+ require.ErrorContains(t,err,"different source block")
 }
 
 
@@ -126,8 +124,27 @@ func TestILNQuorumProgressSurvivesRequestCleanup(t *testing.T) {
  require.NoError(t,os.WriteFile(path,raw,0o660))
  status,err=ep.GetILNQuorum(route,quorumTestMessage)
  require.NoError(t,err)
- require.Equal(t,"RETRYING_VALIDATION",status.Status)
+ require.Equal(t,"EXPIRED_RETRY",status.Status)
  require.Equal(t,"SOURCE_RECEIPT_NOT_VERIFIED",status.FailureCategory)
+ // Registered work remains live after the public discovery hint TTL.
+ cursor:=filepath.Join(dir,"interchain","iln","cursors",route+".cursor")
+ require.NoError(t,os.MkdirAll(filepath.Dir(cursor),0o770))
+ require.NoError(t,os.WriteFile(cursor,[]byte("1"),0o660))
+ requestPath:=filepath.Join(dir,"interchain","iln","quorum-requests",route,quorumTestMessage+".json")
+ require.NoError(t,os.MkdirAll(filepath.Dir(requestPath),0o770))
+ request,err:=json.Marshal(ilnQuorumRequestRPC{Route:route,MessageID:quorumTestMessage,SourceBlockNumber:52801389})
+ require.NoError(t,err)
+ require.NoError(t,os.WriteFile(requestPath,request,0o660))
+ past:=time.Now().Add(-30*time.Minute)
+ require.NoError(t,os.Chtimes(requestPath,past,past))
+ status,err=ep.GetILNQuorum(route,quorumTestMessage)
+ require.NoError(t,err)
+ require.Equal(t,"RETRYING_VALIDATION",status.Status)
+ // If no queued work remains, expose the state that prompts re-admission.
+ require.NoError(t,os.Remove(requestPath))
+ status,err=ep.GetILNQuorum(route,quorumTestMessage)
+ require.NoError(t,err)
+ require.Equal(t,"EXPIRED_RETRY",status.Status)
  // Stale/unknown state must not create a false signed quorum.
  progress["updatedUnix"]=time.Now().Add(-48*time.Hour).Unix()
  raw,err=json.Marshal(progress);require.NoError(t,err)

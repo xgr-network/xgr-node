@@ -111,8 +111,9 @@ func (w *Worker) trackILNQuorumRetry(route,message string,block uint64,err error
  }
 }
 const maxILNRequestPerTick = 8
-// Public hints contain no funds or custody evidence. After expiry the client
-// can safely request a replacement for the ORIGINAL message.
+
+// Only unknown-route discovery hints expire. An admitted route keeps its
+// queue entry across evidence backoff and temporary validation failures.
 const maxILNQuorumHintAge = 15 * time.Minute
 
 // processRequestedILNQuorums uses the EXACT same canonical operation signing
@@ -134,11 +135,6 @@ func (w *Worker) processRequestedILNQuorums() {
    if processed>=maxILNRequestPerTick {break}
    if entry.IsDir() || !strings.HasSuffix(entry.Name(),".json"){continue}
    path:=filepath.Join(dir,entry.Name())
-   info,statErr:=entry.Info()
-   if statErr==nil && time.Since(info.ModTime())>maxILNQuorumHintAge {
-    _=os.Remove(path)
-    continue
-   }
    raw,err:=os.ReadFile(path)
    if err!=nil{continue}
    if len(raw)>2048{ _=os.Remove(path);continue }
@@ -164,11 +160,12 @@ func (w *Worker) processRequestedILNQuorums() {
       continue
     }
    }
-   processed++
-   if err:=w.processRequestedILNQuorumWithTx(route,types.StringToHash(messageID),request.SourceBlockNumber,request.SourceTxHash);err!=nil {
+   err=w.processRequestedILNQuorumWithTx(route,types.StringToHash(messageID),request.SourceBlockNumber,request.SourceTxHash)
+   if err!=nil {
     // A deferred message is intentionally still pending; preserve the
     // previous real proof failure and do not replace it with a synthetic one.
     if errors.Is(err,errILNEvidenceDeferred){continue}
+    processed++
     w.logger.Debug("ILN quorum request pending validation", "route",routeName,"message",messageID,"err",err)
     w.trackILNQuorumRetry(routeName,messageID,request.SourceBlockNumber,err)
     msg:=strings.ToLower(err.Error())
@@ -181,6 +178,7 @@ func (w *Worker) processRequestedILNQuorums() {
     }
     continue // temporary failures remain retryable.
    }
+   processed++
    // Propagate only after full local authorization. Do not discard a hint
    // until gossip accepts it; every peer re-verifies all source evidence.
    gossip:=request

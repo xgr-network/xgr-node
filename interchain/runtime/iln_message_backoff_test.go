@@ -1,6 +1,7 @@
 package runtime
 
 import (
+ "encoding/json"
  "errors"
  "os"
  "path/filepath"
@@ -8,7 +9,9 @@ import (
  "testing"
  "time"
 
+ "github.com/hashicorp/go-hclog"
  "github.com/stretchr/testify/require"
+ evm "github.com/xgr-network/xgr-node/interchain/evm"
  "github.com/xgr-network/xgr-node/types"
 )
 
@@ -85,4 +88,44 @@ func TestILNEvidenceRetryInvalidTxCannotOverwriteOtherIdentity(t *testing.T){
  require.NoError(t,err,"untrusted bogus tx hints must never starve independently known correct transaction")
  require.NoError(t,first(errors.New("RPC unavailable")))
  require.NoError(t,other(errors.New("transaction hash mismatch")))
+}
+
+func TestILNQueuedQuorumSurvivesBackoffAndRetries(t *testing.T) {
+	const route = "iln_56_1643_test"
+	id := types.StringToHash("0x" + strings.Repeat("a", 64))
+	tx := types.StringToHash("0x" + strings.Repeat("b", 64))
+	w := &Worker{
+		dataDir: t.TempDir(), logger: hclog.NewNullLogger(),
+		routes: map[string]*evm.CheckpointRoute{route: {Name: route, SourceNetwork: "bsc"}},
+		destinations: map[string]*evm.Destination{"bsc": {ChainID: 56}},
+	}
+	request := filepath.Join(w.ilnDir(), "quorum-requests", route, id.String()+".json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(request), 0o770))
+	raw, err := json.Marshal(requestedILNQuorum{Route: route, MessageID: id.String(), SourceBlockNumber: 123, SourceTxHash: tx.String()})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(request, raw, 0o660))
+	queuedAt := time.Now().Add(-31 * time.Minute)
+	require.NoError(t, os.Chtimes(request, queuedAt, queuedAt))
+
+	path, err := w.ilnEvidenceRetryPath(route, id, tx)
+	require.NoError(t, err)
+	retry := ilnEvidenceRetryRecord{
+		Version: ilnEvidenceRetryVersion, Route: route, MessageID: id.String(), SourceBlock: 123,
+		SourceTxHash: tx.String(), Failures: 8, NextAttemptUnixNano: time.Now().Add(time.Minute).UnixNano(),
+	}
+	require.NoError(t, persistILNEvidenceRetry(path, retry))
+	w.processRequestedILNQuorums()
+	require.FileExists(t, request)
+	require.NoFileExists(t, w.ilnQuorumProgressPath(route, id.String()))
+
+	retry.NextAttemptUnixNano = time.Now().Add(-time.Second).UnixNano()
+	require.NoError(t, persistILNEvidenceRetry(path, retry))
+	// The unsynchronized worker fails before external RPC and records a new retry.
+	w.processRequestedILNQuorums()
+	require.FileExists(t, request)
+	require.FileExists(t, w.ilnQuorumProgressPath(route, id.String()))
+	after, err := readILNEvidenceRetry(path, retry)
+	require.NoError(t, err)
+	require.Equal(t, uint32(9), after.Failures)
+	require.Greater(t, after.NextAttemptUnixNano, time.Now().UnixNano())
 }
