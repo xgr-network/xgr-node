@@ -28,11 +28,11 @@ func TestSharedILNObserverReducesExternalRequestsAndPreservesDurableCursors(t *t
  require.NoError(t,w.rememberILNRouteAdded(src,evm.ILNRouteAdded{RouteID:idB,Gateway:addrB,DestinationDomain:1643,BlockNumber:100}))
  a,err:=w.knownObserverRoute(src,routeA);require.NoError(t,err)
  b,err:=w.knownObserverRoute(src,routeB);require.NoError(t,err)
- originalRemote,originalSigner:=observerRemoteWindow,observerSignMessage
- defer func(){observerRemoteWindow=originalRemote;observerSignMessage=originalSigner}()
+ originalRemote,originalSigner:=openObserverWindow,observerSignMessage
+ defer func(){openObserverWindow=originalRemote;observerSignMessage=originalSigner}()
  reads,signed:=0,0
- observerRemoteWindow=func(_ *evm.Destination,gateways []types.Address,cursor,window uint64)(
-  uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error){
+ openObserverWindow=func(_ *evm.Destination)(observerWindowReader,func()){
+  return func(gateways []types.Address,cursor,window uint64)(uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error){
   reads++
   require.Len(t,gateways,2)
   require.Equal(t,uint64(99),cursor)
@@ -40,6 +40,7 @@ func TestSharedILNObserverReducesExternalRequestsAndPreservesDurableCursors(t *t
   op:=evm.ILNOperation{RouteID:idA,MessageID:mid,DestinationDomain:1643,
    ValidatorFeeWei:big.NewInt(1),BlockNumber:100,TransactionHash:tx,LogIndex:0}
   return 100,100,100,[]evm.ILNObservedGatewayOperation{{Gateway:addrA,Operation:op}},nil
+  },func(){}
  }
  observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64,tx types.Hash)error{
   require.Equal(t,"a",r.Name);signed++;return nil
@@ -61,13 +62,14 @@ func TestSharedILNObserverRejectsUnverifiedWorkWithoutAdvancingCursor(t *testing
  source:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryActivationBlock:10}
  route:=&evm.CheckpointRoute{Name:"a",RouteID:id,SourceNetwork:"base",Destination:"xgr"}
  w:=&Worker{dataDir:t.TempDir()}
- originalRemote,originalSigner:=observerRemoteWindow,observerSignMessage
- defer func(){observerRemoteWindow=originalRemote;observerSignMessage=originalSigner}()
- observerRemoteWindow=func(_ *evm.Destination,_ []types.Address,cursor,window uint64)(
-  uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error){
+ originalRemote,originalSigner:=openObserverWindow,observerSignMessage
+ defer func(){openObserverWindow=originalRemote;observerSignMessage=originalSigner}()
+ openObserverWindow=func(_ *evm.Destination)(observerWindowReader,func()){
+  return func(_ []types.Address,cursor,window uint64)(uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error){
   return 20,10,20,[]evm.ILNObservedGatewayOperation{{Gateway:gateway,
    Operation:evm.ILNOperation{RouteID:id,MessageID:msg,DestinationDomain:1643,
     BlockNumber:12,TransactionHash:tx,ValidatorFeeWei:big.NewInt(1)}}},nil
+  },func(){}
  }
  observerSignMessage=func(_ *Worker,_ *evm.CheckpointRoute,_ types.Hash,_ uint64,tx types.Hash)error{
   return errors.New("independent source witness mismatch")
@@ -94,11 +96,11 @@ func TestSharedILNObserverLateRouteBackfillsWithoutRepeatingExistingVotes(t *tes
  newRoute:=&evm.CheckpointRoute{Name:"new",RouteID:idNew}
  w:=&Worker{dataDir:t.TempDir()}
  require.NoError(t,w.writeILNCursor("_direct_old",200))
- originalReader,originalSigner:=observerRemoteWindow,observerSignMessage
- defer func(){observerRemoteWindow=originalReader;observerSignMessage=originalSigner}()
+ originalReader,originalSigner:=openObserverWindow,observerSignMessage
+ defer func(){openObserverWindow=originalReader;observerSignMessage=originalSigner}()
  calls,signs:=0,0
- observerRemoteWindow=func(_ *evm.Destination,_ []types.Address,cursor,window uint64)(
-  uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error){
+ openObserverWindow=func(_ *evm.Destination)(observerWindowReader,func()){
+  return func(_ []types.Address,cursor,window uint64)(uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error){
   calls++
   require.Equal(t,uint64(99),cursor)
   require.Equal(t,uint64(256),window)
@@ -108,6 +110,7 @@ func TestSharedILNObserverLateRouteBackfillsWithoutRepeatingExistingVotes(t *tes
   return 200,100,200,[]evm.ILNObservedGatewayOperation{
    {Gateway:gwOld,Operation:oldOp},{Gateway:gwNew,Operation:newOp},
   },nil
+  },func(){}
  }
  observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64,tx types.Hash)error{
   signs++;require.Equal(t,"new",r.Name);return nil
@@ -149,10 +152,10 @@ func TestSharedObserverContinuesSigningHealthySiblingButNeverAdvancesFailedWindo
  routeA:=&evm.CheckpointRoute{Name:"a",RouteID:idA}
  routeB:=&evm.CheckpointRoute{Name:"b",RouteID:idB}
  w:=&Worker{dataDir:t.TempDir()}
- originalReader,originalSigner:=observerRemoteWindow,observerSignMessage
- defer func(){observerRemoteWindow=originalReader;observerSignMessage=originalSigner}()
- observerRemoteWindow=func(_ *evm.Destination,_ []types.Address,cursor,window uint64)(
-  uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error){
+ originalReader,originalSigner:=openObserverWindow,observerSignMessage
+ defer func(){openObserverWindow=originalReader;observerSignMessage=originalSigner}()
+ openObserverWindow=func(_ *evm.Destination)(observerWindowReader,func()){
+  return func(_ []types.Address,cursor,window uint64)(uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error){
   require.Equal(t,uint64(99),cursor)
   a:=evm.ILNOperation{RouteID:idA,MessageID:bad,DestinationDomain:1643,
    BlockNumber:100,TransactionHash:tx,ValidatorFeeWei:big.NewInt(1),LogIndex:0}
@@ -161,6 +164,7 @@ func TestSharedObserverContinuesSigningHealthySiblingButNeverAdvancesFailedWindo
   return 100,100,100,[]evm.ILNObservedGatewayOperation{
    {Gateway:addrA,Operation:a},{Gateway:addrB,Operation:b},
   },nil
+  },func(){}
  }
  attempts:=map[string]int{}
  observerSignMessage=func(_ *Worker,r *evm.CheckpointRoute,_ types.Hash,_ uint64,tx types.Hash)error{

@@ -21,9 +21,8 @@ func TestILNDiscoverOnlyCanonicalPermissionlessRoutesAndPersistCursor(t *testing
  source:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryAddress:"0x5555555555555555555555555555555555555555"}
  destination:=&evm.Destination{Name:"xgr",ChainID:1643,Domain:1643}
  w:=&Worker{dataDir:t.TempDir(),destinations:map[string]*evm.Destination{"base":source,"xgr":destination},routes:make(map[string]*evm.CheckpointRoute)}
- oldHead,oldAdds,oldRoute,oldActivation:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRouteAtBlock,getILNRegistryActivationBlock
- defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds;getILNRouteAtBlock=oldRoute;getILNRegistryActivationBlock=oldActivation}()
- getILNRegistryActivationBlock=func(*evm.Destination)(uint64,error){return 1,nil}
+ oldHead,oldAdds,oldRoute:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRouteAtBlock
+ defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds;getILNRouteAtBlock=oldRoute}()
  getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 100,nil}
  reads:=0
  getConfirmedILNRouteAdds=func(*evm.Destination,uint64,uint64)([]evm.ILNRouteAdded,error){
@@ -33,7 +32,7 @@ func TestILNDiscoverOnlyCanonicalPermissionlessRoutesAndPersistCursor(t *testing
  getILNRouteAtBlock=func(*evm.Destination,uint32,types.Hash,uint64)(*evm.ILNRouteSnapshot,error){
   return &evm.ILNRouteSnapshot{Route:protocol.ILNRoute{Gateway:gateway}},nil
  }
- require.NoError(t,w.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(w, source))
  require.Len(t,w.routes,1)
  for name,route:=range w.routes {
   require.Equal(t,"iln_8453_1643_"+routeID.String()[2:],name)
@@ -44,7 +43,7 @@ func TestILNDiscoverOnlyCanonicalPermissionlessRoutesAndPersistCursor(t *testing
   require.Equal(t,routeID.String()+"\n",string(indexed))
  }
  require.Equal(t,1,reads)
- require.NoError(t,w.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(w, source))
  require.Equal(t,1,reads,"restarting the discovery loop must not rescan confirmed blocks")
 }
 
@@ -52,13 +51,12 @@ func TestILNDiscoveryRejectsMismatchedGatewayAndDoesNotAdvance(t *testing.T) {
  routeID:=types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
  source:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryAddress:"0x5555555555555555555555555555555555555555"}
  w:=&Worker{dataDir:t.TempDir(),destinations:map[string]*evm.Destination{"base":source,"xgr":{Name:"xgr",Domain:1643}},routes:make(map[string]*evm.CheckpointRoute)}
- oldHead,oldAdds,oldRoute,oldActivation:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRouteAtBlock,getILNRegistryActivationBlock
- defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds;getILNRouteAtBlock=oldRoute;getILNRegistryActivationBlock=oldActivation}()
- getILNRegistryActivationBlock=func(*evm.Destination)(uint64,error){return 1,nil}
+ oldHead,oldAdds,oldRoute:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRouteAtBlock
+ defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds;getILNRouteAtBlock=oldRoute}()
  getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 100,nil}
  getConfirmedILNRouteAdds=func(*evm.Destination,uint64,uint64)([]evm.ILNRouteAdded,error){return []evm.ILNRouteAdded{{DestinationDomain:1643,RouteID:routeID,Gateway:types.StringToAddress("0x1111111111111111111111111111111111111111"),BlockNumber:50}},nil}
  getILNRouteAtBlock=func(*evm.Destination,uint32,types.Hash,uint64)(*evm.ILNRouteSnapshot,error){return &evm.ILNRouteSnapshot{Route:protocol.ILNRoute{Gateway:types.StringToAddress("0x2222222222222222222222222222222222222222")}},nil}
- require.ErrorContains(t,w.discoverILNRoutesFromSource(source),"gateway mismatch")
+ require.ErrorContains(t,discoverTestRoutes(w, source),"gateway mismatch")
  require.Empty(t,w.routes)
  _,exists,err:=w.readILNCursor(ilnDiscoveryCursorName(source))
  require.NoError(t,err)
@@ -71,10 +69,9 @@ func TestILNDiscoveryRetryOnTransientRegistryFailure(t *testing.T) {
  source:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryAddress:"0x5555555555555555555555555555555555555555",ILNRegistryActivationBlock:99}
  destination:=&evm.Destination{Name:"xgr",ChainID:1643,Domain:1643}
  w:=&Worker{dataDir:t.TempDir(),destinations:map[string]*evm.Destination{"base":source,"xgr":destination},routes:make(map[string]*evm.CheckpointRoute)}
- oldHead,oldAdds,oldRoute,oldActivation:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRouteAtBlock,getILNRegistryActivationBlock
- defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds;getILNRouteAtBlock=oldRoute;getILNRegistryActivationBlock=oldActivation}()
+ oldHead,oldAdds,oldRoute:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRouteAtBlock
+ defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds;getILNRouteAtBlock=oldRoute}()
  getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 100,nil}
- getILNRegistryActivationBlock=func(*evm.Destination)(uint64,error){return 99,nil}
  calls:=0
  getConfirmedILNRouteAdds=func(_ *evm.Destination,from,to uint64)([]evm.ILNRouteAdded,error){
   require.Equal(t,uint64(99),from)
@@ -87,13 +84,13 @@ func TestILNDiscoveryRetryOnTransientRegistryFailure(t *testing.T) {
   if fail{return nil,fmt.Errorf("temporary source RPC error")}
   return &evm.ILNRouteSnapshot{Route:protocol.ILNRoute{Gateway:gateway}},nil
  }
- require.ErrorContains(t,w.discoverILNRoutesFromSource(source),"temporary source RPC")
+ require.ErrorContains(t,discoverTestRoutes(w, source),"temporary source RPC")
  _,exists,err:=w.readILNCursor(ilnDiscoveryCursorName(source))
  require.NoError(t,err)
  require.False(t,exists,"must not skip confirmed events during transient RPC faults")
  require.Empty(t,w.routes)
  fail=false
- require.NoError(t,w.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(w, source))
  require.Equal(t,2,calls)
  require.Len(t,w.routes,1)
  cursor,exists,err:=w.readILNCursor(ilnDiscoveryCursorName(source))
@@ -109,20 +106,19 @@ func TestILNDiscoveryRestoresRouteAfterWorkerRestart(t *testing.T) {
  source:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryAddress:"0x5555555555555555555555555555555555555555"}
  dest:=&evm.Destination{Name:"xgr",ChainID:1643,Domain:1643}
  dir:=t.TempDir()
- oldHead,oldAdds,oldRoute,oldActivation:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRouteAtBlock,getILNRegistryActivationBlock
- defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds;getILNRouteAtBlock=oldRoute;getILNRegistryActivationBlock=oldActivation}()
+ oldHead,oldAdds,oldRoute:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRouteAtBlock
+ defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds;getILNRouteAtBlock=oldRoute}()
  getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 100,nil}
- getILNRegistryActivationBlock=func(*evm.Destination)(uint64,error){return 1,nil}
  scans:=0
  getConfirmedILNRouteAdds=func(*evm.Destination,uint64,uint64)([]evm.ILNRouteAdded,error){scans++;return []evm.ILNRouteAdded{{DestinationDomain:1643,RouteID:routeID,Gateway:gateway,BlockNumber:50}},nil}
  getILNRouteAtBlock=func(*evm.Destination,uint32,types.Hash,uint64)(*evm.ILNRouteSnapshot,error){
   return &evm.ILNRouteSnapshot{Route:protocol.ILNRoute{Gateway:gateway}},nil
  }
  first:=&Worker{dataDir:dir,destinations:map[string]*evm.Destination{"base":source,"xgr":dest},routes:make(map[string]*evm.CheckpointRoute)}
- require.NoError(t,first.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(first, source))
  require.Equal(t,1,scans)
  restarted:=&Worker{dataDir:dir,destinations:map[string]*evm.Destination{"base":source,"xgr":dest},routes:make(map[string]*evm.CheckpointRoute)}
- require.NoError(t,restarted.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(restarted, source))
  require.Len(t,restarted.routes,1)
  require.Equal(t,1,scans,"no full rescanning is needed after a clean restart")
 }
@@ -132,20 +128,19 @@ func TestILNDiscoveryRemembersUnknownDestinationUntilChainConfigured(t *testing.
  gateway:=types.StringToAddress("0x1111111111111111111111111111111111111111")
  source:=&evm.Destination{Name:"base",ChainID:8453,Domain:8453,ILNRegistryAddress:"0x5555555555555555555555555555555555555555"}
  dir:=t.TempDir()
- oldHead,oldAdds,oldRoute,oldActivation:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRouteAtBlock,getILNRegistryActivationBlock
- defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds;getILNRouteAtBlock=oldRoute;getILNRegistryActivationBlock=oldActivation}()
+ oldHead,oldAdds,oldRoute:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRouteAtBlock
+ defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds;getILNRouteAtBlock=oldRoute}()
  getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 100,nil}
- getILNRegistryActivationBlock=func(*evm.Destination)(uint64,error){return 1,nil}
  scans:=0
  getConfirmedILNRouteAdds=func(*evm.Destination,uint64,uint64)([]evm.ILNRouteAdded,error){scans++;return []evm.ILNRouteAdded{{DestinationDomain:137,RouteID:routeID,Gateway:gateway,BlockNumber:50}},nil}
  getILNRouteAtBlock=func(*evm.Destination,uint32,types.Hash,uint64)(*evm.ILNRouteSnapshot,error){
   return &evm.ILNRouteSnapshot{Route:protocol.ILNRoute{Gateway:gateway}},nil
  }
  first:=&Worker{dataDir:dir,destinations:map[string]*evm.Destination{"base":source},routes:make(map[string]*evm.CheckpointRoute)}
- require.NoError(t,first.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(first, source))
  require.Empty(t,first.routes)
  later:=&Worker{dataDir:dir,destinations:map[string]*evm.Destination{"base":source,"polygon":{Name:"polygon",Domain:137}},routes:make(map[string]*evm.CheckpointRoute)}
- require.NoError(t,later.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(later, source))
  require.Len(t,later.routes,1)
  require.Equal(t,1,scans,"must restore from catalog even after the cursor advanced")
 }
@@ -153,10 +148,9 @@ func TestILNDiscoveryRemembersUnknownDestinationUntilChainConfigured(t *testing.
 func TestILNDiscoveryRecoversPersistedL1HeightOnL2(t *testing.T) {
  source:=&evm.Destination{Name:"rollup",ChainID:42161,Domain:42161,ILNRegistryAddress:"0x5555555555555555555555555555555555555555"}
  w:=&Worker{dataDir:t.TempDir(),destinations:map[string]*evm.Destination{"rollup":source},routes:make(map[string]*evm.CheckpointRoute)}
- oldHead,oldAdds,oldActivation:=getConfirmedILNHead,getConfirmedILNRouteAdds,getILNRegistryActivationBlock
- defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds;getILNRegistryActivationBlock=oldActivation}()
+ oldHead,oldAdds:=getConfirmedILNHead,getConfirmedILNRouteAdds
+ defer func(){getConfirmedILNHead=oldHead;getConfirmedILNRouteAdds=oldAdds}()
  getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 517578687,nil}
- getILNRegistryActivationBlock=func(*evm.Destination)(uint64,error){return 24000000,nil}
  require.NoError(t,w.ensureILNRouteCatalogVersion(source))
  require.NoError(t,w.writeILNCursor(ilnDiscoveryCursorName(source),517578688))
  calls:=0
@@ -166,7 +160,7 @@ func TestILNDiscoveryRecoversPersistedL1HeightOnL2(t *testing.T) {
   require.Equal(t,uint64(517578687),to)
   return nil,nil
  }
- require.NoError(t,w.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(w, source))
  require.Equal(t,1,calls)
  cursor,exists,err:=w.readILNCursor(ilnDiscoveryCursorName(source))
  require.NoError(t,err)
@@ -206,19 +200,19 @@ func TestILNDiscoveryIsolatesNewSourceRegistryGeneration(t *testing.T) {
   return &evm.ILNRouteSnapshot{Route:protocol.ILNRoute{Gateway:gateway}},nil
  }
  before:=&Worker{dataDir:dir,destinations:map[string]*evm.Destination{"base":source,"xgr":dst},routes:make(map[string]*evm.CheckpointRoute)}
- require.NoError(t,before.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(before, source))
  oldCursorName:=ilnDiscoveryCursorName(source)
  require.FileExists(t,filepath.Join(before.ilnRouteCatalogDir(source),"1643-"+oldRoute.String()[2:]+".json"))
  require.Len(t,before.routes,1)
  source.ILNRegistryAddress=newRegistry
  after:=&Worker{dataDir:dir,destinations:map[string]*evm.Destination{"base":source,"xgr":dst},routes:make(map[string]*evm.CheckpointRoute)}
  require.NotEqual(t,oldCursorName,ilnDiscoveryCursorName(source))
- require.NoError(t,after.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(after, source))
  require.Equal(t,2,scans,"new Registry must bootstrap its own discovery cursor")
  require.Len(t,after.routes,1)
  for _,route:=range after.routes{require.Equal(t,newRoute,route.RouteID)}
  require.FileExists(t,filepath.Join(after.ilnRouteCatalogDir(source),"1643-"+newRoute.String()[2:]+".json"))
- require.NoError(t,after.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(after, source))
  require.Equal(t,2,scans,"new generation cursor must persist over restart")
 }
 
@@ -278,9 +272,9 @@ func TestILNRPCDiscoveryCursorMigrationRejectsNumericallyPlausibleL1Height(t *te
   require.Equal(t,uint64(517578687),to)
   return nil,nil
  }
- require.NoError(t,w.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(w, source))
  require.Equal(t,1,scans)
- require.NoError(t,w.discoverILNRoutesFromSource(source))
+ require.NoError(t,discoverTestRoutes(w, source))
  require.Equal(t,1,scans,"migrated cursor must not repeatedly rescan")
 }
 
@@ -353,4 +347,13 @@ func TestILNHintQueueTransientRPCFailureRotatesAndPreservesOriginalLease(t *test
  second:=struct{Issued int64 `json:"issuedUnix"`}{}
  require.NoError(t,json.Unmarshal(raw,&second))
  require.Equal(t,first.Issued,second.Issued,"retry rotation cannot renew a hint lease")
+}
+
+
+func discoverTestRoutes(w *Worker,source *evm.Destination)error{
+ head,err:=w.sourceILNHead(source)
+ if err!=nil{return err}
+ return w.discoverILNRoutesAtHead(source,head,func(from,to uint64)([]evm.ILNRouteAdded,error){
+  return w.sourceILNRouteAdds(source,from,to)
+ })
 }

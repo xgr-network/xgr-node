@@ -36,7 +36,12 @@ func (w *Worker) knownObserverRoute(source *evm.Destination,route *evm.Checkpoin
 
 // Injectable seams are used by deterministic multi-route cursor and request
 // count tests; production always binds the canonical scan/signing functions.
-var observerRemoteWindow = evm.ScanILNMultiGatewayWindow
+type observerWindowReader func([]types.Address,uint64,uint64)(uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error)
+
+var openObserverWindow = func(source *evm.Destination)(observerWindowReader,func()){
+ session:=evm.NewILNScanSession(source)
+ return session.GatewayWindow,session.Close
+}
 var observerNativeWindow = evm.ScanNativeXGRMultiGatewayWindow
 var observerSignMessage = func(w *Worker,r *evm.CheckpointRoute,id types.Hash,n uint64,sourceTx types.Hash)error{
  return w.signDirectILNMessageWithTx(r,id,n,sourceTx)
@@ -89,10 +94,15 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
  // The configured route set is immutable for this poll; newly discovered
  // routes enter at the next tick with their independent historical cursor.
  var native evm.NativeXGRReader
+ var remote observerWindowReader
  if source.ChainID==1643{
   r,err:=w.nativeReader(source)
   if err!=nil{return err}
   native=r
+ }else{
+  var closeRemote func()
+  remote,closeRemote=openObserverWindow(source)
+  defer closeRemote()
  }
  budget:=directILNRemoteWorkBudget
  if source.ChainID==1643{budget=directILNNativeWorkBudget}
@@ -107,7 +117,7 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   if source.ChainID==1643{
    head,from,to,events,err=observerNativeWindow(native,source,gateways,cursor,window)
   }else{
-   head,from,to,events,err=observerRemoteWindow(source,gateways,cursor,window)
+   head,from,to,events,err=remote(gateways,cursor,window)
   }
   if err!=nil{return err}
   if head<cursor{return fmt.Errorf("observer confirmed head regressed")}

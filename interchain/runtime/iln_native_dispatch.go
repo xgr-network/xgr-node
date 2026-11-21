@@ -48,14 +48,3 @@ func (w *Worker) sourceILNRouteAdds(source *evm.Destination,from,to uint64)([]ev
  }
  return getConfirmedILNRouteAdds(source,from,to)
 }
-func (w *Worker) sourceILNActivation(source *evm.Destination)(uint64,error){
- if source!=nil&&source.ChainID==1643{
-  h,err:=w.sourceILNHead(source)
-  if err!=nil{return 0,err}
-  if source.ILNRegistryActivationBlock==0||source.ILNRegistryActivationBlock>h{
-   return 0,fmt.Errorf("XGR registry activation outside committed native head")
-  }
-  return source.ILNRegistryActivationBlock,nil
- }
- return getILNRegistryActivationBlock(source)
-}
