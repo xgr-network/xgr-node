@@ -47,3 +47,12 @@ func TestILNIndexerFirstObserverFallbackIntervals(t *testing.T){
  require.Equal(t,30*time.Second,ilnExternalRetryInterval)
  require.Equal(t,2*time.Second,defaultPollInterval)
 }
+
+func TestDedicatedILNIndexerPollingIsExplicitOptIn(t *testing.T){
+ t.Setenv("XGR_ILN_READ_INDEX","")
+ require.Equal(t,10*time.Minute,ilnGatewayObservationInterval())
+ t.Setenv("XGR_ILN_READ_INDEX","1")
+ require.Equal(t,60*time.Second,ilnGatewayObservationInterval())
+ t.Setenv("XGR_ILN_READ_INDEX","true")
+ require.Equal(t,10*time.Minute,ilnGatewayObservationInterval())
+}

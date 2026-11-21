@@ -3,6 +3,8 @@ package runtime
 import (
  "errors"
  "math/big"
+ "os"
+ "path/filepath"
  "testing"
 
  "github.com/stretchr/testify/require"
@@ -11,6 +13,7 @@ import (
 )
 
 func TestSharedILNObserverReducesExternalRequestsAndPreservesDurableCursors(t *testing.T){
+ t.Setenv("XGR_ILN_READ_INDEX","1")
  idA:=types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
  idB:=types.StringToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
  tx:=types.StringToHash("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
@@ -29,7 +32,12 @@ func TestSharedILNObserverReducesExternalRequestsAndPreservesDurableCursors(t *t
  a,err:=w.knownObserverRoute(src,routeA);require.NoError(t,err)
  b,err:=w.knownObserverRoute(src,routeB);require.NoError(t,err)
  originalRemote,originalSigner:=observerRemoteWindow,observerSignMessage
- defer func(){observerRemoteWindow=originalRemote;observerSignMessage=originalSigner}()
+ originalReceipt:=observerPersistIndexedReceipt
+ defer func(){observerRemoteWindow=originalRemote;observerSignMessage=originalSigner
+  observerPersistIndexedReceipt=originalReceipt}()
+ // This test exercises shared scans and durable indexing, not a remote
+ // receipt transport; the latter has its own verified HTTP fixture.
+ observerPersistIndexedReceipt=func(_ *Worker,_ *evm.Destination,_ types.Address,_ evm.ILNOperation)error{return nil}
  reads,signed:=0,0
  observerRemoteWindow=func(_ *evm.Destination,gateways []types.Address,cursor,window uint64)(
   uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error){
@@ -47,6 +55,11 @@ func TestSharedILNObserverReducesExternalRequestsAndPreservesDurableCursors(t *t
  require.NoError(t,w.scanSharedILNSource(src,[]observerRoute{a,b}))
  require.Equal(t,1,reads,"two routes must not double the source RPC query")
  require.Equal(t,1,signed)
+ // The index output is an opt-in projection of the ALREADY scanned event.
+ indexPath:=filepath.Join(w.ilnDir(),"observed","base",mid.String()+".json")
+ raw,e:=os.ReadFile(indexPath)
+ require.NoError(t,e)
+ require.Contains(t,string(raw),"\"UNTRUSTED_FINALITY_BOUNDED_HINT\"")
  for _,route:=range []*evm.CheckpointRoute{routeA,routeB}{
   cur,exists,e:=w.readILNCursor("_direct_"+route.Name)
   require.NoError(t,e);require.True(t,exists);require.Equal(t,uint64(100),cur)

@@ -41,6 +41,9 @@ var observerNativeWindow = evm.ScanNativeXGRMultiGatewayWindow
 var observerSignMessage = func(w *Worker,r *evm.CheckpointRoute,id types.Hash,n uint64,sourceTx types.Hash)error{
  return w.signDirectILNMessageWithTx(r,id,n,sourceTx)
 }
+var observerPersistIndexedReceipt = func(w *Worker,source *evm.Destination,gateway types.Address,op evm.ILNOperation)error{
+ return w.persistIndexedSourceReceipt(source,gateway,op)
+}
 
 // ensureObserverCatalogRoute bootstraps a previously uncataloged configured
 // route once from the confirmed source Registry. It does NOT perform a
@@ -73,6 +76,18 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
  if source==nil||len(routes)==0{return fmt.Errorf("empty observer source")}
  cursors:=make(map[string]uint64,len(routes))
  var cursor uint64
+ indexEnabled:=os.Getenv("XGR_ILN_READ_INDEX")=="1"
+ var indexCursor uint64
+ var indexExists bool
+ if indexEnabled{
+  if source.ILNRegistryActivationBlock==0{
+   return fmt.Errorf("indexer source Registry activation block unavailable")
+  }
+  var err error
+  indexCursor,indexExists,err=w.readILNCursor("_index_"+source.Name)
+  if err!=nil{return err}
+  if !indexExists{indexCursor=source.ILNRegistryActivationBlock-1}
+ }
  gateways:=make([]types.Address,0,len(routes))
  for i,r:=range routes{
   if r.Route==nil{return fmt.Errorf("nil observer route")}
@@ -86,6 +101,7 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   if i==0||cur<cursor{cursor=cur}
   gateways=append(gateways,r.Gateway)
  }
+ if indexEnabled&&indexCursor<cursor{cursor=indexCursor}
  // The configured route set is immutable for this poll; newly discovered
  // routes enter at the next tick with their independent historical cursor.
  var native evm.NativeXGRReader
@@ -143,6 +159,30 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
     if e:=w.queueObserverRetry(source,bindingByRoute[event.Route.Name],event.Operation);e!=nil{
      return fmt.Errorf("observer retry journal unavailable: %w",e)
     }
+   }
+  }
+  // Dedicated history cursor: when enabled after a validator has already
+  // scanned the source, backfill from the immutable Registry activation block.
+  // This uses the SAME shared source window and never re-signs old messages.
+  if indexEnabled{
+   for _,event:=range dispatched{
+    if event.Operation.BlockNumber<=indexCursor{continue}
+    origin:=bindingByRoute[event.Route.Name]
+    // One operational source receipt per new external message. Persist it
+    // BEFORE publishing the feed entry so SQL consumers never see partial
+    // source snapshots. Independent signing witnesses are unchanged.
+    if err:=observerPersistIndexedReceipt(w,source,origin.Gateway,event.Operation);err!=nil{
+     return fmt.Errorf("capture indexed source receipt: %w",err)
+    }
+    if err:=w.persistILNIndexedOperation(source,event.Route,origin.Gateway,event.Operation);err!=nil{
+     return fmt.Errorf("persist ILN index observation: %w",err)
+    }
+   }
+   // The index cursor advances only after all observed events in this
+   // canonical finality-qualified block window are durably published.
+   if indexCursor<to{
+    if err:=w.writeILNCursor("_index_"+source.Name,to);err!=nil{return err}
+    indexCursor=to
    }
   }
   // A crash repeats the source window idempotently. All failed operations
