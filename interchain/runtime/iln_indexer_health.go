@@ -30,6 +30,7 @@ type ilnIndexerHealth struct{
  UpdatedUnix int64 `json:"updatedUnix"`
  WorkerAlive bool `json:"workerAlive"`
  Routes []ilnRouteHealth `json:"routes"`
+ RPCProviders []evm.PublicRPCObservation `json:"rpcProviders,omitempty"`
 }
 
 // Block lag measures how much of the CONFIRMED Gateway operation event stream
@@ -70,7 +71,7 @@ func (w *Worker) recordILNDirectScanFailure(route *evm.CheckpointRoute,err error
 }
 func (w *Worker) writeILNIndexerHealth(){
  now:=time.Now().Unix()
- health:=ilnIndexerHealth{Version:2,UpdatedUnix:now,WorkerAlive:true,Routes:[]ilnRouteHealth{}}
+ health:=ilnIndexerHealth{Version:2,UpdatedUnix:now,WorkerAlive:true,Routes:[]ilnRouteHealth{},RPCProviders:evm.PublicInterchainRPCObservations()}
  w.mu.Lock()
  routes:=make([]*evm.CheckpointRoute,0,len(w.routes))
  for _,r:=range w.routes{routes=append(routes,r)}
@@ -91,7 +92,7 @@ func (w *Worker) writeILNIndexerHealth(){
    cursor,exists,readErr:=w.readILNCursor("_direct_"+route.Name)
    if readErr==nil&&exists {rh.ScanCursor=cursor;rh.ScanCursorKnown=true}
   }
-  if now-rh.UpdatedUnix>90||rh.UpdatedUnix>now+30{
+  if ilnRouteScanStale(rh, now){
    rh.State="unavailable";rh.Error="source Gateway operation scan stale"
   }
   health.Routes=append(health.Routes,rh)
@@ -115,3 +116,10 @@ func (w *Worker) writeILNIndexerHealth(){
  _=os.Rename(f.Name(),path)
 }
 func boolMetric(b bool)float32{if b{return 1};return 0}
+
+// Allow the full scheduled scan interval and time for the next scan to finish.
+func ilnRouteScanStale(route ilnRouteHealth, now int64) bool {
+ const scanGrace = 2 * time.Minute
+ return route.State != "unavailable" &&
+  (now-route.UpdatedUnix > int64((ilnExternalCheckpointInterval+scanGrace)/time.Second) || route.UpdatedUnix > now+30)
+}
