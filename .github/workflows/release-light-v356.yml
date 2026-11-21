@@ -1,0 +1,111 @@
+name: Release Light (XGR v3.5.6 Interchain RPC Deduplication)
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: "Reviewed XGR3.0 40-character commit SHA"
+        required: true
+        type: string
+      confirmation:
+        description: "Type RELEASE-v3.5.6 to publish"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xgr-v356-light-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ github.ref == 'refs/heads/XGR3.0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact interchain RPC release scope
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/XGR3.0'
+          test "$CONFIRMATION" = 'RELEASE-v3.5.6'
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse refs/tags/v3.5.5)" = '4e701c4c914754baae59b67dff979f69cf1a462b'
+          git merge-base --is-ancestor refs/tags/v3.5.5 HEAD
+          if git rev-parse -q --verify refs/tags/v3.5.6 >/dev/null; then
+            echo "v3.5.6 already exists: refusing overwrite" >&2
+            exit 1
+          fi
+          diff -u <(printf '%s\n' \
+            '.github/workflows/release-light-v355.yml' \
+            '.github/workflows/release-light-v356.yml' \
+            'RELEASE_NOTES_v3.5.6.md' \
+            'interchain/evm/client.go' \
+            'interchain/evm/iln_native_destination.go' \
+            'interchain/evm/iln_registry.go' \
+            'interchain/evm/membership_poll.go' \
+            'interchain/evm/membership_poll_test.go' \
+            'interchain/runtime/iln_discovery.go' \
+            'interchain/runtime/iln_route_network.go' \
+            'interchain/runtime/iln_route_network_test.go' \
+            'interchain/runtime/worker.go' | LC_ALL=C sort) \
+            <(git diff --no-renames --name-only refs/tags/v3.5.5 HEAD | LC_ALL=C sort)
+          test "$(git diff --diff-filter=D --name-only refs/tags/v3.5.5 HEAD -- .github/workflows/release-light-v355.yml)" = '.github/workflows/release-light-v355.yml'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Interchain, Direct-BLS and JSON-RPC regression
+        run: go test -count=1 -timeout 15m ./interchain/... ./consensus/ibft/interchain ./jsonrpc
+      - name: Repeat RPC budget, peer route discovery and independent source evidence checks
+        run: |
+          set -euo pipefail
+          go test -count=3 -timeout 8m ./interchain/evm -run '^(TestMembershipPollRPCBudget|TestReceiptPinnedDirectBLSFullRPCSecurityMatrix|TestTwoIndependentOperatorsWithFailover|TestOneOperatorAndConflictingProvidersFailClosed)$'
+          go test -count=3 -timeout 8m ./interchain/runtime -run '^TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs$'
+      - name: Build verified immutable Linux release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          COMMIT="$(git rev-parse --short HEAD)"
+          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          PKG="$(go list -m)/versioning"
+          go build -trimpath -o dist/xgrchain-v3.5.6-linux-amd64 \
+            -ldflags "-X $PKG.Version=v3.5.6 -X $PKG.Commit=$COMMIT -X $PKG.Branch=XGR3.0 -X $PKG.BuildTime=$TIME" .
+          chmod 755 dist/xgrchain-v3.5.6-linux-amd64
+          VERSION_OUTPUT="$(./dist/xgrchain-v3.5.6-linux-amd64 version)"
+          printf '%s\n' "$VERSION_OUTPUT"
+          grep -Fq 'Release version' <<< "$VERSION_OUTPUT"
+          grep -Fq 'v3.5.6' <<< "$VERSION_OUTPUT"
+          grep -Fq "$COMMIT" <<< "$VERSION_OUTPUT"
+          printf '%s\n' v3.5.6 > dist/version.txt
+          git rev-parse HEAD > dist/commit.txt
+          go version > dist/toolchain.txt
+          (cd dist && sha256sum xgrchain-v3.5.6-linux-amd64 version.txt commit.txt toolchain.txt > sha256sums.txt)
+          (cd dist && sha256sum -c sha256sums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xgr-v3.5.6-interchain-rpc-light-amd64
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish immutable v3.5.6 GitHub release (no validator deployment)
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v3.5.6
+          name: v3.5.6
+          commit: ${{ github.sha }}
+          allowUpdates: false
+          makeLatest: true
+          generateReleaseNotes: false
+          artifacts: dist/*
+          bodyFile: RELEASE_NOTES_v3.5.6.md
