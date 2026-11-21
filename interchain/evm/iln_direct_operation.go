@@ -145,6 +145,14 @@ func GetDirectILNOperationByTx(
     source *Destination, route *CheckpointRoute, destinationDomain uint32,
     messageID types.Hash, sourceBlock uint64, sourceTx types.Hash,
 )(*ILNOperation,[]byte,*ILNRouteSnapshot,error){
+    return getDirectILNOperationByTx(source, route, destinationDomain, messageID, sourceBlock, sourceTx, nil)
+}
+
+func getDirectILNOperationByTx(
+    source *Destination, route *CheckpointRoute, destinationDomain uint32,
+    messageID types.Hash, sourceBlock uint64, sourceTx types.Hash,
+    bindings *ilnBindingObservation,
+)(*ILNOperation,[]byte,*ILNRouteSnapshot,error){
     if source==nil||route==nil||source.ChainID==1643||
         messageID==types.ZeroHash||sourceBlock==0||sourceTx==types.ZeroHash {
         return nil,nil,nil,fmt.Errorf("invalid receipt-pinned direct source identity")
@@ -169,7 +177,11 @@ func GetDirectILNOperationByTx(
         recordInterchainRPCReadForClient(source,client,err)
         return nil,nil,nil,fmt.Errorf("source receipt is not canonical and final: %w",err)
     }
-    snapshot,err:=getILNRouteAtBlock(client,source,destinationDomain,route.RouteID,sourceBlock,true)
+    view := rpcILNView(client)
+    if bindings != nil {
+        view = bindings.wrap(view)
+    }
+    snapshot,err:=getILNRouteAtBlockWithView(view,source,destinationDomain,route.RouteID,sourceBlock,true)
     if err!=nil{
         recordInterchainRPCReadForClient(source,client,err)
         return nil,nil,nil,err
@@ -182,7 +194,7 @@ func GetDirectILNOperationByTx(
         snapshot.Route.Gateway,snapshot.Route.Mailbox,snapshot.Route.SourceRouter,
         snapshot.Route.DestinationRouter)
     if err!=nil{return nil,nil,nil,err}
-    if err:=verifyConfirmedILNFeeAllocationOnClient(client,source,snapshot,messageID,sourceBlock,head);err!=nil{
+    if err:=verifyFeeAllocationWithView(view,source,snapshot,messageID,sourceBlock,head);err!=nil{
         recordInterchainRPCReadForClient(source,client,err)
         return nil,nil,nil,fmt.Errorf("immutable Gateway FeeVault allocation not proven: %w",err)
     }

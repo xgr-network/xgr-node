@@ -37,7 +37,8 @@ type ilnIndexerHealth struct{
 // remains unscanned. It is not a token/merkle backlog. Every poll runs
 // independently of any quorum request.
 func (w *Worker) recordILNDirectScan(route *evm.CheckpointRoute,head,cursor uint64){
- if route==nil{return}
+ // A fallback provider can lag behind a sibling route's durable cursor.
+ if route==nil||cursor>head{return}
  now:=time.Now().Unix()
  state:="ok"
  if cursor<head{state="catching-up"}

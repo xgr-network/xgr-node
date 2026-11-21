@@ -104,12 +104,17 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   remote,closeRemote=openObserverWindow(source)
   defer closeRemote()
  }
- budget:=directILNRemoteWorkBudget
+ budget:=directILNSharedRemoteWorkBudget
  if source.ChainID==1643{budget=directILNNativeWorkBudget}
  var head uint64
  for attempt:=0;attempt<directILNMaxWindowsPerPoll&&budget>0;attempt++{
   window:=directILNWindow(0,source.ChainID==1643)
   if attempt>0&&head>cursor{window=directILNWindow(head-cursor,source.ChainID==1643)}
+  // Keep the small first read. On an external source with a confirmed
+  // backlog, cover more blocks per eth_getLogs within the same four windows.
+  if attempt>0 && source.ChainID!=1643 && head>cursor && head-cursor>=directILNSharedRemoteMaxWindow {
+   window=directILNSharedRemoteMaxWindow
+  }
   if window>budget{window=budget}
   var from,to uint64
   var events []evm.ILNObservedGatewayOperation
@@ -123,6 +128,7 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   if head<cursor{return fmt.Errorf("observer confirmed head regressed")}
   if from==0{
    if head!=cursor||to!=0||len(events)!=0{return fmt.Errorf("invalid empty observer window")}
+   for _,r:=range routes{w.recordILNDirectScan(r.Route,head,cursors[r.Route.Name])}
    break
   }
   if from!=cursor+1||to<from||to>head||to-from+1>window{
@@ -158,16 +164,17 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   // A crash repeats the source window idempotently. All failed operations
   // are journaled with the exact source locator for independent rechecking.
   for _,r:=range routes{
-   if cursors[r.Route.Name]>=to{continue}
-   if err:=w.writeILNCursor("_direct_"+r.Route.Name,to);err!=nil{return err}
-   cursors[r.Route.Name]=to
+   if cursors[r.Route.Name]<to {
+    if err:=w.writeILNCursor("_direct_"+r.Route.Name,to);err!=nil{return err}
+    cursors[r.Route.Name]=to
+   }
+   w.recordILNDirectScan(r.Route,head,cursors[r.Route.Name])
   }
   cursor=to
   budget-=to-from+1
   if cursor>=head{break}
  }
  if err:=w.retryObserverSource(source,routes);err!=nil{return err}
- for _,r:=range routes{w.recordILNDirectScan(r.Route,head,cursors[r.Route.Name])}
  return nil
 }
 

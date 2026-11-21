@@ -24,7 +24,7 @@ func GetQuorumVerifiedDirectILNOperation(
 ) (*ILNOperation, []byte, *ILNRouteSnapshot, error) {
     return quorumVerifiedDirectILNOperation(
         source, route, destinationDomain, messageID, sourceBlock,
-        GetDirectILNOperation,
+        GetDirectILNOperation, nil,
     )
 }
 
@@ -37,18 +37,45 @@ func GetQuorumVerifiedDirectILNOperationByTx(
     sourceTx types.Hash,
 ) (*ILNOperation, []byte, *ILNRouteSnapshot, error) {
     if sourceTx==types.ZeroHash{return nil,nil,nil,fmt.Errorf("missing source transaction hash")}
-    reader:=func(one *Destination, route *CheckpointRoute, domain uint32,
+    if source == nil || route == nil { return nil,nil,nil,fmt.Errorf("missing source or Direct-BLS route") }
+    key := ilnBindingCacheKey{source.ChainID, source.ILNRegistryAddress, destinationDomain, route.RouteID}
+    cached := ilnSourceBindings.get(key)
+    observed := make(map[string]*ilnBindingObservation)
+    reader := func(one *Destination, route *CheckpointRoute, domain uint32,
         id types.Hash, block uint64)(*ILNOperation,[]byte,*ILNRouteSnapshot,error){
-        return GetDirectILNOperationByTx(one,route,domain,id,block,sourceTx)
+        binding := &ilnBindingObservation{seen: make(ilnBindingValues)}
+        if cached.endpoints[one.RPCURL] {
+            binding.cached = cached.values
+        }
+        observed[one.RPCURL] = binding
+        return getDirectILNOperationByTx(one,route,domain,id,block,sourceTx,binding)
+    }
+    witnesses := *source
+    if len(source.ReceiptWitnessRPCs) > 0 {
+        fallback := rpcEndpoints(source)
+        if len(fallback) != len(source.IndependentOperatorIDs) {
+            return nil,nil,nil,fmt.Errorf("source RPC quorum requires independent operators")
+        }
+        witnesses.RPCURLs = make([]string, 0, len(source.ReceiptWitnessRPCs)+len(fallback))
+        witnesses.IndependentOperatorIDs = make([]string, 0, cap(witnesses.RPCURLs))
+        for _, endpoint := range source.ReceiptWitnessRPCs {
+            witnesses.RPCURLs = append(witnesses.RPCURLs, endpoint.URL)
+            witnesses.IndependentOperatorIDs = append(witnesses.IndependentOperatorIDs, endpoint.Operator)
+        }
+        witnesses.RPCURLs = append(witnesses.RPCURLs, fallback...)
+        witnesses.IndependentOperatorIDs = append(witnesses.IndependentOperatorIDs, source.IndependentOperatorIDs...)
     }
     return quorumVerifiedDirectILNOperation(
-        source,route,destinationDomain,messageID,sourceBlock,reader)
+        &witnesses,route,destinationDomain,messageID,sourceBlock,reader,func(first, second string) {
+            ilnSourceBindings.remember(key, first, second, observed[first], observed[second])
+        })
 }
 
 func quorumVerifiedDirectILNOperation(
     source *Destination, route *CheckpointRoute,
     destinationDomain uint32, messageID types.Hash, sourceBlock uint64,
     reader directILNEvidenceReader,
+    agree func(string, string),
 ) (*ILNOperation, []byte, *ILNRouteSnapshot, error) {
     if source == nil || reader == nil {
         return nil, nil, nil, fmt.Errorf("missing source or Direct-BLS evidence reader")
@@ -63,6 +90,7 @@ func quorumVerifiedDirectILNOperation(
         message []byte
         snapshot *ILNRouteSnapshot
         operator string
+        endpoint string
     }
     observations := make([]observation, 0, len(urls))
     successfulOperators := make(map[string]bool, len(urls))
@@ -93,12 +121,14 @@ func quorumVerifiedDirectILNOperation(
                     previous.operation, previous.message, previous.snapshot,
                     operation, message, snapshot,
                 ) {
+                if agree != nil { agree(previous.endpoint, endpoint) }
                 return operation, message, snapshot, nil
             }
         }
         observations = append(observations, observation{
             operation: operation, message: message, snapshot: snapshot,
             operator: operator,
+            endpoint: endpoint,
         })
     }
     return nil, nil, nil, fmt.Errorf(

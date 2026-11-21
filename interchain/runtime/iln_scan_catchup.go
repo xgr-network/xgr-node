@@ -14,6 +14,8 @@ import (
 const (
     directILNMaxWindowsPerPoll = 4
     directILNRemoteWorkBudget = uint64(2048)
+    directILNSharedRemoteWorkBudget = 256 + (directILNMaxWindowsPerPoll-1)*directILNSharedRemoteMaxWindow
+    directILNSharedRemoteMaxWindow = uint64(1000)
     directILNNativeWorkBudget = uint64(4000)
     directILNRemoteMaxWindow = uint64(512)
     directILNNativeMaxWindow = uint64(1000)

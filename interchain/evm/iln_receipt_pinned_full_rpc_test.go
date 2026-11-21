@@ -223,8 +223,11 @@ func TestReceiptPinnedDirectBLSFullRPCSecurityMatrix(t *testing.T){
     return op
    }
    run()
-   require.Positive(t,a.rpcCalls.Load())
-   require.Positive(t,b.rpcCalls.Load(),"both operators must fully verify the source")
+   require.Equal(t,int32(19),a.rpcCalls.Load(),"cold source witness")
+   require.Equal(t,int32(19),b.rpcCalls.Load(),"cold independent witness")
+   run()
+   require.Equal(t,int32(29),a.rpcCalls.Load(),"warm witness rereads finality, the receipt and mutable fields")
+   require.Equal(t,int32(29),b.rpcCalls.Load(),"both independent witnesses perform fresh message checks")
    b.rejected.Store(true)
    _,_,_,err:=GetQuorumVerifiedDirectILNOperationByTx(source,route,1643,a.operation.MessageID,
     a.operation.BlockNumber,a.operation.TransactionHash)

@@ -189,3 +189,61 @@ func TestSharedObserverContinuesSigningHealthySiblingButNeverAdvancesFailedWindo
  count,e=w.observerRetryCount("base","b")
  require.NoError(t,e);require.Zero(t,count)
 }
+
+func TestSharedObserverCatchupThroughputAndPartialProgress(t *testing.T) {
+	originalReader := openObserverWindow
+	t.Cleanup(func() { openObserverWindow = originalReader })
+
+	for _, test := range []struct {
+		name         string
+		chainID      uint64
+		sourceName   string
+		head         uint64
+		failAt       int
+		wantWindows  []uint64
+		wantCursor   uint64
+	}{
+		{"caught-up source", 8453, "base", 100, 0, []uint64{256}, 100},
+		{"Arbitrum backlog", 42161, "arbitrum", 10000, 0, []uint64{256, 1000, 1000, 1000}, 3356},
+		{"BASE partial progress", 8453, "base", 10000, 2, []uint64{256, 1000}, 356},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := &evm.Destination{Name: test.sourceName, ChainID: test.chainID, ILNRegistryActivationBlock: 101}
+			route := &evm.CheckpointRoute{Name: "catchup", SourceNetwork: source.Name,
+				RouteID: types.StringToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")}
+			gateway := types.StringToAddress("0x1111111111111111111111111111111111111111")
+			worker := &Worker{dataDir: t.TempDir()}
+			var windows []uint64
+			openObserverWindow = func(*evm.Destination) (observerWindowReader, func()) {
+				return func(_ []types.Address, cursor, window uint64) (uint64, uint64, uint64, []evm.ILNObservedGatewayOperation, error) {
+					windows = append(windows, window)
+					if len(windows) == test.failAt {
+						return 0, 0, 0, nil, errors.New("rpc rate limit")
+					}
+					if cursor == test.head {
+						return test.head, 0, 0, nil, nil
+					}
+					return test.head, cursor + 1, min(test.head, cursor + window), nil, nil
+				}, func() {}
+			}
+			err := worker.scanSharedILNSource(source, []observerRoute{{Route: route, Gateway: gateway, DestinationDomain: 1643}})
+			if test.failAt > 0 {
+				require.ErrorContains(t, err, "rate limit")
+				worker.recordILNDirectScanFailure(route, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			require.Equal(t, test.wantWindows, windows)
+			health := worker.ilnRouteHealthByName[route.Name]
+			require.Equal(t, test.wantCursor, health.ScanCursor)
+			require.Equal(t, test.head-test.wantCursor, health.BlockLag)
+			if test.wantCursor > 100 {
+				cursor, exists, err := worker.readILNCursor("_direct_" + route.Name)
+				require.NoError(t, err)
+				require.True(t, exists)
+				require.Equal(t, test.wantCursor, cursor)
+			}
+		})
+	}
+}
