@@ -37,9 +37,15 @@ func GetILNRegistryActivationBlock(source *Destination)(uint64,error){
 // RouteAdded events. Every discovered route MUST additionally pass a canonical
 // getRoute read and Gateway binding before the worker activates it.
 func GetConfirmedILNRouteAdds(source *Destination, fromBlock, toBlock uint64) ([]ILNRouteAdded,error) {
- client,confirmed,err:=newVerifiedRPCClientWithHead(source)
+ session:=NewILNScanSession(source)
+ defer session.Close()
+ return session.RouteAdds(fromBlock,toBlock)
+}
+
+func (s *ILNScanSession) RouteAdds(fromBlock,toBlock uint64)([]ILNRouteAdded,error){
+ confirmed,err:=s.Head()
  if err!=nil{return nil,err}
- defer client.Close()
+ source:=s.source
  if fromBlock==0||toBlock<fromBlock||toBlock>confirmed||toBlock-fromBlock+1>maxILNLogRange {
   return nil,fmt.Errorf("invalid confirmed ILN discovery log range")
  }
@@ -48,8 +54,9 @@ func GetConfirmedILNRouteAdds(source *Destination, fromBlock, toBlock uint64) ([
  filter:=&ethgo.LogFilter{Address:[]ethgo.Address{ethgo.Address(registry)},Topics:[][]*ethgo.Hash{{&topic}}}
  filter.SetFromUint64(fromBlock)
  filter.SetToUint64(toBlock)
- logs,err:=ilnRPCLogs(client,filter)
- if err!=nil{recordInterchainRPCReadFailure(source)
+ logs,err:=ilnRPCLogs(s.client,filter)
+ recordInterchainRPCReadForClient(source,s.client,err)
+ if err!=nil{
   return nil,fmt.Errorf("read ILN registry RouteAdded events: %w",err)}
  result:=make([]ILNRouteAdded,0,len(logs))
  for _,log:=range logs {
@@ -57,7 +64,7 @@ func GetConfirmedILNRouteAdds(source *Destination, fromBlock, toBlock uint64) ([
   domain:=new(big.Int).SetBytes(log.Topics[1][:])
   if !domain.IsUint64()||domain.Sign()<=0||domain.Uint64()>uint64(^uint32(0)){return nil,fmt.Errorf("invalid ILN discovered destination domain")}
   routeID:=types.Hash(log.Topics[2]);gateway:=types.BytesToAddress(log.Topics[3][12:])
-  if routeID==types.ZeroHash||gateway==types.ZeroAddress||log.BlockNumber==0{return nil,fmt.Errorf("invalid discovered ILN route identity")}
+  if routeID==types.ZeroHash||gateway==types.ZeroAddress||log.BlockNumber<fromBlock||log.BlockNumber>toBlock{return nil,fmt.Errorf("invalid discovered ILN route identity")}
   result=append(result,ILNRouteAdded{DestinationDomain:uint32(domain.Uint64()),RouteID:routeID,Gateway:gateway,BlockNumber:log.BlockNumber})
  }
  return result,nil

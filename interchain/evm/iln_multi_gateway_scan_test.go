@@ -82,11 +82,12 @@ func TestNativeXGRMultiGatewayUsesOneBlockReadForThreeGateways(t *testing.T){
 }
 
 func TestMultiGateway429FailsOverSameWindow(t *testing.T){
- var firstCalls,secondCalls atomic.Int32
+ var firstCalls,secondCalls,firstTotal,secondTotal atomic.Int32
  var requested []string
  gateway:=types.StringToAddress("0x1111111111111111111111111111111111111111")
  makeServer:=func(failing bool)*httptest.Server{
   return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+   if failing{firstTotal.Add(1)}else{secondTotal.Add(1)}
    var req struct{ID json.RawMessage `json:"id"`;Method string `json:"method"`;Params []json.RawMessage `json:"params"`}
    if err:=json.NewDecoder(r.Body).Decode(&req);err!=nil{http.Error(w,"bad RPC",400);return}
    w.Header().Set("Content-Type","application/json")
@@ -113,7 +114,9 @@ func TestMultiGateway429FailsOverSameWindow(t *testing.T){
  source:=&Destination{Name:"base",ChainID:8453,Domain:8453,
   RegistryAddress:"0x3333333333333333333333333333333333333333",
   RPCURLs:[]string{first.URL,second.URL}}
- head,from,to,events,err:=ScanILNMultiGatewayWindow(source,[]types.Address{gateway},100,16)
+ session:=NewILNScanSession(source)
+ defer session.Close()
+ head,from,to,events,err:=session.GatewayWindow([]types.Address{gateway},100,16)
  require.NoError(t,err)
  require.Equal(t,uint64(138),head)
  require.Equal(t,uint64(101),from)
@@ -121,7 +124,13 @@ func TestMultiGateway429FailsOverSameWindow(t *testing.T){
  require.Empty(t,events)
  require.Equal(t,int32(1),firstCalls.Load())
  require.Equal(t,int32(1),secondCalls.Load())
- require.Equal(t,[]string{"0x65-0x74"},requested)
+ for cursor:=uint64(116);cursor<128;cursor+=4{
+  _,_,_,_,err:=session.GatewayWindow([]types.Address{gateway},cursor,4)
+  require.NoError(t,err)
+ }
+ require.Equal(t,int32(4),firstTotal.Load(),"failed provider verified once")
+ require.Equal(t,int32(7),secondTotal.Load(),"fallback verifies once and reads four windows")
+ require.Equal(t,[]string{"0x65-0x74","0x75-0x78","0x79-0x7c","0x7d-0x80"},requested)
  require.ErrorContains(t,rpcCooldown(source,first.URL),"cooldown")
  require.NoError(t,rpcCooldown(source,second.URL))
 }

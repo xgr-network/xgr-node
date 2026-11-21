@@ -43,7 +43,6 @@ func (w *Worker) registerILNRPCRoute(route *evmInterchain.CheckpointRoute) error
 const ilnRouteDiscoveryScanChunk uint64 = 1000
 
 var getConfirmedILNRouteAdds = evmInterchain.GetConfirmedILNRouteAdds
-var getILNRegistryActivationBlock = evmInterchain.GetILNRegistryActivationBlock
 
 // A new source registry is a new contract generation. Never read a former
 // registry's routes when the chain name remains unchanged after a hard reset.
@@ -303,8 +302,24 @@ func (w *Worker) discoverILNRoutes() {
 }
 
 func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) error {
- head,err:=w.sourceILNHead(source)
+ var readHead func()(uint64,error)
+ var readAdds func(uint64,uint64)([]evmInterchain.ILNRouteAdded,error)
+ if source.ChainID==1643 {
+  readHead=func()(uint64,error){return w.sourceILNHead(source)}
+  readAdds=func(from,to uint64)([]evmInterchain.ILNRouteAdded,error){return w.sourceILNRouteAdds(source,from,to)}
+ }else{
+  scan:=evmInterchain.NewILNScanSession(source)
+  defer scan.Close()
+  readHead,readAdds=scan.Head,scan.RouteAdds
+ }
+ head,err:=readHead()
  if err!=nil{return err}
+ return w.discoverILNRoutesAtHead(source,head,readAdds)
+}
+
+func (w *Worker) discoverILNRoutesAtHead(source *evmInterchain.Destination,head uint64,
+ readAdds func(uint64,uint64)([]evmInterchain.ILNRouteAdded,error),
+) error {
  if err:=w.ensureILNRouteCatalogVersion(source);err!=nil{return err}
  if err:=w.ensureILNRPCDiscoveryCursorVersion(source);err!=nil{return err}
  if err:=w.restoreILNDiscoveredRoutes(source,head);err!=nil{return err}
@@ -314,9 +329,8 @@ func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) 
  if !exists {
   if source.ILNRegistryActivationBlock!=0 {
    // Explicit operator configuration is an RPC-native deployment height.
-   activation,err:=w.sourceILNActivation(source)
-   if err!=nil{return err}
-   if activation==0||activation>head{return fmt.Errorf("invalid RPC-native ILN registry deployment block")}
+   activation:=source.ILNRegistryActivationBlock
+   if activation>head{return fmt.Errorf("invalid RPC-native ILN registry deployment block")}
    cursor=activation-1
   } else {
    cursor=ilnRecentDiscoveryCursor(head)
@@ -329,7 +343,7 @@ func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) 
  if cursor==head{return nil}
  from,to:=cursor+1,head
  if to-from+1>ilnRouteDiscoveryScanChunk{to=from+ilnRouteDiscoveryScanChunk-1}
- events,err:=w.sourceILNRouteAdds(source,from,to)
+ events,err:=readAdds(from,to)
  if err!=nil{return err}
  for _,event:=range events {
   // Durable before the discovery cursor advances. Unknown destinations are
