@@ -17,6 +17,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/umbracle/ethgo"
 	ethgowallet "github.com/umbracle/ethgo/wallet"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
@@ -119,6 +120,9 @@ type Worker struct {
 	ilnLastRetryPoll      time.Time
 	ilnLastHealthWrite    time.Time
     ilnRouteLastPublished map[string]time.Time
+    ilnRouteNoticeChecks singleflight.Group
+    ilnRouteFilesMu sync.Mutex
+    ilnRouteNoticeCache map[string]verifiedILNNotice
     ilnRouteLastSeen map[peer.ID]time.Time
 
 	txKey       ethgo.Key

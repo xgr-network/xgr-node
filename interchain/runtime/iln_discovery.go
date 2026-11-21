@@ -28,6 +28,8 @@ type ilnDiscoveredRoute struct {
 func (w *Worker) registerILNRPCRoute(route *evmInterchain.CheckpointRoute) error {
  if route==nil {return fmt.Errorf("missing ILN RPC route")}
  if err:=route.Validate();err!=nil{return err}
+ w.ilnRouteFilesMu.Lock()
+ defer w.ilnRouteFilesMu.Unlock()
  dir:=filepath.Join(w.ilnDir(),"registered-routes")
  if err:=os.MkdirAll(dir,0o770);err!=nil{return err}
  path:=filepath.Join(dir,route.Name+".route")
@@ -94,6 +96,8 @@ func (w *Worker) rememberILNRouteAdded(source *evmInterchain.Destination,event e
  if event.RouteID==types.ZeroHash||event.Gateway==types.ZeroAddress||event.DestinationDomain==0{return fmt.Errorf("invalid ILN discovery event")}
  record:=ilnDiscoveredRoute{SourceNetwork:source.Name,SourceDomain:source.Domain,DestinationDomain:event.DestinationDomain,RouteID:event.RouteID.String(),Gateway:event.Gateway.String()}
  raw,err:=json.Marshal(record);if err!=nil{return err}
+ w.ilnRouteFilesMu.Lock()
+ defer w.ilnRouteFilesMu.Unlock()
  dir:=w.ilnRouteCatalogDir(source)
  if err:=os.MkdirAll(dir,0o770);err!=nil{return err}
  path:=filepath.Join(dir,fmt.Sprintf("%d-%s.json",event.DestinationDomain,strings.TrimPrefix(event.RouteID.String(),"0x")))

@@ -22,6 +22,45 @@ type ilnRouteNoticeWire struct {
     Gateway types.Address `json:"gateway"`
 }
 
+const ilnRouteNoticeFreshness = 15 * time.Minute
+
+type verifiedILNNotice struct {
+    snapshot *evm.ILNRouteSnapshot
+    checkedAt time.Time
+}
+
+// The cached result is only used for discovery gossip. Transfer verification
+// and signing always read independent source witnesses through their own path.
+func (w *Worker) routeForILNNotice(source *evm.Destination, domain uint32, routeID types.Hash) (*evm.ILNRouteSnapshot, error) {
+    key := fmt.Sprintf("%s/%s/%d/%s", source.Name, source.ILNRegistryAddress, domain, routeID.String())
+    value, err, _ := w.ilnRouteNoticeChecks.Do(key, func() (interface{}, error) {
+        w.mu.Lock()
+        cached := w.ilnRouteNoticeCache[key]
+        w.mu.Unlock()
+        if cached.snapshot != nil && time.Since(cached.checkedAt) < ilnRouteNoticeFreshness {
+            return cached.snapshot, nil
+        }
+        snapshot, err := w.sourceILNRoute(source, domain, routeID)
+        if err != nil {
+            return nil, err
+        }
+        if !validILNSourceRouteNotice(source, domain, routeID, snapshot) {
+            return nil, fmt.Errorf("route not authorized by canonical source registry")
+        }
+        w.mu.Lock()
+        if w.ilnRouteNoticeCache == nil {
+            w.ilnRouteNoticeCache = make(map[string]verifiedILNNotice)
+        }
+        w.ilnRouteNoticeCache[key] = verifiedILNNotice{snapshot: snapshot, checkedAt: time.Now()}
+        w.mu.Unlock()
+        return snapshot, nil
+    })
+    if err != nil {
+        return nil, err
+    }
+    return value.(*evm.ILNRouteSnapshot), nil
+}
+
 // Only advertise routes that this validator can itself read from the source
 // registry. Do not broadcast unverified route-catalog disk files and never
 // advertise a permissioned admission vote. Each route is retried periodically
@@ -47,8 +86,8 @@ func (w *Worker) publishVerifiedILNRoutes() {
         last:=w.ilnRouteLastPublished[key]
         w.mu.Unlock()
         if !last.IsZero()&&time.Since(last)<90*time.Second{continue}
-        snapshot,err:=w.sourceILNRoute(source,dest.Domain,route.RouteID)
-        if err!=nil||!validILNSourceRouteNotice(source,dest.Domain,route.RouteID,snapshot){continue}
+        snapshot,err:=w.routeForILNNotice(source,dest.Domain,route.RouteID)
+        if err!=nil{continue}
         notice:=ilnRouteNoticeWire{
             SourceNetwork:source.Name,SourceDomain:source.Domain,
             DestinationDomain:dest.Domain,RouteID:route.RouteID,
@@ -108,10 +147,9 @@ func (w *Worker) acceptVerifiedILNRouteNotice(from peer.ID,notice ilnRouteNotice
     }
     w.ilnRouteLastSeen[from]=time.Now()
     w.mu.Unlock()
-    snapshot,err:=w.sourceILNRoute(source,notice.DestinationDomain,notice.RouteID)
+    snapshot,err:=w.routeForILNNotice(source,notice.DestinationDomain,notice.RouteID)
     if err!=nil{return fmt.Errorf("verify announced route with source registry: %w",err)}
-    if !validILNSourceRouteNotice(source,notice.DestinationDomain,notice.RouteID,snapshot)||
-        notice.Gateway!=snapshot.Route.Gateway{
+    if notice.Gateway!=snapshot.Route.Gateway{
         return fmt.Errorf("peer route announcement not authorized by canonical source registry")
     }
     // Receiving an authentic listed route is permissionless and independent
