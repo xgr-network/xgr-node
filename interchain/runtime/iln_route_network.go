@@ -47,9 +47,7 @@ func (w *Worker) publishVerifiedILNRoutes() {
         last:=w.ilnRouteLastPublished[key]
         w.mu.Unlock()
         if !last.IsZero()&&time.Since(last)<90*time.Second{continue}
-        head,err:=w.sourceILNHead(source)
-        if err!=nil{continue}
-        snapshot,err:=w.sourceILNRouteAtBlock(source,dest.Domain,route.RouteID,head)
+        snapshot,err:=w.sourceILNRoute(source,dest.Domain,route.RouteID)
         if err!=nil||!validILNSourceRouteNotice(source,dest.Domain,route.RouteID,snapshot){continue}
         notice:=ilnRouteNoticeWire{
             SourceNetwork:source.Name,SourceDomain:source.Domain,
@@ -110,9 +108,7 @@ func (w *Worker) acceptVerifiedILNRouteNotice(from peer.ID,notice ilnRouteNotice
     }
     w.ilnRouteLastSeen[from]=time.Now()
     w.mu.Unlock()
-    head,err:=w.sourceILNHead(source)
-    if err!=nil{return err}
-    snapshot,err:=w.sourceILNRouteAtBlock(source,notice.DestinationDomain,notice.RouteID,head)
+    snapshot,err:=w.sourceILNRoute(source,notice.DestinationDomain,notice.RouteID)
     if err!=nil{return fmt.Errorf("verify announced route with source registry: %w",err)}
     if !validILNSourceRouteNotice(source,notice.DestinationDomain,notice.RouteID,snapshot)||
         notice.Gateway!=snapshot.Route.Gateway{
@@ -124,12 +120,9 @@ func (w *Worker) acceptVerifiedILNRouteNotice(from peer.ID,notice ilnRouteNotice
         DestinationDomain:notice.DestinationDomain,
         RouteID:notice.RouteID,
         Gateway:notice.Gateway,
-        BlockNumber:head,
+        BlockNumber:snapshot.BlockNumber,
     }
     if err:=w.rememberILNRouteAdded(source,event);err!=nil{return err}
-    return w.attachILNDiscoveredRoute(source,ilnDiscoveredRoute{
-        SourceNetwork:source.Name,SourceDomain:source.Domain,
-        DestinationDomain:notice.DestinationDomain,
-        RouteID:notice.RouteID.String(),Gateway:notice.Gateway.String(),
-    },head)
+    destination := w.ilnDestinationByDomain(notice.DestinationDomain)
+    return w.attachVerifiedILNDiscoveredRoute(source, destination, notice.RouteID)
 }
