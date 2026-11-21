@@ -411,12 +411,23 @@ func (w *Worker) tick() {
 	}
 	now:=time.Now()
 	if dueILNPeriodicPolling(now,&w.ilnLastMembershipPoll,ilnExternalMembershipInterval) {
-		for _,destination:=range w.destinations{
-			if err:=w.detectForcedRemovals(destination);err!=nil{
-				w.logger.Warn("forced removal scan failed","chain",destination.Name,"err",err)
+		for _, destination := range w.destinations {
+			poll, err := evmInterchain.PollMembershipRegistry(destination, w.localAddr)
+			if err != nil {
+				w.logger.Warn("interchain membership poll failed", "chain", destination.Name, "err", err)
+				continue
 			}
-			if err:=w.checkLocalReserve(destination);err!=nil{
-				w.logger.Warn("interchain reserve check failed","chain",destination.Name,"err",err)
+			setErr := poll.SetError
+			if setErr == nil {
+				setErr = w.detectForcedRemovals(destination, poll.Set)
+			}
+			if setErr != nil {
+				w.logger.Warn("forced removal scan failed", "chain", destination.Name, "err", setErr)
+			}
+			if poll.ReserveError != nil {
+				w.logger.Warn("interchain reserve check failed", "chain", destination.Name, "err", poll.ReserveError)
+			} else {
+				w.checkLocalReserve(destination, poll.Local, poll.Minimum)
 			}
 		}
 	}
@@ -758,21 +769,14 @@ func (w *Worker) startLocalRequest(id string, req localRequest) error {
 	return w.publish(wireEnvelope{Type: "request", Req: &reqWire})
 }
 
-func (w *Worker) checkLocalReserve(destination *evmInterchain.Destination) error {
-	if destination == nil {return nil}
-    minimum,err:=evmInterchain.MinimumDeactivationReserve(destination)
-    if err!=nil{return fmt.Errorf("read on-chain deactivation minimum: %w",err)}
-	details, err := evmInterchain.GetValidator(destination, w.localAddr)
-	if err != nil {
-		return err
-	}
+func (w *Worker) checkLocalReserve(destination *evmInterchain.Destination, details *evmInterchain.ValidatorDetails, minimum *big.Int) {
 	if !details.Active {
 		w.reserveWarned[destination.Name] = false
-		return nil
+		return
 	}
 	if details.ReserveWei.Cmp(minimum) >= 0 {
 		w.reserveWarned[destination.Name] = false
-		return nil
+		return
 	}
 	if !w.reserveWarned[destination.Name] {
 		w.logger.Warn(
@@ -784,14 +788,9 @@ func (w *Worker) checkLocalReserve(destination *evmInterchain.Destination) error
 		)
 		w.reserveWarned[destination.Name] = true
 	}
-	return nil
 }
 
-func (w *Worker) detectForcedRemovals(destination *evmInterchain.Destination) error {
-	set, err := evmInterchain.GetValidatorSet(destination)
-	if err != nil {
-		return err
-	}
+func (w *Worker) detectForcedRemovals(destination *evmInterchain.Destination, set *evmInterchain.ValidatorSet) error {
 	for idx, validator := range set.Validators {
 		info, err := w.state.ValidatorInfo(validator)
 		if err != nil {

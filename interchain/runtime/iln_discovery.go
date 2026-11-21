@@ -115,22 +115,38 @@ func (w *Worker) attachILNDiscoveredRoute(source *evmInterchain.Destination,reco
  if err!=nil||len(decoded)!=32{return fmt.Errorf("invalid stored ILN route id")}
  routeID:=types.BytesToHash(decoded)
  if routeID==types.ZeroHash{return fmt.Errorf("stored ILN route ID is zero")}
- var destination *evmInterchain.Destination
- for _,candidate:=range w.destinations{
-  if candidate!=nil&&candidate.Domain==record.DestinationDomain {destination=candidate;break}
- }
+ destination := w.ilnDestinationByDomain(record.DestinationDomain)
  if destination==nil{return nil} // Persisted for a later chain onboarding.
  snapshot,err:=w.sourceILNRouteAtBlock(source,destination.Domain,routeID,confirmedBlock)
  if err!=nil{return fmt.Errorf("validate discovered ILN route %s: %w",record.RouteID,err)}
  if !strings.EqualFold(snapshot.Route.Gateway.String(),record.Gateway) {
   return fmt.Errorf("ILN discovered route gateway mismatch for %s",record.RouteID)
  }
- routeName:=fmt.Sprintf("iln_%d_%d_%s",source.Domain,destination.Domain,strings.TrimPrefix(record.RouteID,"0x"))
- identity:=source.Name+"|"+destination.Name+"|"+routeID.String()
+ return w.attachVerifiedILNDiscoveredRoute(source, destination, routeID)
+}
+
+func (w *Worker) ilnDestinationByDomain(domain uint32) *evmInterchain.Destination {
+ for _, candidate := range w.destinations {
+  if candidate != nil && candidate.Domain == domain {
+   return candidate
+  }
+ }
+ return nil
+}
+
+func (w *Worker) attachVerifiedILNDiscoveredRoute(source, destination *evmInterchain.Destination, routeID types.Hash) error {
+ if destination == nil {
+  return nil // Persisted for a later chain onboarding.
+ }
+ routeName := fmt.Sprintf("iln_%d_%d_%s", source.Domain, destination.Domain, strings.TrimPrefix(routeID.String(), "0x"))
  w.mu.Lock()
  var matching *evmInterchain.CheckpointRoute
- for _,existing:=range w.routes {
-  if existing!=nil&&existing.SourceNetwork+"|"+existing.Destination+"|"+existing.RouteID.String()==identity{matching=existing;break}
+ for _, existing := range w.routes {
+  if existing != nil && existing.SourceNetwork == source.Name &&
+   existing.Destination == destination.Name && existing.RouteID == routeID {
+   matching = existing
+   break
+  }
  }
  if matching==nil {
   matching=&evmInterchain.CheckpointRoute{Name:routeName,SourceNetwork:source.Name,Destination:destination.Name,RouteID:routeID}

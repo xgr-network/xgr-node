@@ -54,7 +54,7 @@ func DestinationCall(d *Destination, address types.Address, calldata []byte)([]b
  defer client.Close()
  raw,err:=callILNView(client,address,calldata,ethgo.Latest)
  if err!=nil{
-  recordInterchainRPCReadError(d,d.RPCURL,err)
+  recordInterchainRPCReadForClient(d,client,err)
   return nil,err
  }
  return raw,nil

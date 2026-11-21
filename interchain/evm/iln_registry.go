@@ -128,9 +128,15 @@ func GetConfirmedILNGovernanceNonce(source *Destination) (uint64, error) {
 // network ILN registry.
 func GetConfirmedILNRoute(source *Destination, destinationDomain uint32, routeID types.Hash) (*ILNRouteSnapshot, error) {
 	client, confirmed, err := newVerifiedRPCClientWithHead(source)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer client.Close()
-	return getILNRouteAtBlock(client, source, destinationDomain, routeID, confirmed, false)
+	snapshot, err := getILNRouteAtBlock(client, source, destinationDomain, routeID, confirmed, false)
+	if err != nil {
+		recordInterchainRPCReadForClient(source, client, err)
+	}
+	return snapshot, err
 }
 
 // GetILNRouteAtBlock re-reads the exact historical route used by an incoming
