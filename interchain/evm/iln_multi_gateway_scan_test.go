@@ -134,3 +134,65 @@ func TestMultiGateway429FailsOverSameWindow(t *testing.T){
  require.ErrorContains(t,rpcCooldown(source,first.URL),"cooldown")
  require.NoError(t,rpcCooldown(source,second.URL))
 }
+
+func TestGatewayScanSessionReusesSmallerProviderRange(t *testing.T) {
+	var calls []uint64
+	var headCalls int
+	gateway := types.StringToAddress("0x1111111111111111111111111111111111111111")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     json.RawMessage
+			Method string
+			Params []json.RawMessage
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "bad RPC", 400)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch request.Method {
+		case "eth_chainId":
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x2105"}`, request.ID)
+		case "eth_getBlockByNumber":
+			headCalls++
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, request.ID,
+				testFinalityBlock(5000, "0x"+strings.Repeat("1", 64)))
+		case "eth_getLogs":
+			var filter struct {
+				From string `json:"fromBlock"`
+				To   string `json:"toBlock"`
+			}
+			if len(request.Params) != 1 || json.Unmarshal(request.Params[0], &filter) != nil {
+				http.Error(w, "bad filter", 400)
+				return
+			}
+			var from, to uint64
+			fmt.Sscanf(filter.From, "0x%x", &from)
+			fmt.Sscanf(filter.To, "0x%x", &to)
+			span := to - from + 1
+			calls = append(calls, span)
+			if span > 512 {
+				fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"block range is too wide"}}`, request.ID)
+				return
+			}
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":[]}`, request.ID)
+		default:
+			http.Error(w, "unsupported", 400)
+		}
+	}))
+	defer server.Close()
+	source := &Destination{Name: "base", ChainID: 8453, Domain: 8453, RPCURLs: []string{server.URL},
+		RegistryAddress: "0x3333333333333333333333333333333333333333"}
+	session := NewILNScanSession(source)
+	defer session.Close()
+	_, from, to, _, err := session.GatewayWindow([]types.Address{gateway}, 100, 1000)
+	require.NoError(t, err)
+	require.Equal(t, uint64(101), from)
+	require.Equal(t, uint64(612), to)
+	_, from, to, _, err = session.GatewayWindow([]types.Address{gateway}, to, 1000)
+	require.NoError(t, err)
+	require.Equal(t, uint64(613), from)
+	require.Equal(t, uint64(1124), to)
+	require.Equal(t, []uint64{1000, 512, 512}, calls)
+	require.Equal(t, 2, headCalls, "verify and pin the provider head only once")
+}

@@ -3,6 +3,7 @@ package evm
 import (
  "fmt"
  "sort"
+ "strings"
 
  "github.com/umbracle/ethgo"
  
@@ -116,6 +117,7 @@ type ILNScanSession struct {
  source *Destination
  client ilnRPCClient
  head uint64
+ gatewayWindowLimit uint64
 }
 
 func NewILNScanSession(source *Destination) *ILNScanSession {
@@ -126,6 +128,7 @@ func (s *ILNScanSession) Close() {
  if s.client!=nil {
   s.client.Close()
   s.client=nil
+  s.gatewayWindowLimit=0
  }
 }
 
@@ -155,9 +158,20 @@ func (s *ILNScanSession) GatewayWindow(gateways []types.Address,cursor,window ui
   if cursor>head{return head,0,0,nil,fmt.Errorf("confirmed source head behind observer cursor")}
   if cursor==head{return head,0,0,nil,nil}
   from=cursor+1
-  to=cursor+window
-  if to<cursor||to>head{to=head}
+  span:=window
+  if s.gatewayWindowLimit>0&&span>s.gatewayWindowLimit {
+   span=s.gatewayWindowLimit
+  }
+  to=cursor+min(span,head-cursor)
   events,err=confirmedILNMultiGatewayLogsOnClient(s.client,gateways,from,to,head)
+  // Keep the last known scan size for providers that reject wider queries.
+  // Retry only a range/result limit, and never bypass a transport cooldown.
+  const fallbackWindow = 512
+  if to-cursor>fallbackWindow&&gatewayLogRangeRejected(err) {
+   s.gatewayWindowLimit=fallbackWindow
+   to=cursor+fallbackWindow
+   events,err=confirmedILNMultiGatewayLogsOnClient(s.client,gateways,from,to,head)
+  }
   recordInterchainRPCReadForClient(s.source,s.client,err)
   if err==nil{return head,from,to,events,nil}
   s.Close()
@@ -165,6 +179,15 @@ func (s *ILNScanSession) GatewayWindow(gateways []types.Address,cursor,window ui
   last=err
  }
  return head,from,to,nil,fmt.Errorf("all qualified source providers rejected Gateway log window: %w",last)
+}
+
+func gatewayLogRangeRejected(err error) bool {
+ if err==nil||rpcTransientFailure(err){return false}
+ message:=strings.ToLower(err.Error())
+ for _,limit:=range []string{"block range","too many results","query returned more than","response size exceeded"} {
+  if strings.Contains(message,limit){return true}
+ }
+ return false
 }
 
 // ScanNativeXGRMultiGatewayWindow walks each locally committed IBFT
