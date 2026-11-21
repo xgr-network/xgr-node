@@ -138,6 +138,27 @@ func TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs(t *testing.T)
     require.GreaterOrEqual(t, confirmedReads.Load(), int64(3), "publisher and both receivers verify the source")
     require.Zero(t, separateHeadReads.Load(), "gossip must reuse the verified client's head")
     require.Equal(t, int64(2), exactReads.Load(), "only the two cold restores read the route again")
+    // A second announcement and the receiver's own publication share the
+    // already confirmed route, but an expired observation is read again.
+    repeated := ilnRouteNoticeWire{SourceNetwork: "base", SourceDomain: 8453,
+        DestinationDomain: 1643, RouteID: routeID, Gateway: gateway}
+    receiver := workers[1]
+    publisher := validators[0].AddrInfo().ID
+    reads := confirmedReads.Load()
+    _, err := receiver.routeForILNNotice(src, 1643, routeID)
+    require.NoError(t, err)
+    time.Sleep(300*time.Millisecond)
+    require.NoError(t, receiver.acceptVerifiedILNRouteNotice(publisher, repeated))
+    require.Equal(t, reads, confirmedReads.Load(), "repeated discovery reads must be coalesced")
+    receiver.mu.Lock()
+    for key, entry := range receiver.ilnRouteNoticeCache {
+        entry.checkedAt = time.Now().Add(-ilnRouteNoticeFreshness)
+        receiver.ilnRouteNoticeCache[key] = entry
+    }
+    receiver.mu.Unlock()
+    _, err = receiver.routeForILNNotice(src, 1643, routeID)
+    require.NoError(t, err)
+    require.Equal(t, reads+1, confirmedReads.Load())
     // A malicious peer cannot fabricate a route or impersonate another
     // gateway even with a valid authenticated libp2p sender identity.
     time.Sleep(300*time.Millisecond)
