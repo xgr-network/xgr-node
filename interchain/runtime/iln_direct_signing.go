@@ -147,29 +147,36 @@ func (w *Worker) signDirectILNMessageWithTx(
     raw,err:=payload.MarshalBinary()
     if err!=nil{return err}
     hash:=crypto.Keccak256Hash(raw)
-    w.mu.Lock();_,exists:=w.ilnLocalVotes[hash];w.mu.Unlock()
-    if exists{return nil}
-    // Do not sign for a retired set or a message settled between the
-    // independent source proof and this wallet's BLS signature.
-    current,err:=getILNValidatorSet(ctx.destination)
-    if err!=nil{return err}
-    if current.SetID!=payload.SetID{return fmt.Errorf("destination BLS set rotated before signing")}
-    delivered,err:=getILNMessageDelivered(ctx.destination,payload.DestinationRouter,messageID)
-    if err!=nil{return err}
-    if delivered{return fmt.Errorf("Interchain message already delivered")}
-    key,err:=crypto.BytesToBLSSecretKey(w.blsRaw)
-    if err!=nil{return err}
-    if w.state==nil||!w.state.IsSynchronized(){
-        return fmt.Errorf("Direct-BLS signature rejected: node lost synchronization during verification")
+    w.mu.Lock()
+    stored:=w.ilnLocalVotes[hash]
+    var vote ilnCheckpointVote
+    if stored!=nil{vote=stored.vote}
+    w.mu.Unlock()
+    if stored==nil {
+        // Recheck destination state before creating a new local signature.
+        current,err:=getILNValidatorSet(ctx.destination)
+        if err!=nil{return err}
+        if current.SetID!=payload.SetID{return fmt.Errorf("destination BLS set rotated before signing")}
+        delivered,err:=getILNMessageDelivered(ctx.destination,payload.DestinationRouter,messageID)
+        if err!=nil{return err}
+        if delivered{return fmt.Errorf("Interchain message already delivered")}
+        key,err:=crypto.BytesToBLSSecretKey(w.blsRaw)
+        if err!=nil{return err}
+        if w.state==nil||!w.state.IsSynchronized(){
+            return fmt.Errorf("Direct-BLS signature rejected: node lost synchronization during verification")
+        }
+        signature,err:=crypto.SignByBLS(key,raw)
+        if err!=nil{return err}
+        vote=ilnCheckpointVote{Route:route.Name,Payload:raw,Signer:w.localAddr,Signature:signature}
     }
-    signature,err:=crypto.SignByBLS(key,raw)
-    if err!=nil{return err}
-    vote:=ilnCheckpointVote{Route:route.Name,Payload:raw,Signer:w.localAddr,Signature:signature}
-    if err:=w.persistILNLocalVote(hash,vote);err!=nil{return err}
+    if sourceTx!=types.ZeroHash{vote.SourceTxHash=sourceTx.String()}
+    if stored==nil||vote.SourceTxHash!=stored.vote.SourceTxHash {
+        if err:=w.persistILNLocalVote(hash,vote);err!=nil{return err}
+    }
     w.mu.Lock()
     w.ilnLocalVotes[hash]=&ilnLocalVoteState{vote:vote,lastBroadcast:time.Now()}
     w.mu.Unlock()
-    if err:=w.acceptILNCheckpointVote(vote);err!=nil{return err}
+    if err:=w.acceptVerifiedILNCheckpointVote(vote,payload,ctx);err!=nil{return err}
     return w.publish(wireEnvelope{Type:"iln_checkpoint_vote",ILNCheckpointVote:&vote})
 }
 
