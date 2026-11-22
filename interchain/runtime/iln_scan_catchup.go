@@ -16,11 +16,10 @@ const (
     directILNRemoteWorkBudget = uint64(2048)
     directILNSharedRemoteWorkBudget = 256 + (directILNMaxWindowsPerPoll-1)*directILNSharedRemoteMaxWindow
     directILNSharedRemoteMaxWindow = uint64(1000)
-    // Base 8453 is the only chain permitted to expand its background discovery
-    // budget. The per-window RPC and provider cooldown limits are unchanged.
-    directILNBaseCatchupChainID = uint64(8453)
-    directILNBaseCatchupMaxWindowsPerPoll = 8
-    directILNBaseCatchupWorkBudget = 256 + (directILNBaseCatchupMaxWindowsPerPoll-1)*directILNSharedRemoteMaxWindow
+    // Every external EVM source can finish a confirmed backlog within a bounded
+    // poll. At the safe head, the loop exits early without unnecessary RPCs.
+    directILNRemoteCatchupMaxWindowsPerPoll = 8
+    directILNRemoteCatchupWorkBudget = 256 + (directILNRemoteCatchupMaxWindowsPerPoll-1)*directILNSharedRemoteMaxWindow
     directILNNativeWorkBudget = uint64(4000)
     directILNRemoteMaxWindow = uint64(512)
     directILNNativeMaxWindow = uint64(1000)
@@ -37,16 +36,15 @@ type directILNScanRetry struct {
     failures uint8
 }
 
-// directILNSharedObserverLimits expands only Base's shared discovery scan
-// when the remaining, FINALITY-QUALIFIED backlog exceeds what a normal poll
-// could clear. The first 256-block request still runs at the normal budget;
-// no extra RPC is needed to decide whether to expand subsequent windows.
-// All other chains, including local XGR, retain their existing budgets.
+// directILNSharedObserverLimits expands the shared discovery scan for any
+// external EVM chain with a confirmed, not-yet-scanned source head. There is
+// NO arbitrary backlog threshold: the last few thousand blocks are scanned
+// in the same poll when provider limits allow. The scanner exits at the safe
+// head, so a caught-up source performs no speculative extra RPC reads.
+// The first window remains 256 blocks; the native XGR path is unchanged.
 func directILNSharedObserverLimits(chainID, remaining uint64) (int, uint64) {
     if chainID == 1643 {return directILNMaxWindowsPerPoll,directILNNativeWorkBudget}
-    if chainID == directILNBaseCatchupChainID && remaining > directILNSharedRemoteWorkBudget {
-        return directILNBaseCatchupMaxWindowsPerPoll,directILNBaseCatchupWorkBudget
-    }
+    if remaining > 0 {return directILNRemoteCatchupMaxWindowsPerPoll,directILNRemoteCatchupWorkBudget}
     return directILNMaxWindowsPerPoll,directILNSharedRemoteWorkBudget
 }
 
