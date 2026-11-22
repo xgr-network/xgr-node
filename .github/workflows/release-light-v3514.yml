@@ -1,0 +1,108 @@
+name: Release Light (XGR v3.5.14 Generic Direct-BLS Observer Catch-up)
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: "Reviewed XGR3.0 40-character commit SHA"
+        required: true
+        type: string
+      confirmation:
+        description: "Type RELEASE-v3.5.14 to publish"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xgr-v3514-light-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ github.ref == 'refs/heads/XGR3.0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact interchain RPC release scope
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/XGR3.0'
+          test "$CONFIRMATION" = 'RELEASE-v3.5.14'
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          git merge-base --is-ancestor refs/tags/v3.5.13 HEAD
+          if git rev-parse -q --verify refs/tags/v3.5.14 >/dev/null; then
+            echo "v3.5.14 already exists: refusing overwrite" >&2
+            exit 1
+          fi
+          test "$(git rev-parse refs/tags/v3.5.13)" = 'b94d1d3f1c4c01f0cc98ba68237556d13fa15f08'
+          diff -u <(printf '%s\n' \
+            '.github/workflows/release-light-v3513.yml' \
+            '.github/workflows/release-light-v3514.yml' \
+            'RELEASE_NOTES_v3.5.14.md' \
+            'interchain/runtime/iln_indexer_health.go' \
+            'interchain/runtime/iln_observer_catchup_schedule_test.go' \
+            'interchain/runtime/iln_observer_worker.go' \
+            'interchain/runtime/iln_observer_worker_test.go' \
+            'interchain/runtime/iln_scan_catchup.go' \
+            'interchain/runtime/iln_scan_catchup_test.go' \
+            'interchain/runtime/worker.go' | LC_ALL=C sort) \
+            <(git diff --no-renames --name-only refs/tags/v3.5.13 HEAD | LC_ALL=C sort)
+          test "$(git diff --no-renames --diff-filter=D --name-only refs/tags/v3.5.13 HEAD -- .github/workflows/release-light-v3513.yml)" = '.github/workflows/release-light-v3513.yml'
+          git diff --check refs/tags/v3.5.13 HEAD
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Interchain, Direct-BLS and JSON-RPC regression
+        run: go test -count=1 -timeout 15m ./interchain/... ./consensus/ibft/interchain ./jsonrpc
+      - name: Repeat adaptive observer catch-up and persisted cursor regressions
+        run: |
+          go test -count=3 -timeout 8m ./interchain/runtime -run '^(TestDirectILNSharedObserverLimitsGeneric|TestExternalObserverCatchupOnlyForKnownLaggingSource|TestExternalObserverCatchupIntervalAndIdleCadence|TestSharedILNObserverReducesExternalRequestsAndPreservesDurableCursors|TestSharedObserverCatchupThroughputAndPartialProgress|TestSharedObserverTransportFailureCountsOncePerSource|TestSharedObserverSuccessCannotClearSourceFailure)$'
+      - name: Build verified immutable Linux release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          COMMIT="$(git rev-parse --short HEAD)"
+          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          PKG="$(go list -m)/versioning"
+          go build -trimpath -o dist/xgrchain-v3.5.14-linux-amd64 \
+            -ldflags "-X $PKG.Version=v3.5.14 -X $PKG.Commit=$COMMIT -X $PKG.Branch=XGR3.0 -X $PKG.BuildTime=$TIME" .
+          chmod 755 dist/xgrchain-v3.5.14-linux-amd64
+          VERSION_OUTPUT="$(./dist/xgrchain-v3.5.14-linux-amd64 version)"
+          printf '%s\n' "$VERSION_OUTPUT"
+          grep -Fq 'Release version' <<< "$VERSION_OUTPUT"
+          grep -Fq 'v3.5.14' <<< "$VERSION_OUTPUT"
+          grep -Fq "$COMMIT" <<< "$VERSION_OUTPUT"
+          printf '%s\n' v3.5.14 > dist/version.txt
+          git rev-parse HEAD > dist/commit.txt
+          go version > dist/toolchain.txt
+          (cd dist && sha256sum xgrchain-v3.5.14-linux-amd64 version.txt commit.txt toolchain.txt > sha256sums.txt)
+          (cd dist && sha256sum -c sha256sums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xgr-v3.5.14-generic-observer-catchup-light-amd64
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish immutable v3.5.14 GitHub release (no validator deployment)
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v3.5.14
+          name: v3.5.14
+          commit: ${{ github.sha }}
+          allowUpdates: false
+          makeLatest: true
+          generateReleaseNotes: false
+          artifacts: dist/*
+          bodyFile: RELEASE_NOTES_v3.5.14.md

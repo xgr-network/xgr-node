@@ -37,6 +37,7 @@ const (
 	// xgr_requestILNQuorumWithSourceTx. Keep independent RPC-native polling as
 	// a slow censorship/outage fallback, never a signing trust assumption.
 	ilnExternalCheckpointInterval = 10 * time.Minute
+	ilnExternalCatchupInterval = 60 * time.Second
 	ilnExternalDiscoveryInterval  = 5 * time.Minute
 	ilnExternalMembershipInterval = 60 * time.Second
 	ilnExternalRetryInterval      = 30 * time.Second
@@ -114,6 +115,8 @@ type Worker struct {
 	ilnRouteHealthByName map[string]ilnRouteHealth
 	// Accessed only by the interchain worker loop, never from gossip handlers.
 	ilnLastCheckpointPoll time.Time
+	// One-minute catch-up applies only to external sources with known backlog.
+	ilnLastCatchupPoll time.Time
     ilnDirectScanRetries map[string]directILNScanRetry
 	ilnLastDiscoveryPoll  time.Time
 	ilnLastMembershipPoll time.Time
@@ -439,29 +442,37 @@ func (w *Worker) tick() {
 		w.discoverILNRoutes()
 		w.publishVerifiedILNRoutes()
 	}
-	if dueILNPeriodicPolling(now,&w.ilnLastCheckpointPoll,ilnExternalCheckpointInterval) {
-        w.mu.Lock()
-        activeRoutes:=make([]*evmInterchain.CheckpointRoute,0,len(w.routes))
-        for _,route:=range w.routes{activeRoutes=append(activeRoutes,route)}
-        w.mu.Unlock()
-        // One source-chain observation for all catalog-backed routes. The
-        // common Gateway log stream is only a discovery hint; BLS signing
-        // still independently verifies complete source receipts and fees.
-        ready:=make([]*evmInterchain.CheckpointRoute,0,len(activeRoutes))
-        for _,route:=range activeRoutes{
-            if w.directILNScanMayRun(route,now){ready=append(ready,route)}
-        }
-        failures:=w.scanILNObserverRoutes(ready)
-        w.finishILNObserverScanBackoff(ready,failures,time.Now())
-        for _,route:=range ready{
-            err:=failures[route.Name]
-            if err!=nil {
-                w.recordILNDirectScanFailure(route,err)
-                w.logger.Debug("Direct BLS source observation pending",
-                    "route",route.Name,"err",err)
-            }
-        }
-    }
+	// The full independent fallback scanner remains on its ten-minute cadence.
+	// During catch-up, poll only external sources with a locally observed lag.
+	fullScan:=dueILNPeriodicPolling(now,&w.ilnLastCheckpointPoll,ilnExternalCheckpointInterval)
+	catchupScan:=false
+	if fullScan {
+		w.ilnLastCatchupPoll=now
+	} else if w.hasILNExternalObserverBacklog() {
+		catchupScan=dueILNPeriodicPolling(now,&w.ilnLastCatchupPoll,ilnExternalCatchupInterval)
+	}
+	if fullScan||catchupScan {
+		w.mu.Lock()
+		activeRoutes:=make([]*evmInterchain.CheckpointRoute,0,len(w.routes))
+		for _,route:=range w.routes{activeRoutes=append(activeRoutes,route)}
+		w.mu.Unlock()
+		ready:=make([]*evmInterchain.CheckpointRoute,0,len(activeRoutes))
+		for _,route:=range activeRoutes{
+			if !fullScan&&!w.ilnSourceHasExternalObserverBacklog(route.SourceNetwork){continue}
+			if w.directILNScanMayRun(route,now){ready=append(ready,route)}
+		}
+		if len(ready)>0 {
+			failures:=w.scanILNObserverRoutes(ready)
+			w.finishILNObserverScanBackoff(ready,failures,time.Now())
+			for _,route:=range ready{
+				if err:=failures[route.Name];err!=nil {
+					w.recordILNDirectScanFailure(route,err)
+					w.logger.Debug("Direct BLS source observation pending",
+						"route",route.Name,"err",err)
+				}
+			}
+		}
+	}
 	if dueILNPeriodicPolling(now,&w.ilnLastHealthWrite,ilnLocalHealthInterval) {
 		// v3.2.1: purely local persisted observations; never query Base/XGR.
 		w.writeILNIndexerHealth()

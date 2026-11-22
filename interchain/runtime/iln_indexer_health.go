@@ -52,6 +52,40 @@ func (w *Worker) recordILNDirectScan(route *evm.CheckpointRoute,head,cursor uint
  w.mu.Unlock()
 }
 
+// hasILNExternalObserverBacklog uses ONLY locally persisted observation state.
+// No RPC is made to decide whether a short catch-up poll is warranted.
+func (w *Worker) hasILNExternalObserverBacklog() bool {
+ if w==nil{return false}
+ w.mu.Lock()
+ defer w.mu.Unlock()
+ for _,route:=range w.routes{
+  if w.ilnRouteHasExternalObserverBacklogLocked(route){return true}
+ }
+ return false
+}
+
+// Include ALL gateways from a lagging source in the shared scan, including
+// any sibling route already caught up. Never split its source discovery view.
+func (w *Worker) ilnSourceHasExternalObserverBacklog(sourceName string) bool {
+ if w==nil||sourceName==""{return false}
+ w.mu.Lock()
+ defer w.mu.Unlock()
+ for _,route:=range w.routes {
+  if route!=nil&&route.SourceNetwork==sourceName&&w.ilnRouteHasExternalObserverBacklogLocked(route){return true}
+ }
+ return false
+}
+
+// Caller must hold w.mu. Previously observed lag remains actionable on a
+// transient provider error; the existing retry cooldown still gates RPCs.
+func (w *Worker) ilnRouteHasExternalObserverBacklogLocked(route *evm.CheckpointRoute) bool {
+ if route==nil{return false}
+ source:=w.destinations[route.SourceNetwork]
+ if source==nil||source.ChainID==1643{return false}
+ health,ok:=w.ilnRouteHealthByName[route.Name]
+ return ok&&health.SourceHeadKnown&&health.ScanCursorKnown&&health.BlockLag>0
+}
+
 // Never erase a previously observed cursor/head on a temporary RPC error.
 func (w *Worker) recordILNDirectScanFailure(route *evm.CheckpointRoute,err error){
  if route==nil||err==nil{return}

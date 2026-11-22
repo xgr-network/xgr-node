@@ -104,16 +104,21 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   remote,closeRemote=openObserverWindow(source)
   defer closeRemote()
  }
- budget:=directILNSharedRemoteWorkBudget
- if source.ChainID==1643{budget=directILNNativeWorkBudget}
+ // The first window stays at 256 blocks on every source. Its verified
+ // finality head authorizes catch-up only while an external source is behind.
+ maxWindows,budget:=directILNSharedObserverLimits(source.ChainID,0)
  var head uint64
- for attempt:=0;attempt<directILNMaxWindowsPerPoll&&budget>0;attempt++{
+ for attempt:=0;attempt<maxWindows&&budget>0;attempt++{
   window:=directILNWindow(0,source.ChainID==1643)
   if attempt>0&&head>cursor{window=directILNWindow(head-cursor,source.ChainID==1643)}
   // Keep the small first read. On an external source with a confirmed
-  // backlog, cover more blocks per eth_getLogs within the same four windows.
-  if attempt>0 && source.ChainID!=1643 && head>cursor && head-cursor>=directILNSharedRemoteMaxWindow {
-   window=directILNSharedRemoteMaxWindow
+  // backlog, cover more blocks per eth_getLogs within the same bounded poll.
+  if attempt>0 && source.ChainID!=1643 && head>cursor {
+   // Consume the verified backlog in the fewest possible log requests.
+   // A trailing range below 1,000 needs only ONE final request, not
+   // consecutive 512/256-block reads. Providers can still downgrade to 512.
+   window=head-cursor
+   if window>directILNSharedRemoteMaxWindow {window=directILNSharedRemoteMaxWindow}
   }
   if window>budget{window=budget}
   var from,to uint64
@@ -171,7 +176,15 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
    w.recordILNDirectScan(r.Route,head,cursors[r.Route.Name])
   }
   cursor=to
-  budget-=to-from+1
+  if attempt==0 {
+   // The first successful window supplies a canonical, finality-qualified
+   // head. Expand any external source while lag remains, including short lags.
+   // Account for the already consumed first window in the enlarged budget.
+   maxWindows,budget=directILNSharedObserverLimits(source.ChainID,head-cursor)
+   budget-=to-from+1
+  }else{
+   budget-=to-from+1
+  }
   if cursor>=head{break}
  }
  if err:=w.retryObserverSource(source,routes);err!=nil{return err}
