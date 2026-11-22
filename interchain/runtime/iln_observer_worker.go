@@ -113,8 +113,12 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   if attempt>0&&head>cursor{window=directILNWindow(head-cursor,source.ChainID==1643)}
   // Keep the small first read. On an external source with a confirmed
   // backlog, cover more blocks per eth_getLogs within the same bounded poll.
-  if attempt>0 && source.ChainID!=1643 && head>cursor && head-cursor>=directILNSharedRemoteMaxWindow {
-   window=directILNSharedRemoteMaxWindow
+  if attempt>0 && source.ChainID!=1643 && head>cursor {
+   // Consume the verified backlog in the fewest possible log requests.
+   // A trailing range below 1,000 needs only ONE final request, not
+   // consecutive 512/256-block reads. Providers can still downgrade to 512.
+   window=head-cursor
+   if window>directILNSharedRemoteMaxWindow {window=directILNSharedRemoteMaxWindow}
   }
   if window>budget{window=budget}
   var from,to uint64
