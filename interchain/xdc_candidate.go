@@ -1,7 +1,6 @@
 package interchain
 
-// XDCMainnetCandidate pins the deployed V5 registries. It is deliberately
-// outside compiledChains until an XDC activation release is reviewed.
+// XDCMainnetCandidate pins the deployed V5 registries and RPC policy.
 func XDCMainnetCandidate() ChainPolicy {
 	return ChainPolicy{
 		Name: "xdc", ChainID: 50, Domain: 50,

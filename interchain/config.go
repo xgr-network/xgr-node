@@ -119,6 +119,7 @@ var compiledChains = []ChainPolicy{
   Registry:"0x70f5752326735b31641f21d174ba035e904db93c",
   SourceRegistry:"0x14d5d33a65a39f96665ed631b04fecf357bcb576",
   SourceActivationBlock:158929283},
+ XDCMainnetCandidate(),
 }
 
 func validatePolicy(p ChainPolicy) error {
@@ -236,8 +237,7 @@ func Policy(name string) (ChainPolicy,error) {
  return ChainPolicy{},fmt.Errorf("unsupported XITA chain %q",name)
 }
 
-// ActivePolicies returns only fully receipt-pinned Direct-BLS deployments.
-// v3.4.3 includes OP Mainnet alongside the four receipt-pinned networks.
+// ActivePolicies returns the receipt-pinned validator worker policies.
 // Each validator still requires explicit operational rollout.
 // This config enables validator workers, NOT token routes or user transfers.
 func ActivePolicies() ([]ChainPolicy,error) {

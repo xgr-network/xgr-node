@@ -5,17 +5,19 @@ import (
 	"testing"
 )
 
-func TestExistingMainnetPoliciesRemainBLSOnly(t *testing.T) {
+func TestExistingMainnetPoliciesRetainBLS(t *testing.T) {
 	active, err := ActivePolicies()
 	require.NoError(t, err)
-	require.Len(t, active, 5)
+	require.Len(t, active, 6)
 	for _, p := range active {
+		if p.ChainID == 50 {
+			continue
+		}
 		require.Equal(t, "bls", p.SignatureScheme)
 		require.Contains(t, []string{"compressed", "eip2537"}, p.VerifierFormat)
-		require.NotEqual(t, uint64(50), p.ChainID)
 	}
 }
-func TestXDCMainnetCandidateIsReceiptPinnedButInactive(t *testing.T) {
+func TestXDCMainnetCandidateIsReceiptPinnedAndActive(t *testing.T) {
 	p := XDCMainnetCandidate()
 	require.Equal(t, uint64(50), p.ChainID)
 	require.Equal(t, uint32(50), p.Domain)
@@ -28,8 +30,9 @@ func TestXDCMainnetCandidateIsReceiptPinnedButInactive(t *testing.T) {
 	require.Len(t, p.RPCURLs, 3)
 	require.Len(t, p.IndependentOperatorIDs, 3)
 	require.NoError(t, validatePolicy(p))
-	_, err := Policy("xdc")
-	require.Error(t, err)
+	configured, err := Policy("xdc")
+	require.NoError(t, err)
+	require.Equal(t, p, configured)
 }
 func TestBLSSchemeCannotAccidentallyBecomeECDSA(t *testing.T) {
 	p, err := Policy("base")

@@ -1,0 +1,148 @@
+name: Release Light (XGR v3.5.15 XDC ECDSA V5)
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: "Reviewed XGR3.0 40-character commit SHA"
+        required: true
+        type: string
+      confirmation:
+        description: "Type RELEASE-v3.5.15 to publish"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xgr-v3515-light-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ github.ref == 'refs/heads/XGR3.0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact XDC interchain release scope
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/XGR3.0'
+          test "$CONFIRMATION" = 'RELEASE-v3.5.15'
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          git merge-base --is-ancestor refs/tags/v3.5.14 HEAD
+          if git rev-parse -q --verify refs/tags/v3.5.15 >/dev/null; then
+            echo "v3.5.15 already exists: refusing overwrite" >&2
+            exit 1
+          fi
+          test "$(git rev-parse refs/tags/v3.5.14)" = 'd756b20a83598c7cf90da51951596a4ada929e28'
+          diff -u <(printf '%s\n' \
+            '.github/workflows/release-light-v3514.yml' \
+            '.github/workflows/release-light-v3515.yml' \
+            'RELEASE_NOTES_v3.5.15.md' \
+            'command/ibft/interchain/bootstrap.go' \
+            'command/ibft/interchain/bootstrap_ecdsa_test.go' \
+            'command/ibft/interchain/governance.go' \
+            'command/ibft/interchain/interchain.go' \
+            'consensus/ibft/interchain/xita_direct_message.go' \
+            'docs/INTERCHAIN_PROTOCOL_CORE.md' \
+            'interchain/authorization/adapter.go' \
+            'interchain/authorization/adapter_test.go' \
+            'interchain/config.go' \
+            'interchain/config_test.go' \
+            'interchain/ecdsa/authorizations.go' \
+            'interchain/ecdsa/authorizations_test.go' \
+            'interchain/ecdsa/direct.go' \
+            'interchain/ecdsa/direct_test.go' \
+            'interchain/ecdsa/lifecycle.go' \
+            'interchain/ecdsa/lifecycle_test.go' \
+            'interchain/evm/authorization.go' \
+            'interchain/evm/authorization_test.go' \
+            'interchain/evm/checkpoint_source.go' \
+            'interchain/evm/checkpoint_source_test.go' \
+            'interchain/evm/client.go' \
+            'interchain/evm/config.go' \
+            'interchain/evm/config_test.go' \
+            'interchain/evm/iln_governance_submit.go' \
+            'interchain/evm/membership_poll.go' \
+            'interchain/evm/membership_poll_test.go' \
+            'interchain/evm/optimism_v343_test.go' \
+            'interchain/evm/possession.go' \
+            'interchain/optimism_v343_test.go' \
+            'interchain/runtime/authorization.go' \
+            'interchain/runtime/authorization_parity_test.go' \
+            'interchain/runtime/governance.go' \
+            'interchain/runtime/governance_execute.go' \
+            'interchain/runtime/governance_test.go' \
+            'interchain/runtime/iln_checkpoint.go' \
+            'interchain/runtime/iln_completed_quorum.go' \
+            'interchain/runtime/iln_completed_quorum_test.go' \
+            'interchain/runtime/iln_direct_signing.go' \
+            'interchain/runtime/iln_f20_successor_test.go' \
+            'interchain/runtime/iln_storage.go' \
+            'interchain/runtime/worker.go' \
+            'interchain/xdc_candidate.go' \
+            'interchain/xdc_candidate_test.go' \
+            'jsonrpc/xgr_iln_quorum.go' \
+            'jsonrpc/xgr_interchain.go' \
+            'jsonrpc/xgr_interchain_test.go' \
+            'jsonrpc/xgr_interchain_validators.go' \
+            'jsonrpc/xgr_interchain_validators_test.go' | LC_ALL=C sort) \
+            <(git diff --no-renames --name-only refs/tags/v3.5.14 HEAD | LC_ALL=C sort)
+          test "$(git diff --no-renames --diff-filter=D --name-only refs/tags/v3.5.14 HEAD -- .github/workflows/release-light-v3514.yml)" = '.github/workflows/release-light-v3514.yml'
+          git diff --check refs/tags/v3.5.14 HEAD
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Interchain, CLI and JSON-RPC regression
+        run: go test -count=1 -timeout 15m ./interchain/... ./consensus/ibft/interchain ./command/ibft/interchain ./jsonrpc
+      - name: Check concurrent authorization, RPC and recovery
+        run: go test -race -count=1 -timeout 15m ./interchain/runtime ./interchain/authorization ./interchain/evm ./jsonrpc
+      - name: Build verified immutable Linux release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          COMMIT="$(git rev-parse --short HEAD)"
+          TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          PKG="$(go list -m)/versioning"
+          go build -trimpath -o dist/xgrchain-v3.5.15-linux-amd64 \
+            -ldflags "-X $PKG.Version=v3.5.15 -X $PKG.Commit=$COMMIT -X $PKG.Branch=XGR3.0 -X $PKG.BuildTime=$TIME" .
+          chmod 755 dist/xgrchain-v3.5.15-linux-amd64
+          VERSION_OUTPUT="$(./dist/xgrchain-v3.5.15-linux-amd64 version)"
+          printf '%s\n' "$VERSION_OUTPUT"
+          grep -Fq 'Release version' <<< "$VERSION_OUTPUT"
+          grep -Fq 'v3.5.15' <<< "$VERSION_OUTPUT"
+          grep -Fq "$COMMIT" <<< "$VERSION_OUTPUT"
+          printf '%s\n' v3.5.15 > dist/version.txt
+          git rev-parse HEAD > dist/commit.txt
+          go version > dist/toolchain.txt
+          (cd dist && sha256sum xgrchain-v3.5.15-linux-amd64 version.txt commit.txt toolchain.txt > sha256sums.txt)
+          (cd dist && sha256sum -c sha256sums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xgr-v3.5.15-xdc-ecdsa-v5-light-amd64
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish immutable v3.5.15 GitHub release (no validator deployment)
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v3.5.15
+          name: v3.5.15
+          commit: ${{ github.sha }}
+          allowUpdates: false
+          makeLatest: true
+          generateReleaseNotes: false
+          artifacts: dist/*
+          bodyFile: RELEASE_NOTES_v3.5.15.md

@@ -22,7 +22,7 @@ func TestV343OptimismLoadAllPinsChain10AndSafeRule(t *testing.T) {
  require.NoError(t,d.ValidateILNRead())
  all,err:=LoadAll()
  require.NoError(t,err)
- require.Len(t,all,5)
+ require.Len(t,all,6)
  require.Equal(t,uint64(10),all[4].ChainID)
  _,err=Load("polygon")
  require.Error(t,err)

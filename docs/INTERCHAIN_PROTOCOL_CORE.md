@@ -93,8 +93,7 @@ BLS golden payload and ABI tests remain in place.
 
 XDC Mainnet's V5 ValidatorRegistry and SourceRegistry are receipt-pinned in
 `XDCMainnetCandidate()`, including SourceRegistry creation block 109627114.
-The candidate remains outside `compiledChains` pending a reviewed activation
-release. The configured HTTPS RPCs passed finalized-header, canonical receipt,
+The XDC policy is included in `compiledChains` for the v3.5.15 validator rollout. The configured HTTPS RPCs passed finalized-header, canonical receipt,
 historical log range and block-pinned source fee checks. The XDC-published RPC
 URLs are grouped conservatively as one operator for witness selection, with
 Ankr as the second operator. These checks use deployment transactions. A
