@@ -16,6 +16,11 @@ const (
     directILNRemoteWorkBudget = uint64(2048)
     directILNSharedRemoteWorkBudget = 256 + (directILNMaxWindowsPerPoll-1)*directILNSharedRemoteMaxWindow
     directILNSharedRemoteMaxWindow = uint64(1000)
+    // Base 8453 is the only chain permitted to expand its background discovery
+    // budget. The per-window RPC and provider cooldown limits are unchanged.
+    directILNBaseCatchupChainID = uint64(8453)
+    directILNBaseCatchupMaxWindowsPerPoll = 8
+    directILNBaseCatchupWorkBudget = 256 + (directILNBaseCatchupMaxWindowsPerPoll-1)*directILNSharedRemoteMaxWindow
     directILNNativeWorkBudget = uint64(4000)
     directILNRemoteMaxWindow = uint64(512)
     directILNNativeMaxWindow = uint64(1000)
@@ -30,6 +35,19 @@ type directILNScanWindowReader func(cursor uint64, exists bool, window uint64) (
 type directILNScanRetry struct {
     until time.Time
     failures uint8
+}
+
+// directILNSharedObserverLimits expands only Base's shared discovery scan
+// when the remaining, FINALITY-QUALIFIED backlog exceeds what a normal poll
+// could clear. The first 256-block request still runs at the normal budget;
+// no extra RPC is needed to decide whether to expand subsequent windows.
+// All other chains, including local XGR, retain their existing budgets.
+func directILNSharedObserverLimits(chainID, remaining uint64) (int, uint64) {
+    if chainID == 1643 {return directILNMaxWindowsPerPoll,directILNNativeWorkBudget}
+    if chainID == directILNBaseCatchupChainID && remaining > directILNSharedRemoteWorkBudget {
+        return directILNBaseCatchupMaxWindowsPerPoll,directILNBaseCatchupWorkBudget
+    }
+    return directILNMaxWindowsPerPoll,directILNSharedRemoteWorkBudget
 }
 
 // directILNWindow expands the catch-up window according to the previously
