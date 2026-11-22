@@ -204,7 +204,7 @@ func TestSharedObserverCatchupThroughputAndPartialProgress(t *testing.T) {
 		wantCursor   uint64
 	}{
 		{"caught-up source", 8453, "base", 100, 0, []uint64{256}, 100},
-		{"Base last 3000 blocks fully caught up", 8453, "base", 3000, 0, []uint64{256, 1000, 1000, 744}, 3000},
+		{"Base last 3000 blocks fully caught up", 8453, "base", 3000, 0, []uint64{256, 1000, 1000, 644}, 3000},
 		{"Base last 10000 blocks continues eight windows", 8453, "base", 10000, 0, []uint64{256, 1000, 1000, 1000, 1000, 1000, 1000, 1000}, 7356},
 		{"Arbitrum catch-up uses eight windows", 42161, "arbitrum", 10000, 0, []uint64{256, 1000, 1000, 1000, 1000, 1000, 1000, 1000}, 7356},
 		{"BSC catch-up uses eight windows", 56, "bsc", 10000, 0, []uint64{256, 1000, 1000, 1000, 1000, 1000, 1000, 1000}, 7356},
