@@ -10,16 +10,17 @@ import (
  evm "github.com/xgr-network/xgr-node/interchain/evm"
 )
 
-func TestDirectILNSharedObserverLimitsBaseOnly(t *testing.T) {
+func TestDirectILNSharedObserverLimitsGeneric(t *testing.T) {
  tests:=[]struct{name string;chainID,lag uint64;windows int;budget uint64}{
-  {"Base no backlog",8453,0,4,3256},
-  {"Base below threshold",8453,3255,4,3256},
-  {"Base at threshold",8453,3256,4,3256},
-  {"Base above threshold",8453,3257,8,7256},
-  {"Base large backlog",8453,147034,8,7256},
-  {"Arbitrum unchanged",42161,147034,4,3256},
-  {"BSC unchanged",56,147034,4,3256},
-  {"Optimism unchanged",10,147034,4,3256},
+  {"Base caught up",8453,0,4,3256},
+  {"Base one block",8453,1,8,7256},
+  {"Base last 3000 blocks",8453,3000,8,7256},
+  {"Base last 10000 blocks",8453,10000,8,7256},
+  {"Base deep backlog",8453,147034,8,7256},
+  {"Arbitrum caught up",42161,0,4,3256},
+  {"Arbitrum lagging",42161,147034,8,7256},
+  {"BSC lagging",56,10000,8,7256},
+  {"Optimism lagging",10,10000,8,7256},
   {"XGR unchanged",1643,147034,4,4000},
  }
  for _,tt:=range tests {t.Run(tt.name,func(t *testing.T){
