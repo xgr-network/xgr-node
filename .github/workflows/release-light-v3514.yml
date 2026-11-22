@@ -57,7 +57,7 @@ jobs:
             'interchain/runtime/iln_scan_catchup_test.go' \
             'interchain/runtime/worker.go' | LC_ALL=C sort) \
             <(git diff --no-renames --name-only refs/tags/v3.5.13 HEAD | LC_ALL=C sort)
-          test "$(git diff --diff-filter=D --name-only refs/tags/v3.5.13 HEAD -- .github/workflows/release-light-v3513.yml)" = '.github/workflows/release-light-v3513.yml'
+          test "$(git diff --no-renames --diff-filter=D --name-only refs/tags/v3.5.13 HEAD -- .github/workflows/release-light-v3513.yml)" = '.github/workflows/release-light-v3513.yml'
           git diff --check refs/tags/v3.5.13 HEAD
       - uses: actions/setup-go@v5
         with:
