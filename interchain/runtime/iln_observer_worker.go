@@ -104,14 +104,15 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   remote,closeRemote=openObserverWindow(source)
   defer closeRemote()
  }
- budget:=directILNSharedRemoteWorkBudget
- if source.ChainID==1643{budget=directILNNativeWorkBudget}
+ // The first window stays at 256 blocks on every source. Only its
+ // verified finality head can authorize Base-only catch-up expansion.
+ maxWindows,budget:=directILNSharedObserverLimits(source.ChainID,0)
  var head uint64
- for attempt:=0;attempt<directILNMaxWindowsPerPoll&&budget>0;attempt++{
+ for attempt:=0;attempt<maxWindows&&budget>0;attempt++{
   window:=directILNWindow(0,source.ChainID==1643)
   if attempt>0&&head>cursor{window=directILNWindow(head-cursor,source.ChainID==1643)}
   // Keep the small first read. On an external source with a confirmed
-  // backlog, cover more blocks per eth_getLogs within the same four windows.
+  // backlog, cover more blocks per eth_getLogs within the same bounded poll.
   if attempt>0 && source.ChainID!=1643 && head>cursor && head-cursor>=directILNSharedRemoteMaxWindow {
    window=directILNSharedRemoteMaxWindow
   }
@@ -171,7 +172,15 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
    w.recordILNDirectScan(r.Route,head,cursors[r.Route.Name])
   }
   cursor=to
-  budget-=to-from+1
+  if attempt==0 {
+   // The first successful window supplies a canonical, finality-qualified
+   // head. Expand only Base when the remaining lag exceeds normal capacity.
+   // Account for the already consumed first window in the enlarged budget.
+   maxWindows,budget=directILNSharedObserverLimits(source.ChainID,head-cursor)
+   budget-=to-from+1
+  }else{
+   budget-=to-from+1
+  }
   if cursor>=head{break}
  }
  if err:=w.retryObserverSource(source,routes);err!=nil{return err}
