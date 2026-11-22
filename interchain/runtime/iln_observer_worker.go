@@ -104,8 +104,8 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   remote,closeRemote=openObserverWindow(source)
   defer closeRemote()
  }
- // The first window stays at 256 blocks on every source. Only its
- // verified finality head can authorize Base-only catch-up expansion.
+ // The first window stays at 256 blocks on every source. Its verified
+ // finality head authorizes catch-up only while an external source is behind.
  maxWindows,budget:=directILNSharedObserverLimits(source.ChainID,0)
  var head uint64
  for attempt:=0;attempt<maxWindows&&budget>0;attempt++{
@@ -174,7 +174,7 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   cursor=to
   if attempt==0 {
    // The first successful window supplies a canonical, finality-qualified
-   // head. Expand only Base when the remaining lag exceeds normal capacity.
+   // head. Expand any external source while lag remains, including short lags.
    // Account for the already consumed first window in the enlarged budget.
    maxWindows,budget=directILNSharedObserverLimits(source.ChainID,head-cursor)
    budget-=to-from+1
