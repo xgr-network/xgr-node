@@ -458,7 +458,7 @@ func (w *Worker) tick() {
 		w.mu.Unlock()
 		ready:=make([]*evmInterchain.CheckpointRoute,0,len(activeRoutes))
 		for _,route:=range activeRoutes{
-			if !fullScan&&!w.ilnRouteHasExternalObserverBacklog(route){continue}
+			if !fullScan&&!w.ilnSourceHasExternalObserverBacklog(route.SourceNetwork){continue}
 			if w.directILNScanMayRun(route,now){ready=append(ready,route)}
 		}
 		if len(ready)>0 {
