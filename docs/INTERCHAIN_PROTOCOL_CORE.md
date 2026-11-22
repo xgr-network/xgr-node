@@ -91,8 +91,17 @@ epochs/domains/registries, candidate consent and eligibility, explicit fee
 approval, completed archives and durable replacement after rotation. Existing
 BLS golden payload and ABI tests remain in place.
 
-This change does not activate XDC. `XDCMainnetCandidate()` remains unbound and
-outside the five active policies. Deployment receipts, three explicit genesis
-identities and their proofs, accepted XDC finality evidence, Admin readiness,
-and the release review remain prerequisites for a separate activation. No
-node release, deployment or transfer route is created by this refactor.
+XDC Mainnet's V5 ValidatorRegistry and SourceRegistry are receipt-pinned in
+`XDCMainnetCandidate()`, including SourceRegistry creation block 109627114.
+The candidate remains outside `compiledChains` pending a reviewed activation
+release. The configured HTTPS RPCs passed finalized-header, canonical receipt,
+historical log range and block-pinned source fee checks. The XDC-published RPC
+URLs are grouped conservatively as one operator for witness selection, with
+Ankr as the second operator. These checks use deployment transactions. A
+route-level integration test needs a real source Gateway receipt, matching
+destination registry state and a completed ECDSA quorum.
+
+The shared worker retains the source transaction lookup hints, source evidence
+retry budget, receipt validation, membership poll budget and adaptive scan
+catch-up from XGR3.0. The configured adapter selects cryptographic encoding,
+key validation and signing for each destination.

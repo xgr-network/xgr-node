@@ -28,6 +28,8 @@ type ilnDiscoveredRoute struct {
 func (w *Worker) registerILNRPCRoute(route *evmInterchain.CheckpointRoute) error {
  if route==nil {return fmt.Errorf("missing ILN RPC route")}
  if err:=route.Validate();err!=nil{return err}
+ w.ilnRouteFilesMu.Lock()
+ defer w.ilnRouteFilesMu.Unlock()
  dir:=filepath.Join(w.ilnDir(),"registered-routes")
  if err:=os.MkdirAll(dir,0o770);err!=nil{return err}
  path:=filepath.Join(dir,route.Name+".route")
@@ -41,7 +43,6 @@ func (w *Worker) registerILNRPCRoute(route *evmInterchain.CheckpointRoute) error
 const ilnRouteDiscoveryScanChunk uint64 = 1000
 
 var getConfirmedILNRouteAdds = evmInterchain.GetConfirmedILNRouteAdds
-var getILNRegistryActivationBlock = evmInterchain.GetILNRegistryActivationBlock
 
 // A new source registry is a new contract generation. Never read a former
 // registry's routes when the chain name remains unchanged after a hard reset.
@@ -94,6 +95,8 @@ func (w *Worker) rememberILNRouteAdded(source *evmInterchain.Destination,event e
  if event.RouteID==types.ZeroHash||event.Gateway==types.ZeroAddress||event.DestinationDomain==0{return fmt.Errorf("invalid ILN discovery event")}
  record:=ilnDiscoveredRoute{SourceNetwork:source.Name,SourceDomain:source.Domain,DestinationDomain:event.DestinationDomain,RouteID:event.RouteID.String(),Gateway:event.Gateway.String()}
  raw,err:=json.Marshal(record);if err!=nil{return err}
+ w.ilnRouteFilesMu.Lock()
+ defer w.ilnRouteFilesMu.Unlock()
  dir:=w.ilnRouteCatalogDir(source)
  if err:=os.MkdirAll(dir,0o770);err!=nil{return err}
  path:=filepath.Join(dir,fmt.Sprintf("%d-%s.json",event.DestinationDomain,strings.TrimPrefix(event.RouteID.String(),"0x")))
@@ -115,22 +118,38 @@ func (w *Worker) attachILNDiscoveredRoute(source *evmInterchain.Destination,reco
  if err!=nil||len(decoded)!=32{return fmt.Errorf("invalid stored ILN route id")}
  routeID:=types.BytesToHash(decoded)
  if routeID==types.ZeroHash{return fmt.Errorf("stored ILN route ID is zero")}
- var destination *evmInterchain.Destination
- for _,candidate:=range w.destinations{
-  if candidate!=nil&&candidate.Domain==record.DestinationDomain {destination=candidate;break}
- }
+ destination := w.ilnDestinationByDomain(record.DestinationDomain)
  if destination==nil{return nil} // Persisted for a later chain onboarding.
  snapshot,err:=w.sourceILNRouteAtBlock(source,destination.Domain,routeID,confirmedBlock)
  if err!=nil{return fmt.Errorf("validate discovered ILN route %s: %w",record.RouteID,err)}
  if !strings.EqualFold(snapshot.Route.Gateway.String(),record.Gateway) {
   return fmt.Errorf("ILN discovered route gateway mismatch for %s",record.RouteID)
  }
- routeName:=fmt.Sprintf("iln_%d_%d_%s",source.Domain,destination.Domain,strings.TrimPrefix(record.RouteID,"0x"))
- identity:=source.Name+"|"+destination.Name+"|"+routeID.String()
+ return w.attachVerifiedILNDiscoveredRoute(source, destination, routeID)
+}
+
+func (w *Worker) ilnDestinationByDomain(domain uint32) *evmInterchain.Destination {
+ for _, candidate := range w.destinations {
+  if candidate != nil && candidate.Domain == domain {
+   return candidate
+  }
+ }
+ return nil
+}
+
+func (w *Worker) attachVerifiedILNDiscoveredRoute(source, destination *evmInterchain.Destination, routeID types.Hash) error {
+ if destination == nil {
+  return nil // Persisted for a later chain onboarding.
+ }
+ routeName := fmt.Sprintf("iln_%d_%d_%s", source.Domain, destination.Domain, strings.TrimPrefix(routeID.String(), "0x"))
  w.mu.Lock()
  var matching *evmInterchain.CheckpointRoute
- for _,existing:=range w.routes {
-  if existing!=nil&&existing.SourceNetwork+"|"+existing.Destination+"|"+existing.RouteID.String()==identity{matching=existing;break}
+ for _, existing := range w.routes {
+  if existing != nil && existing.SourceNetwork == source.Name &&
+   existing.Destination == destination.Name && existing.RouteID == routeID {
+   matching = existing
+   break
+  }
  }
  if matching==nil {
   matching=&evmInterchain.CheckpointRoute{Name:routeName,SourceNetwork:source.Name,Destination:destination.Name,RouteID:routeID}
@@ -283,8 +302,24 @@ func (w *Worker) discoverILNRoutes() {
 }
 
 func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) error {
- head,err:=w.sourceILNHead(source)
+ var readHead func()(uint64,error)
+ var readAdds func(uint64,uint64)([]evmInterchain.ILNRouteAdded,error)
+ if source.ChainID==1643 {
+  readHead=func()(uint64,error){return w.sourceILNHead(source)}
+  readAdds=func(from,to uint64)([]evmInterchain.ILNRouteAdded,error){return w.sourceILNRouteAdds(source,from,to)}
+ }else{
+  scan:=evmInterchain.NewILNScanSession(source)
+  defer scan.Close()
+  readHead,readAdds=scan.Head,scan.RouteAdds
+ }
+ head,err:=readHead()
  if err!=nil{return err}
+ return w.discoverILNRoutesAtHead(source,head,readAdds)
+}
+
+func (w *Worker) discoverILNRoutesAtHead(source *evmInterchain.Destination,head uint64,
+ readAdds func(uint64,uint64)([]evmInterchain.ILNRouteAdded,error),
+) error {
  if err:=w.ensureILNRouteCatalogVersion(source);err!=nil{return err}
  if err:=w.ensureILNRPCDiscoveryCursorVersion(source);err!=nil{return err}
  if err:=w.restoreILNDiscoveredRoutes(source,head);err!=nil{return err}
@@ -294,9 +329,8 @@ func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) 
  if !exists {
   if source.ILNRegistryActivationBlock!=0 {
    // Explicit operator configuration is an RPC-native deployment height.
-   activation,err:=w.sourceILNActivation(source)
-   if err!=nil{return err}
-   if activation==0||activation>head{return fmt.Errorf("invalid RPC-native ILN registry deployment block")}
+   activation:=source.ILNRegistryActivationBlock
+   if activation>head{return fmt.Errorf("invalid RPC-native ILN registry deployment block")}
    cursor=activation-1
   } else {
    cursor=ilnRecentDiscoveryCursor(head)
@@ -309,7 +343,7 @@ func (w *Worker) discoverILNRoutesFromSource(source *evmInterchain.Destination) 
  if cursor==head{return nil}
  from,to:=cursor+1,head
  if to-from+1>ilnRouteDiscoveryScanChunk{to=from+ilnRouteDiscoveryScanChunk-1}
- events,err:=w.sourceILNRouteAdds(source,from,to)
+ events,err:=readAdds(from,to)
  if err!=nil{return err}
  for _,event:=range events {
   // Durable before the discovery cursor advances. Unknown destinations are

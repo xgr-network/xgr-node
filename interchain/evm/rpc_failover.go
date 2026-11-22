@@ -18,6 +18,8 @@ const primaryRecoveryProbes = 3
 const rpcRateLimitCooldown = 30*time.Second
 const rpcTransportCooldown = 5*time.Second
 const rpcMaximumCooldown = 3*time.Minute
+const rpcQuotaCooldown = 30*time.Minute
+const rpcForbiddenCooldown = 10*time.Minute
 
 type rpcHealth struct {
     mu sync.Mutex
@@ -44,6 +46,8 @@ type rpcProviderHealth struct {
     // a provider may serve headers while continuously rejecting eth_getLogs.
     readConsecutive uint32
     retryAfter time.Time
+    observedAt time.Time
+    observation string
 }
 var rpcProviderHealthByURL sync.Map
 
@@ -58,6 +62,8 @@ type RPCProviderStats struct {
     RateLimited uint64
     ReadFailures uint64
     CooldownUntilUnix int64
+    ObservedUnix int64
+    Observation string
 }
 
 // InterchainRPCProviderStats exposes provider selection / 429 diagnosis without
@@ -69,7 +75,8 @@ func InterchainRPCProviderStats() []RPCProviderStats {
         p.mu.Lock()
         item:=RPCProviderStats{ChainID:p.chainID,URL:p.url,
             DialAttempts:p.attempted,Ready:p.ready,Failures:p.failed,
-            RateLimited:p.rateLimited,ReadFailures:p.readFailures}
+            RateLimited:p.rateLimited,ReadFailures:p.readFailures,Observation:p.observation}
+        if !p.observedAt.IsZero(){item.ObservedUnix=p.observedAt.Unix()}
         if time.Now().Before(p.retryAfter){item.CooldownUntilUnix=p.retryAfter.Unix()}
         p.mu.Unlock()
         out=append(out,item)
@@ -110,7 +117,7 @@ func rpcProviderState(d *Destination,url string)*rpcProviderHealth{
 func rpcRateLimited(err error)bool{
     if err==nil{return false}
     s:=strings.ToLower(err.Error())
-    for _,v:=range []string{"429","too many requests","rate limit","rate-limit","quota exceeded"}{
+    for _,v:=range []string{"429","too many requests","rate limit","rate-limit","quota exceeded","usage limit","current plan","resource exhausted","daily limit","monthly limit"}{
         if strings.Contains(s,v){return true}
     }
     return false
@@ -141,6 +148,9 @@ func rpcRecordFailure(d *Destination,url string,err error,read bool){
     p.mu.Lock()
     defer p.mu.Unlock()
     p.failed++
+    p.observedAt=time.Now()
+    p.observation="unavailable"
+    if rpcRateLimited(err){p.observation="rate-limited"}
     var streak uint32
     if read {
         p.readFailures++
@@ -153,10 +163,32 @@ func rpcRecordFailure(d *Destination,url string,err error,read bool){
     if rpcRateLimited(err){p.rateLimited++}
     delay:=rpcTransportCooldown
     if rpcRateLimited(err){delay=rpcRateLimitCooldown}
+    // Access-denied and plan-exhausted endpoints should not be re-probed
+    // every few seconds. A finalized head is not proof of receipt access.
+    message:=strings.ToLower(err.Error())
+    if strings.Contains(message,"usage limit")||
+       strings.Contains(message,"current plan")||
+       strings.Contains(message,"quota exceeded")||
+       strings.Contains(message,"daily limit")||
+       strings.Contains(message,"monthly limit"){
+        delay=rpcQuotaCooldown
+    }else if strings.Contains(message,"403")||strings.Contains(message,"forbidden"){
+        delay=rpcForbiddenCooldown
+    }
     // Retry state is per provider and per observed RPC read. A successful
     // safe-head preflight must not erase repeated eth_getLogs 429 failures.
     for n:=uint32(1);n<streak;n++{delay*=2}
-    if delay>rpcMaximumCooldown{delay=rpcMaximumCooldown}
+    cap:=rpcMaximumCooldown
+    if strings.Contains(message,"usage limit")||
+       strings.Contains(message,"current plan")||
+       strings.Contains(message,"quota exceeded")||
+       strings.Contains(message,"daily limit")||
+       strings.Contains(message,"monthly limit"){
+        cap=rpcQuotaCooldown
+    }else if strings.Contains(message,"403")||strings.Contains(message,"forbidden"){
+        cap=rpcForbiddenCooldown
+    }
+    if delay>cap{delay=cap}
     next:=time.Now().Add(delay)
     if next.After(p.retryAfter){p.retryAfter=next}
 }
@@ -164,6 +196,10 @@ func rpcRecordReady(d *Destination,url string){
     p:=rpcProviderState(d,url)
     p.mu.Lock()
     p.ready++
+    if p.readConsecutive==0 && !time.Now().Before(p.retryAfter){
+        p.observedAt=time.Now()
+        p.observation="ok"
+    }
     p.consecutive=0
     // The validated safe head is NOT evidence that the provider can serve
     // archive logs. Do not reset readConsecutive here.
@@ -177,6 +213,10 @@ func rpcRecordReadSuccess(d *Destination,url string){
     p:=rpcProviderState(d,url)
     p.mu.Lock()
     p.readConsecutive=0
+    if !time.Now().Before(p.retryAfter){
+        p.observedAt=time.Now()
+        p.observation="ok"
+    }
     if !time.Now().Before(p.retryAfter){p.retryAfter=time.Time{}}
     p.mu.Unlock()
 }

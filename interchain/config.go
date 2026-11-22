@@ -39,6 +39,11 @@ func hasDeployedRegistry(address string) bool {
 // Only the receipt-pinned Registry in this policy and its associated ISM may be
 // active. Old Registry deployments must not be configured concurrently.
 // Leave membership wire encoding unchanged; reassess if policy changes.
+type ReceiptWitnessRPC struct {
+ URL string
+ Operator string
+}
+
 type ChainPolicy struct {
  Name string
  ChainID uint64
@@ -52,6 +57,9 @@ type ChainPolicy struct {
  // IndependentOperatorIDs aligns with RPCURLs. Multiple URLs operated by the
  // same entity count as ONE witness (transport redundancy only).
  IndependentOperatorIDs []string
+ // ReceiptWitnessRPCs are preferred only when a source transaction hash is
+ // known. Transport discovery and log scans use RPCURLs.
+ ReceiptWitnessRPCs []ReceiptWitnessRPC
  Registry string
  SourceRegistry string
  SourceActivationBlock uint64
@@ -94,6 +102,12 @@ var compiledChains = []ChainPolicy{
   // independent upstream node infrastructure.
   RPCURLs:[]string{"https://bsc-rpc.publicnode.com","https://public.1rpc.io/bnb","https://bsc.drpc.org","https://bnb.api.onfinality.io/public"},
   IndependentOperatorIDs:[]string{"publicnode","onerpc","drpc","onfinality"},
+  // Both passed the complete receipt-pinned source witness for block 134450134.
+  // The official endpoint does not support eth_getLogs.
+  ReceiptWitnessRPCs:[]ReceiptWitnessRPC{
+   {URL:"https://bsc-dataseed.bnbchain.org",Operator:"bnbchain-official"},
+   {URL:"https://bsc.rpc.blxrbdn.com",Operator:"bloxroute"},
+  },
   Registry:"0x70f5752326735b31641f21d174ba035e904db93c",
   SourceRegistry:"0x14d5d33a65a39f96665ed631b04fecf357bcb576",
   SourceActivationBlock:130525341},
@@ -108,23 +122,28 @@ var compiledChains = []ChainPolicy{
 }
 
 func validatePolicy(p ChainPolicy) error {
- if p.Name==""||p.ChainID==0||p.Domain==0||uint64(p.Domain)!=p.ChainID||
-  (p.SignatureScheme!="bls" || (p.VerifierFormat!="compressed"&&p.VerifierFormat!="eip2537")) {
+ bls := p.SignatureScheme=="bls"&&(p.VerifierFormat=="compressed"||p.VerifierFormat=="eip2537")
+ ecdsa := p.ChainID==50&&p.SignatureScheme=="ecdsa"&&p.VerifierFormat=="ecdsa-secp256k1"
+ if p.Name==""||p.ChainID==0||p.Domain==0||uint64(p.Domain)!=p.ChainID||(!bls&&!ecdsa) {
   return fmt.Errorf("invalid compiled XITA chain identity: %q",p.Name)
  }
  // XGR's native verified data source deliberately has no RPC addresses.
  // All external chains retain 3+ endpoints and two independent operators.
  if p.ChainID==1643 {
-  if len(p.RPCURLs)!=0||len(p.IndependentOperatorIDs)!=0 {
+  if len(p.RPCURLs)!=0||len(p.IndependentOperatorIDs)!=0||len(p.ReceiptWitnessRPCs)!=0 {
    return fmt.Errorf("XGR native IBFT mode must not contain external RPC endpoints")
   }
  }else if len(p.RPCURLs)<3||len(p.IndependentOperatorIDs)!=len(p.RPCURLs){
   return fmt.Errorf("invalid compiled XITA chain identity: %q",p.Name)
  }
- seen:=make(map[string]bool,len(p.RPCURLs))
+ seen:=make(map[string]bool,len(p.RPCURLs)+len(p.ReceiptWitnessRPCs))
  operators:=make(map[string]struct{})
+ all:=append([]ReceiptWitnessRPC(nil),p.ReceiptWitnessRPCs...)
  for i,endpoint:=range p.RPCURLs{
-  operator:=p.IndependentOperatorIDs[i]
+  all=append(all,ReceiptWitnessRPC{URL:endpoint,Operator:p.IndependentOperatorIDs[i]})
+ }
+ for _,rpc:=range all{
+  endpoint,operator:=rpc.URL,rpc.Operator
   words:=strings.Fields(operator)
   if operator==""||len(words)!=1||words[0]!=operator||strings.ContainsAny(operator,"/"){
    return fmt.Errorf("invalid Interchain RPC operator identity on %s",p.Name)
@@ -158,6 +177,10 @@ func validatePolicy(p ChainPolicy) error {
  case 56:
   if p.Name!="bsc"||p.Finality!=FinalityFinalized||p.VerifierFormat!="eip2537" {
    return fmt.Errorf("inconsistent BSC finality policy")
+  }
+ case 50:
+  if p.Name!="xdc"||p.Finality!=FinalityFinalized||!ecdsa {
+   return fmt.Errorf("inconsistent XDC Mainnet finality or authorization policy")
   }
  case 10:
   if p.Name!="optimism"||p.Finality!=FinalitySafe||p.VerifierFormat!="eip2537" {

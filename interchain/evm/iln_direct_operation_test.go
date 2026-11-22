@@ -3,6 +3,7 @@ package evm
 import (
     "encoding/binary"
     "math/big"
+    "strings"
     "testing"
 
     "github.com/stretchr/testify/require"
@@ -163,4 +164,47 @@ func TestDirectReceiptRejectsSameMessageWithConflictingDispatchTopics(t *testing
     receipt.Logs=[]*ethgo.Log{&bad,receipt.Logs[1]}
     _,err:=VerifyDirectILNReceipt(op,receipt,8453,gateway,mailbox,router,destination)
     require.Error(t,err)
+}
+
+func TestPinnedSourceReceiptChecksTxBlockRouteAndMessageAcrossEVMChains(t *testing.T){
+ for _,chain:=range []uint64{56,8453,42161,10}{
+  op,receipt,gateway,_,_,_:=directSourceReceiptFixture()
+  // Proof decoding is chain-generic: the native finality rule is enforced
+  // before this helper, not silently selected by caller-supplied data.
+  got,err:=findPinnedDirectILNOperation(receipt,gateway,op.RouteID,op.MessageID,
+      op.DestinationDomain,op.TransactionHash,op.BlockNumber)
+  require.NoError(t,err,"source chain %d",chain)
+  require.Equal(t,op.TransactionHash,got.TransactionHash)
+  require.Equal(t,op.LogIndex,got.LogIndex)
+  _,err=findPinnedDirectILNOperation(receipt,gateway,op.RouteID,op.MessageID,
+      op.DestinationDomain,types.StringToHash("0x"+strings.Repeat("d",64)),op.BlockNumber)
+  require.Error(t,err,"wrong source transaction chain %d",chain)
+  _,err=findPinnedDirectILNOperation(receipt,gateway,op.RouteID,op.MessageID,
+      op.DestinationDomain,op.TransactionHash,op.BlockNumber+1)
+  require.Error(t,err,"wrong source block chain %d",chain)
+  _,err=findPinnedDirectILNOperation(receipt,gateway,types.StringToHash("0x"+strings.Repeat("c",64)),
+      op.MessageID,op.DestinationDomain,op.TransactionHash,op.BlockNumber)
+  require.Error(t,err,"wrong route chain %d",chain)
+  _,err=findPinnedDirectILNOperation(receipt,gateway,op.RouteID,types.StringToHash("0x"+strings.Repeat("c",64)),
+      op.DestinationDomain,op.TransactionHash,op.BlockNumber)
+  require.Error(t,err,"wrong message chain %d",chain)
+  _,err=findPinnedDirectILNOperation(receipt,gateway,op.RouteID,op.MessageID,
+      op.DestinationDomain+1,op.TransactionHash,op.BlockNumber)
+  require.Error(t,err,"wrong destination chain %d",chain)
+ }
+}
+
+func TestPinnedSourceReceiptRejectsDuplicateOrForgedGatewayEvent(t *testing.T){
+ op,receipt,gateway,_,_,_:=directSourceReceiptFixture()
+ receipt.Logs=append(receipt.Logs,receipt.Logs[1])
+ _,err:=findPinnedDirectILNOperation(receipt,gateway,op.RouteID,op.MessageID,
+     op.DestinationDomain,op.TransactionHash,op.BlockNumber)
+ require.ErrorContains(t,err,"duplicate")
+ op,receipt,gateway,_,_,_=directSourceReceiptFixture()
+ forged:=*receipt.Logs[1]
+ forged.TransactionHash=ethgo.Hash(types.StringToHash("0x"+strings.Repeat("e",64)))
+ receipt.Logs[1]=&forged
+ _,err=findPinnedDirectILNOperation(receipt,gateway,op.RouteID,op.MessageID,
+     op.DestinationDomain,op.TransactionHash,op.BlockNumber)
+ require.ErrorContains(t,err,"identity mismatch")
 }

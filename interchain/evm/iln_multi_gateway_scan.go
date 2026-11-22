@@ -3,6 +3,7 @@ package evm
 import (
  "fmt"
  "sort"
+ "strings"
 
  "github.com/umbracle/ethgo"
  
@@ -105,37 +106,88 @@ func confirmedILNMultiGatewayLogsOnClient(
 func ScanILNMultiGatewayWindow(
  source *Destination,gateways []types.Address,cursor,window uint64,
 )(head,from,to uint64,events []ILNObservedGatewayOperation,err error){
- if source==nil||source.ChainID==1643||window==0||window>maxILNLogRange{
+ scan := NewILNScanSession(source)
+ defer scan.Close()
+ return scan.GatewayWindow(gateways,cursor,window)
+}
+
+// ILNScanSession retains one verified provider and head for a bounded scan.
+// It only serves discovery. Per-message independent witnesses use their own clients.
+type ILNScanSession struct {
+ source *Destination
+ client ilnRPCClient
+ head uint64
+ gatewayWindowLimit uint64
+}
+
+func NewILNScanSession(source *Destination) *ILNScanSession {
+ return &ILNScanSession{source:source}
+}
+
+func (s *ILNScanSession) Close() {
+ if s.client!=nil {
+  s.client.Close()
+  s.client=nil
+  s.gatewayWindowLimit=0
+ }
+}
+
+func (s *ILNScanSession) Head()(uint64,error){
+ if s.source==nil||s.source.ChainID==1643{return 0,fmt.Errorf("external EVM source required")}
+ if bound,ok:=s.client.(*boundedILNRPC);ok && rpcCooldown(s.source,bound.endpoint)!=nil{s.Close()}
+ if s.client==nil {
+  client,head,err:=newVerifiedRPCClientWithHead(s.source)
+  if err!=nil{return 0,err}
+  s.client,s.head=client,head
+ }
+ return s.head,nil
+}
+
+func (s *ILNScanSession) GatewayWindow(gateways []types.Address,cursor,window uint64)(
+ head,from,to uint64,events []ILNObservedGatewayOperation,err error,
+){
+ if s.source==nil||window==0||window>maxILNLogRange{
   return 0,0,0,nil,fmt.Errorf("invalid external observer window")
  }
- // A verified safe head does not imply the same provider permits historical
- // eth_getLogs. Retry the SAME bounded window against another verified
- // provider on transient transport/429 failures, without advancing cursors.
- // Cooldowns prevent repeating the same failed URL during this operation.
- attempts:=len(rpcEndpoints(source))
- if attempts<1{return 0,0,0,nil,fmt.Errorf("missing observer RPC endpoints")}
+ attempts:=len(rpcEndpoints(s.source))
+ if attempts==0{return 0,0,0,nil,fmt.Errorf("missing observer RPC endpoints")}
  var last error
  for i:=0;i<attempts;i++{
-  client,h,e:=newVerifiedRPCClientWithHead(source)
-  if e!=nil{return 0,0,0,nil,e}
-  head=h
-  if cursor>head{client.Close();return head,0,0,nil,fmt.Errorf("confirmed source head behind observer cursor")}
-  if cursor==head{
-   recordInterchainRPCReadForClient(source,client,nil)
-   client.Close()
-   return head,0,0,nil,nil
-  }
+  head,err=s.Head()
+  if err!=nil{return 0,0,0,nil,err}
+  if cursor>head{return head,0,0,nil,fmt.Errorf("confirmed source head behind observer cursor")}
+  if cursor==head{return head,0,0,nil,nil}
   from=cursor+1
-  to=cursor+window
-  if to<cursor||to>head{to=head}
-  events,e=confirmedILNMultiGatewayLogsOnClient(client,gateways,from,to,head)
-  recordInterchainRPCReadForClient(source,client,e)
-  client.Close()
-  if e==nil{return head,from,to,events,nil}
-  last=e
-  if !rpcTransientFailure(e){return head,from,to,nil,e}
+  span:=window
+  if s.gatewayWindowLimit>0&&span>s.gatewayWindowLimit {
+   span=s.gatewayWindowLimit
+  }
+  to=cursor+min(span,head-cursor)
+  events,err=confirmedILNMultiGatewayLogsOnClient(s.client,gateways,from,to,head)
+  // Keep the last known scan size for providers that reject wider queries.
+  // Retry only a range/result limit, and never bypass a transport cooldown.
+  const fallbackWindow = 512
+  if to-cursor>fallbackWindow&&gatewayLogRangeRejected(err) {
+   s.gatewayWindowLimit=fallbackWindow
+   to=cursor+fallbackWindow
+   events,err=confirmedILNMultiGatewayLogsOnClient(s.client,gateways,from,to,head)
+  }
+  recordInterchainRPCReadForClient(s.source,s.client,err)
+  if err==nil{return head,from,to,events,nil}
+  s.Close()
+  if !rpcTransientFailure(err){return head,from,to,nil,err}
+  last=err
  }
  return head,from,to,nil,fmt.Errorf("all qualified source providers rejected Gateway log window: %w",last)
+}
+
+func gatewayLogRangeRejected(err error) bool {
+ if err==nil||rpcTransientFailure(err){return false}
+ message:=strings.ToLower(err.Error())
+ for _,limit:=range []string{"block range","too many results","query returned more than","response size exceeded"} {
+  if strings.Contains(message,limit){return true}
+ }
+ return false
 }
 
 // ScanNativeXGRMultiGatewayWindow walks each locally committed IBFT

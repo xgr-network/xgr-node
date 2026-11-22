@@ -3,6 +3,7 @@ package runtime
 import (
     "fmt"
     "math/big"
+    "sync/atomic"
     "testing"
     "time"
 
@@ -30,7 +31,7 @@ func TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs(t *testing.T)
         require.NoError(t,err)
         validators=append(validators,server)
     }
-    t.Cleanup(func(){for _,v:=range validators{require.NoError(t,v.Close())}})
+    defer func(){for _,v:=range validators{require.NoError(t,v.Close())}}()
     for _,err:=range network.MeshJoin(validators...){require.NoError(t,err)}
 
     registry:=types.StringToAddress("0x5555555555555555555555555555555555555555")
@@ -51,18 +52,30 @@ func TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs(t *testing.T)
         DestinationRouter:types.StringToAddress("0x6666666666666666666666666666666666666666"),
         ValidatorFeeWei:big.NewInt(1000),Enabled:true,
     }
-    oldHead,oldRoute,oldRouteAdds:=getConfirmedILNHead,getILNRouteAtBlock,getConfirmedILNRouteAdds
-    defer func(){
-        getConfirmedILNHead=oldHead
-        getILNRouteAtBlock=oldRoute
-        getConfirmedILNRouteAdds=oldRouteAdds
-    }()
-    getConfirmedILNHead=func(*evm.Destination)(uint64,error){return 128,nil}
-    getILNRouteAtBlock=func(_ *evm.Destination,domain uint32,id types.Hash,at uint64)(*evm.ILNRouteSnapshot,error){
-        if at!=128||domain!=1643||id!=routeID{return nil,fmt.Errorf("unverified canonical route")}
-        return &evm.ILNRouteSnapshot{
-            Registry:registry,Route:canonical,BlockNumber:at,
-        },nil
+    oldHead, oldRoute, oldRouteAtBlock := getConfirmedILNHead, getConfirmedILNRoute, getILNRouteAtBlock
+    oldRouteAdds := getConfirmedILNRouteAdds
+    t.Cleanup(func() {
+        getConfirmedILNHead, getConfirmedILNRoute, getILNRouteAtBlock = oldHead, oldRoute, oldRouteAtBlock
+        getConfirmedILNRouteAdds = oldRouteAdds
+    })
+    var confirmedReads, separateHeadReads, exactReads atomic.Int64
+    getConfirmedILNHead = func(*evm.Destination) (uint64, error) {
+        separateHeadReads.Add(1)
+        return 128, nil
+    }
+    getConfirmedILNRoute = func(_ *evm.Destination, domain uint32, id types.Hash) (*evm.ILNRouteSnapshot, error) {
+        confirmedReads.Add(1)
+        if domain != 1643 || id != routeID {
+            return nil, fmt.Errorf("unverified canonical route")
+        }
+        return &evm.ILNRouteSnapshot{Registry: registry, Route: canonical, BlockNumber: 128}, nil
+    }
+    getILNRouteAtBlock = func(_ *evm.Destination, domain uint32, id types.Hash, at uint64) (*evm.ILNRouteSnapshot, error) {
+        exactReads.Add(1)
+        if at != 128 || domain != 1643 || id != routeID {
+            return nil, fmt.Errorf("unverified canonical route")
+        }
+        return &evm.ILNRouteSnapshot{Registry: registry, Route: canonical, BlockNumber: at}, nil
     }
     // This test disallows genesis RouteAdded event scans completely.
     getConfirmedILNRouteAdds=func(*evm.Destination,uint64,uint64)([]evm.ILNRouteAdded,error){
@@ -122,6 +135,30 @@ func TestILNRoutePeerDiscoveryThreeValidatorsWithoutHistoricalLogs(t *testing.T)
         require.NoError(t,restarted.restoreILNDiscoveredRoutes(src,128))
         require.Len(t,restarted.routes,1)
     }
+    require.GreaterOrEqual(t, confirmedReads.Load(), int64(3), "publisher and both receivers verify the source")
+    require.Zero(t, separateHeadReads.Load(), "gossip must reuse the verified client's head")
+    require.Equal(t, int64(2), exactReads.Load(), "only the two cold restores read the route again")
+    // A second announcement and the receiver's own publication share the
+    // already confirmed route, but an expired observation is read again.
+    repeated := ilnRouteNoticeWire{SourceNetwork: "base", SourceDomain: 8453,
+        DestinationDomain: 1643, RouteID: routeID, Gateway: gateway}
+    receiver := workers[1]
+    publisher := validators[0].AddrInfo().ID
+    reads := confirmedReads.Load()
+    _, err := receiver.routeForILNNotice(src, 1643, routeID)
+    require.NoError(t, err)
+    time.Sleep(300*time.Millisecond)
+    require.NoError(t, receiver.acceptVerifiedILNRouteNotice(publisher, repeated))
+    require.Equal(t, reads, confirmedReads.Load(), "repeated discovery reads must be coalesced")
+    receiver.mu.Lock()
+    for key, entry := range receiver.ilnRouteNoticeCache {
+        entry.checkedAt = time.Now().Add(-ilnRouteNoticeFreshness)
+        receiver.ilnRouteNoticeCache[key] = entry
+    }
+    receiver.mu.Unlock()
+    _, err = receiver.routeForILNNotice(src, 1643, routeID)
+    require.NoError(t, err)
+    require.Equal(t, reads+1, confirmedReads.Load())
     // A malicious peer cannot fabricate a route or impersonate another
     // gateway even with a valid authenticated libp2p sender identity.
     time.Sleep(300*time.Millisecond)

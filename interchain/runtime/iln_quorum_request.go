@@ -8,6 +8,7 @@ import (
  "strings"
  "encoding/hex"
  "time"
+ "errors"
 
  evmInterchain "github.com/xgr-network/xgr-node/interchain/evm"
  "github.com/xgr-network/xgr-node/types"
@@ -17,6 +18,7 @@ type requestedILNQuorum struct {
  Route string `json:"route"`
  MessageID string `json:"messageId"`
  SourceBlockNumber uint64 `json:"sourceBlockNumber"`
+ SourceTxHash string `json:"sourceTxHash,omitempty"`
  RouteID string `json:"routeId,omitempty"`
  SourceDomain uint32 `json:"sourceDomain,omitempty"`
  DestinationDomain uint32 `json:"destinationDomain,omitempty"`
@@ -109,8 +111,9 @@ func (w *Worker) trackILNQuorumRetry(route,message string,block uint64,err error
  }
 }
 const maxILNRequestPerTick = 8
-// Public hints contain no funds or custody evidence. After expiry the client
-// can safely request a replacement for the ORIGINAL message.
+
+// Only unknown-route discovery hints expire. An admitted route keeps its
+// queue entry across evidence backoff and temporary validation failures.
 const maxILNQuorumHintAge = 15 * time.Minute
 
 // processRequestedILNQuorums uses the EXACT same canonical operation signing
@@ -132,11 +135,6 @@ func (w *Worker) processRequestedILNQuorums() {
    if processed>=maxILNRequestPerTick {break}
    if entry.IsDir() || !strings.HasSuffix(entry.Name(),".json"){continue}
    path:=filepath.Join(dir,entry.Name())
-   info,statErr:=entry.Info()
-   if statErr==nil && time.Since(info.ModTime())>maxILNQuorumHintAge {
-    _=os.Remove(path)
-    continue
-   }
    raw,err:=os.ReadFile(path)
    if err!=nil{continue}
    if len(raw)>2048{ _=os.Remove(path);continue }
@@ -151,8 +149,23 @@ func (w *Worker) processRequestedILNQuorums() {
    invalid:=false
    for _,ch:=range messageID[2:] {if (ch<'0'||ch>'9')&&(ch<'a'||ch>'f'){invalid=true;break}}
    if invalid { _=os.Remove(path);continue }
-   processed++
-   if err:=w.processRequestedILNQuorum(route,types.StringToHash(messageID),request.SourceBlockNumber);err!=nil {
+   // A hint is never an authorization, but malformed hashes must fail
+   // before reaching expensive source RPC reads or cross-validator gossip.
+   if request.SourceTxHash!="" {
+    if len(request.SourceTxHash)!=66||!strings.HasPrefix(request.SourceTxHash,"0x")||
+       !observerHexLower(request.SourceTxHash[2:])||
+       request.SourceTxHash=="0x"+strings.Repeat("0",64){
+      w.logger.Warn("invalid ILN source transaction hint","route",routeName)
+      _=os.Remove(path)
+      continue
+    }
+   }
+   err=w.processRequestedILNQuorumWithTx(route,types.StringToHash(messageID),request.SourceBlockNumber,request.SourceTxHash)
+   if err!=nil {
+    // A deferred message is intentionally still pending; preserve the
+    // previous real proof failure and do not replace it with a synthetic one.
+    if errors.Is(err,errILNEvidenceDeferred){continue}
+    processed++
     w.logger.Debug("ILN quorum request pending validation", "route",routeName,"message",messageID,"err",err)
     w.trackILNQuorumRetry(routeName,messageID,request.SourceBlockNumber,err)
     msg:=strings.ToLower(err.Error())
@@ -165,6 +178,7 @@ func (w *Worker) processRequestedILNQuorums() {
     }
     continue // temporary failures remain retryable.
    }
+   processed++
    // Propagate only after full local authorization. Do not discard a hint
    // until gossip accepts it; every peer re-verifies all source evidence.
    gossip:=request
@@ -193,6 +207,9 @@ func (w *Worker) processRequestedILNQuorums() {
 }
 
 func (w *Worker) processRequestedILNQuorum(route *evmInterchain.CheckpointRoute,messageID types.Hash,sourceBlock uint64) error {
+    return w.processRequestedILNQuorumWithTx(route,messageID,sourceBlock,"")
+}
+func (w *Worker) processRequestedILNQuorumWithTx(route *evmInterchain.CheckpointRoute,messageID types.Hash,sourceBlock uint64,sourceTxHash string) error {
     // A public RPC hint is neither proof nor an order to sign. The supplied
     // transaction block is only a SOURCE RPC locator. Independent
     // canonical Gateway/Dispatch/fee receipts, current destination ISM and
@@ -202,10 +219,27 @@ func (w *Worker) processRequestedILNQuorum(route *evmInterchain.CheckpointRoute,
     }
     source:=w.destinations[route.SourceNetwork]
     if source==nil{return fmt.Errorf("ILN source unavailable")}
-    confirmed,err:=w.sourceILNHead(source)
-    if err!=nil{return err}
-    if sourceBlock>confirmed{return fmt.Errorf("hint source transaction is not confirmed")}
-    return w.signDirectILNMessage(route,messageID,sourceBlock)
+    sourceTx:=types.ZeroHash
+    if sourceTxHash!="" {
+        if len(sourceTxHash)!=66||!strings.HasPrefix(sourceTxHash,"0x")||
+           !observerHexLower(sourceTxHash[2:])||
+           sourceTxHash=="0x"+strings.Repeat("0",64){
+            return fmt.Errorf("invalid untrusted source transaction hash")
+        }
+        sourceTx=types.StringToHash(sourceTxHash)
+    }
+    // Known external receipts already require a separately verified safe or
+    // finalized head from EACH independent operator inside the canonical
+    // evidence reader. Do not perform an additional single-provider head
+    // preflight here: it doubles provider selection and can exhaust quota.
+    // Unknown-transaction discovery and native XGR IBFT keep the original
+    // bounded source-head gate.
+    if sourceTx==types.ZeroHash||source.ChainID==1643 {
+        confirmed,err:=w.sourceILNHead(source)
+        if err!=nil{return err}
+        if sourceBlock>confirmed{return fmt.Errorf("hint source transaction is not confirmed")}
+    }
+    return w.signDirectILNMessageWithTx(route,messageID,sourceBlock,sourceTx)
 }
 
 func (w *Worker) acceptRequestedILNQuorum(request requestedILNQuorum) error {
@@ -235,7 +269,7 @@ func (w *Worker) acceptRequestedILNQuorum(request requestedILNQuorum) error {
  if messageID==types.ZeroHash{return fmt.Errorf("empty peer ILN message ID")}
  // A peer's request never authorizes arbitrary signing. It is resolved through
  // exactly the same source event, fee, set and delivered guards as local RPC.
- return w.processRequestedILNQuorum(route,messageID,request.SourceBlockNumber)
+ return w.processRequestedILNQuorumWithTx(route,messageID,request.SourceBlockNumber,request.SourceTxHash)
 }
 
 func (w *Worker) quorumHintLoop() {

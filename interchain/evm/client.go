@@ -113,29 +113,15 @@ func GetValidatorSet(destination *Destination) (*ValidatorSet, error) {
 	if err := destination.ValidateMembershipRead(); err != nil {
 		return nil, err
 	}
+	return readValidatorSet(destination, types.StringToAddress(destination.RegistryAddress), destinationRegistryView(destination))
+}
+
+func readValidatorSet(destination *Destination, registry types.Address, view ILNView) (*ValidatorSet, error) {
 	method := registryABI.Methods["getValidatorSet"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing getValidatorSet")
 	}
-
-	var decodedRaw []byte
-	var err error
-	if destination.ChainID == 1643 {
-		decodedRaw, err = DestinationCall(destination, types.StringToAddress(destination.RegistryAddress), method.ID())
-	} else {
-		var client ilnRPCClient
-		client, err = newVerifiedRPCClient(destination)
-		if err != nil {
-			return nil, err
-		}
-		defer client.Close()
-		addr := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
-		var raw string
-		raw, err = ilnRPCCall(client, &ethgo.CallMsg{To: &addr, Data: method.ID()}, ethgo.Latest)
-		if err == nil {
-			decodedRaw, err = decodeRPCHex(raw)
-		}
-	}
+	decodedRaw, err := view(registry, method.ID())
 	if err != nil {
 		return nil, fmt.Errorf("call getValidatorSet: %w", err)
 	}
@@ -212,6 +198,10 @@ func GetValidator(destination *Destination, validator types.Address) (*Validator
 	if err := destination.ValidateMembershipRead(); err != nil {
 		return nil, err
 	}
+	return readValidator(destination, types.StringToAddress(destination.RegistryAddress), validator, destinationRegistryView(destination))
+}
+
+func readValidator(destination *Destination, registry, validator types.Address, view ILNView) (*ValidatorDetails, error) {
 	method := registryABI.Methods["getValidator"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing getValidator")
@@ -222,7 +212,7 @@ func GetValidator(destination *Destination, validator types.Address) (*Validator
 	if err != nil {
 		return nil, fmt.Errorf("encode getValidator: %w", err)
 	}
-	decodedRaw, err := DestinationCall(destination, types.StringToAddress(destination.RegistryAddress), append(method.ID(), input...))
+	decodedRaw, err := view(registry, append(method.ID(), input...))
 	if err != nil {
 		return nil, fmt.Errorf("call getValidator: %w", err)
 	}
@@ -285,11 +275,15 @@ func MinimumDeactivationReserve(destination *Destination) (*big.Int, error) {
 	if err := destination.ValidateMembershipRead(); err != nil {
 		return nil, err
 	}
+	return readMinimumDeactivationReserve(types.StringToAddress(destination.RegistryAddress), destinationRegistryView(destination))
+}
+
+func readMinimumDeactivationReserve(registry types.Address, view ILNView) (*big.Int, error) {
 	method := registryABI.Methods["minimumDeactivationReserveWei"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing minimumDeactivationReserveWei")
 	}
-	b, err := DestinationCall(destination, types.StringToAddress(destination.RegistryAddress), method.ID())
+	b, err := view(registry, method.ID())
 	if err != nil {
 		return nil, fmt.Errorf("call minimumDeactivationReserveWei: %w", err)
 	}

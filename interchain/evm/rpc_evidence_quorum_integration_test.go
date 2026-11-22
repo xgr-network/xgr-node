@@ -18,7 +18,7 @@ func TestTwoIndependentOperatorsWithFailover(t *testing.T){
   op:=&ILNOperation{CanonicalBlockHash:h,TransactionHash:h,MessageID:h,RouteID:h,BlockNumber:9,DestinationDomain:1643,ValidatorFeeWei:big.NewInt(1)}
   return op,[]byte("message"),&ILNRouteSnapshot{Registry:types.StringToAddress("0x1111111111111111111111111111111111111111"),BlockNumber:9},nil
  }
- op,_,_,err:=quorumVerifiedDirectILNOperation(d,nil,1643,h,9,reader)
+ op,_,_,err:=quorumVerifiedDirectILNOperation(d,nil,1643,h,9,reader,nil)
  require.NoError(t,err)
  require.NotNil(t,op)
  require.Equal(t,[]string{"a1","a2","b1"},calls)
@@ -31,10 +31,10 @@ func TestOneOperatorAndConflictingProvidersFailClosed(t *testing.T){
   if src.RPCURL=="b1"{op.BlockNumber=10}
   return op,[]byte("message"),&ILNRouteSnapshot{BlockNumber:9},nil
  }
- _,_,_,err:=quorumVerifiedDirectILNOperation(d,nil,1643,h,9,reader)
+ _,_,_,err:=quorumVerifiedDirectILNOperation(d,nil,1643,h,9,reader,nil)
  require.ErrorContains(t,err,"quorum not reached")
  d.RPCURLs=[]string{"a1","a2"}
  d.IndependentOperatorIDs=[]string{"a","a"}
- _,_,_,err=quorumVerifiedDirectILNOperation(d,nil,1643,h,9,reader)
+ _,_,_,err=quorumVerifiedDirectILNOperation(d,nil,1643,h,9,reader,nil)
  require.ErrorContains(t,err,"quorum not reached")
 }

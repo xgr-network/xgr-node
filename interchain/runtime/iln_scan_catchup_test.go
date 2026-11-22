@@ -10,6 +10,26 @@ import (
  evm "github.com/xgr-network/xgr-node/interchain/evm"
 )
 
+func TestDirectILNSharedObserverLimitsGeneric(t *testing.T) {
+ tests:=[]struct{name string;chainID,lag uint64;windows int;budget uint64}{
+  {"Base caught up",8453,0,4,3256},
+  {"Base one block",8453,1,8,7256},
+  {"Base last 3000 blocks",8453,3000,8,7256},
+  {"Base last 10000 blocks",8453,10000,8,7256},
+  {"Base deep backlog",8453,147034,8,7256},
+  {"Arbitrum caught up",42161,0,4,3256},
+  {"Arbitrum lagging",42161,147034,8,7256},
+  {"BSC lagging",56,10000,8,7256},
+  {"Optimism lagging",10,10000,8,7256},
+  {"XGR unchanged",1643,147034,4,4000},
+ }
+ for _,tt:=range tests {t.Run(tt.name,func(t *testing.T){
+  windows,budget:=directILNSharedObserverLimits(tt.chainID,tt.lag)
+  require.Equal(t,tt.windows,windows)
+  require.Equal(t,tt.budget,budget)
+ })}
+}
+
 func TestDirectILNAdaptiveWindowByLag(t *testing.T){
  require.Equal(t,uint64(256),directILNWindow(80,false))
  require.Equal(t,uint64(512),directILNWindow(100000,false))

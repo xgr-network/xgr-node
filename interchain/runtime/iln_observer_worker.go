@@ -36,10 +36,15 @@ func (w *Worker) knownObserverRoute(source *evm.Destination,route *evm.Checkpoin
 
 // Injectable seams are used by deterministic multi-route cursor and request
 // count tests; production always binds the canonical scan/signing functions.
-var observerRemoteWindow = evm.ScanILNMultiGatewayWindow
+type observerWindowReader func([]types.Address,uint64,uint64)(uint64,uint64,uint64,[]evm.ILNObservedGatewayOperation,error)
+
+var openObserverWindow = func(source *evm.Destination)(observerWindowReader,func()){
+ session:=evm.NewILNScanSession(source)
+ return session.GatewayWindow,session.Close
+}
 var observerNativeWindow = evm.ScanNativeXGRMultiGatewayWindow
-var observerSignMessage = func(w *Worker,r *evm.CheckpointRoute,id types.Hash,n uint64)error{
- return w.signDirectILNMessage(r,id,n)
+var observerSignMessage = func(w *Worker,r *evm.CheckpointRoute,id types.Hash,n uint64,sourceTx types.Hash)error{
+ return w.signDirectILNMessageWithTx(r,id,n,sourceTx)
 }
 
 // ensureObserverCatalogRoute bootstraps a previously uncataloged configured
@@ -89,17 +94,32 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
  // The configured route set is immutable for this poll; newly discovered
  // routes enter at the next tick with their independent historical cursor.
  var native evm.NativeXGRReader
+ var remote observerWindowReader
  if source.ChainID==1643{
   r,err:=w.nativeReader(source)
   if err!=nil{return err}
   native=r
+ }else{
+  var closeRemote func()
+  remote,closeRemote=openObserverWindow(source)
+  defer closeRemote()
  }
- budget:=directILNRemoteWorkBudget
- if source.ChainID==1643{budget=directILNNativeWorkBudget}
+ // The first window stays at 256 blocks on every source. Its verified
+ // finality head authorizes catch-up only while an external source is behind.
+ maxWindows,budget:=directILNSharedObserverLimits(source.ChainID,0)
  var head uint64
- for attempt:=0;attempt<directILNMaxWindowsPerPoll&&budget>0;attempt++{
+ for attempt:=0;attempt<maxWindows&&budget>0;attempt++{
   window:=directILNWindow(0,source.ChainID==1643)
   if attempt>0&&head>cursor{window=directILNWindow(head-cursor,source.ChainID==1643)}
+  // Keep the small first read. On an external source with a confirmed
+  // backlog, cover more blocks per eth_getLogs within the same bounded poll.
+  if attempt>0 && source.ChainID!=1643 && head>cursor {
+   // Consume the verified backlog in the fewest possible log requests.
+   // A trailing range below 1,000 needs only ONE final request, not
+   // consecutive 512/256-block reads. Providers can still downgrade to 512.
+   window=head-cursor
+   if window>directILNSharedRemoteMaxWindow {window=directILNSharedRemoteMaxWindow}
+  }
   if window>budget{window=budget}
   var from,to uint64
   var events []evm.ILNObservedGatewayOperation
@@ -107,12 +127,13 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   if source.ChainID==1643{
    head,from,to,events,err=observerNativeWindow(native,source,gateways,cursor,window)
   }else{
-   head,from,to,events,err=observerRemoteWindow(source,gateways,cursor,window)
+   head,from,to,events,err=remote(gateways,cursor,window)
   }
   if err!=nil{return err}
   if head<cursor{return fmt.Errorf("observer confirmed head regressed")}
   if from==0{
    if head!=cursor||to!=0||len(events)!=0{return fmt.Errorf("invalid empty observer window")}
+   for _,r:=range routes{w.recordILNDirectScan(r.Route,head,cursors[r.Route.Name])}
    break
   }
   if from!=cursor+1||to<from||to>head||to-from+1>window{
@@ -136,7 +157,7 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   for _,r:=range routes{bindingByRoute[r.Route.Name]=r}
   for _,event:=range dispatched{
    if event.Operation.BlockNumber<=cursors[event.Route.Name]{continue}
-   err:=observerSignMessage(w,event.Route,event.Operation.MessageID,event.Operation.BlockNumber)
+   err:=observerSignMessage(w,event.Route,event.Operation.MessageID,event.Operation.BlockNumber,event.Operation.TransactionHash)
    if err!=nil&&err.Error()!="Interchain message already delivered"{
     // Do not trust the observed event to authorize signing. A failed proof
     // advances its shared cursor ONLY after crash-safe retry admission.
@@ -148,16 +169,25 @@ func (w *Worker) scanSharedILNSource(source *evm.Destination,routes []observerRo
   // A crash repeats the source window idempotently. All failed operations
   // are journaled with the exact source locator for independent rechecking.
   for _,r:=range routes{
-   if cursors[r.Route.Name]>=to{continue}
-   if err:=w.writeILNCursor("_direct_"+r.Route.Name,to);err!=nil{return err}
-   cursors[r.Route.Name]=to
+   if cursors[r.Route.Name]<to {
+    if err:=w.writeILNCursor("_direct_"+r.Route.Name,to);err!=nil{return err}
+    cursors[r.Route.Name]=to
+   }
+   w.recordILNDirectScan(r.Route,head,cursors[r.Route.Name])
   }
   cursor=to
-  budget-=to-from+1
+  if attempt==0 {
+   // The first successful window supplies a canonical, finality-qualified
+   // head. Expand any external source while lag remains, including short lags.
+   // Account for the already consumed first window in the enlarged budget.
+   maxWindows,budget=directILNSharedObserverLimits(source.ChainID,head-cursor)
+   budget-=to-from+1
+  }else{
+   budget-=to-from+1
+  }
   if cursor>=head{break}
  }
  if err:=w.retryObserverSource(source,routes);err!=nil{return err}
- for _,r:=range routes{w.recordILNDirectScan(r.Route,head,cursors[r.Route.Name])}
  return nil
 }
 

@@ -30,7 +30,8 @@ func finalizedILNHead(client ilnRPCClient, source *Destination)(uint64,error){
   return 0,fmt.Errorf("missing or invalid finality block on chain %d",source.ChainID)
  }
  current,err:=ilnRPCBlock(client,ethgo.BlockNumber(block.Number),false)
- if err!=nil||current==nil||current.Number!=block.Number||current.Hash!=block.Hash{
+ if err!=nil{return 0,fmt.Errorf("read canonical numeric finality block: %w",err)}
+ if current==nil||current.Number!=block.Number||current.Hash!=block.Hash{
   return 0,fmt.Errorf("finality head block hash conflicts with canonical numeric block")
  }
  return block.Number,nil
@@ -56,7 +57,8 @@ func verifyFinalizedReceiptWithHead(client ilnRPCClient,receipt *ethgo.Receipt,h
  if receipt.BlockNumber>head{return fmt.Errorf("source receipt beyond chain finality boundary")}
  if receipt.BlockNumber>uint64(1<<63-1){return fmt.Errorf("invalid receipt block number")}
  current,err:=ilnRPCBlock(client,ethgo.BlockNumber(receipt.BlockNumber),false)
- if err!=nil||current==nil||current.Number!=receipt.BlockNumber||current.Hash!=receipt.BlockHash{
+ if err!=nil{return fmt.Errorf("read canonical source receipt block: %w",err)}
+ if current==nil||current.Number!=receipt.BlockNumber||current.Hash!=receipt.BlockHash{
   return fmt.Errorf("source receipt block hash not canonical")
  }
  return nil

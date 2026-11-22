@@ -18,6 +18,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/umbracle/ethgo"
 	ethgowallet "github.com/umbracle/ethgo/wallet"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
@@ -34,8 +35,12 @@ const (
 	TopicID             = "/xgr/interchain/direct-bls/1.0.0"
 	defaultPollInterval = 2 * time.Second // local state / gossip, no periodic external RPC
 	// XGR v3.2.1: external RPC traffic must not follow the fast 2s loop.
-	ilnExternalCheckpointInterval = 30 * time.Second
-	ilnExternalDiscoveryInterval  = 60 * time.Second
+	// The XITA finalized indexer submits source-tx-pinned untrusted hints via
+	// xgr_requestILNQuorumWithSourceTx. Keep independent RPC-native polling as
+	// a slow censorship/outage fallback, never a signing trust assumption.
+	ilnExternalCheckpointInterval = 10 * time.Minute
+	ilnExternalCatchupInterval    = 60 * time.Second
+	ilnExternalDiscoveryInterval  = 5 * time.Minute
 	ilnExternalMembershipInterval = 60 * time.Second
 	ilnExternalRetryInterval      = 30 * time.Second
 	ilnLocalHealthInterval        = 10 * time.Second
@@ -112,12 +117,17 @@ type Worker struct {
 	ilnRouteHealthByName map[string]ilnRouteHealth
 	// Accessed only by the interchain worker loop, never from gossip handlers.
 	ilnLastCheckpointPoll time.Time
+	// One-minute catch-up applies only to external sources with known backlog.
+	ilnLastCatchupPoll    time.Time
 	ilnDirectScanRetries  map[string]directILNScanRetry
 	ilnLastDiscoveryPoll  time.Time
 	ilnLastMembershipPoll time.Time
 	ilnLastRetryPoll      time.Time
 	ilnLastHealthWrite    time.Time
 	ilnRouteLastPublished map[string]time.Time
+	ilnRouteNoticeChecks  singleflight.Group
+	ilnRouteFilesMu       sync.Mutex
+	ilnRouteNoticeCache   map[string]verifiedILNNotice
 	ilnRouteLastSeen      map[peer.ID]time.Time
 
 	ecdsaKey  *stdECDSA.PrivateKey
@@ -130,7 +140,12 @@ type Worker struct {
 	closeCh chan struct{}
 	wg      sync.WaitGroup
 
-	rpcCancel                 context.CancelFunc
+	rpcCancel context.CancelFunc
+	// Message-scoped source verification backpressure, shared by every ILN
+	// signing entry point. Never protect this with w.mu: verification performs
+	// independently locked vote and network operations.
+	ilnRetryMu                sync.Mutex
+	ilnRetryInFlight          map[string]bool
 	mu                        sync.Mutex
 	requests                  map[types.Hash]*requestState
 	reserveWarned             map[string]bool
@@ -434,11 +449,22 @@ func (w *Worker) tick() {
 	now := time.Now()
 	if dueILNPeriodicPolling(now, &w.ilnLastMembershipPoll, ilnExternalMembershipInterval) {
 		for _, destination := range w.destinations {
-			if err := w.detectForcedRemovals(destination); err != nil {
-				w.logger.Warn("forced removal scan failed", "chain", destination.Name, "err", err)
+			poll, err := evmInterchain.PollMembershipRegistry(destination, w.localAddr)
+			if err != nil {
+				w.logger.Warn("interchain membership poll failed", "chain", destination.Name, "err", err)
+				continue
 			}
-			if err := w.checkLocalReserve(destination); err != nil {
-				w.logger.Warn("interchain reserve check failed", "chain", destination.Name, "err", err)
+			setErr := poll.SetError
+			if setErr == nil {
+				setErr = w.detectForcedRemovals(destination, poll.Set)
+			}
+			if setErr != nil {
+				w.logger.Warn("forced removal scan failed", "chain", destination.Name, "err", setErr)
+			}
+			if poll.ReserveError != nil {
+				w.logger.Warn("interchain reserve check failed", "chain", destination.Name, "err", poll.ReserveError)
+			} else {
+				w.checkLocalReserve(destination, poll.Local, poll.Minimum)
 			}
 		}
 	}
@@ -446,30 +472,40 @@ func (w *Worker) tick() {
 		w.discoverILNRoutes()
 		w.publishVerifiedILNRoutes()
 	}
-	if dueILNPeriodicPolling(now, &w.ilnLastCheckpointPoll, ilnExternalCheckpointInterval) {
+	// The full independent fallback scanner remains on its ten-minute cadence.
+	// During catch-up, poll only external sources with a locally observed lag.
+	fullScan := dueILNPeriodicPolling(now, &w.ilnLastCheckpointPoll, ilnExternalCheckpointInterval)
+	catchupScan := false
+	if fullScan {
+		w.ilnLastCatchupPoll = now
+	} else if w.hasILNExternalObserverBacklog() {
+		catchupScan = dueILNPeriodicPolling(now, &w.ilnLastCatchupPoll, ilnExternalCatchupInterval)
+	}
+	if fullScan || catchupScan {
 		w.mu.Lock()
 		activeRoutes := make([]*evmInterchain.CheckpointRoute, 0, len(w.routes))
 		for _, route := range w.routes {
 			activeRoutes = append(activeRoutes, route)
 		}
 		w.mu.Unlock()
-		// One source-chain observation for all catalog-backed routes. The
-		// common Gateway log stream is only a discovery hint; BLS signing
-		// still independently verifies complete source receipts and fees.
 		ready := make([]*evmInterchain.CheckpointRoute, 0, len(activeRoutes))
 		for _, route := range activeRoutes {
+			if !fullScan && !w.ilnSourceHasExternalObserverBacklog(route.SourceNetwork) {
+				continue
+			}
 			if w.directILNScanMayRun(route, now) {
 				ready = append(ready, route)
 			}
 		}
-		failures := w.scanILNObserverRoutes(ready)
-		w.finishILNObserverScanBackoff(ready, failures, time.Now())
-		for _, route := range ready {
-			err := failures[route.Name]
-			if err != nil {
-				w.recordILNDirectScanFailure(route, err)
-				w.logger.Debug("Direct BLS source observation pending",
-					"route", route.Name, "err", err)
+		if len(ready) > 0 {
+			failures := w.scanILNObserverRoutes(ready)
+			w.finishILNObserverScanBackoff(ready, failures, time.Now())
+			for _, route := range ready {
+				if err := failures[route.Name]; err != nil {
+					w.recordILNDirectScanFailure(route, err)
+					w.logger.Debug("Direct BLS source observation pending",
+						"route", route.Name, "err", err)
+				}
 			}
 		}
 	}
@@ -769,25 +805,14 @@ func (w *Worker) startLocalRequest(id string, req localRequest) error {
 	return w.publish(wireEnvelope{Type: "request", Req: &reqWire})
 }
 
-func (w *Worker) checkLocalReserve(destination *evmInterchain.Destination) error {
-	if destination == nil {
-		return nil
-	}
-	minimum, err := evmInterchain.MinimumDeactivationReserve(destination)
-	if err != nil {
-		return fmt.Errorf("read on-chain deactivation minimum: %w", err)
-	}
-	details, err := evmInterchain.GetValidator(destination, w.localAddr)
-	if err != nil {
-		return err
-	}
+func (w *Worker) checkLocalReserve(destination *evmInterchain.Destination, details *evmInterchain.ValidatorDetails, minimum *big.Int) {
 	if !details.Active {
 		w.reserveWarned[destination.Name] = false
-		return nil
+		return
 	}
 	if details.ReserveWei.Cmp(minimum) >= 0 {
 		w.reserveWarned[destination.Name] = false
-		return nil
+		return
 	}
 	if !w.reserveWarned[destination.Name] {
 		w.logger.Warn(
@@ -799,18 +824,14 @@ func (w *Worker) checkLocalReserve(destination *evmInterchain.Destination) error
 		)
 		w.reserveWarned[destination.Name] = true
 	}
-	return nil
 }
 
-func (w *Worker) detectForcedRemovals(destination *evmInterchain.Destination) error {
-	set, err := getMembershipValidatorSet(destination)
-	if err != nil {
-		return err
-	}
+func (w *Worker) detectForcedRemovals(destination *evmInterchain.Destination, set *evmInterchain.ValidatorSet) error {
 	adapter, err := validateAuthorizationSet(destination, set)
 	if err != nil {
 		return err
 	}
+
 	for idx, validator := range set.Validators {
 		info, err := w.state.ValidatorInfo(validator)
 		if err != nil {

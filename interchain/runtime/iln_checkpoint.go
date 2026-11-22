@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
@@ -18,10 +19,11 @@ import (
 )
 
 type ilnCheckpointVote struct {
-	Route     string        `json:"route"`
-	Payload   []byte        `json:"payload"`
-	Signer    types.Address `json:"signer"`
-	Signature []byte        `json:"signature"`
+	Route        string        `json:"route"`
+	Payload      []byte        `json:"payload"`
+	Signer       types.Address `json:"signer"`
+	Signature    []byte        `json:"signature"`
+	SourceTxHash string        `json:"sourceTxHash,omitempty"`
 }
 
 type ilnCheckpointState struct {
@@ -123,12 +125,17 @@ func (w *Worker) persistILNLocalVote(hash types.Hash, vote ilnCheckpointVote) er
 		return err
 	}
 	path := filepath.Join(w.ilnVoteDir(), hash.String()+".json")
-	tmp := path + ".tmp"
 	// A successful rename without fsync is not power-loss durability.
 	// Flush the signed successor payload and its directory entry before a
 	// previous-set vote is ever eligible for retirement (F-20).
-	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o660)
+	file, err := os.CreateTemp(w.ilnVoteDir(), ".local-vote-*")
 	if err != nil {
+		return err
+	}
+	tmp := file.Name()
+	defer os.Remove(tmp)
+	if err := file.Chmod(0o660); err != nil {
+		_ = file.Close()
 		return err
 	}
 	if _, err = file.Write(raw); err != nil {
@@ -190,11 +197,7 @@ func (w *Worker) removeILNLocalVote(hash types.Hash) {
 }
 
 func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
-	payload, destination, err := w.decodeDirectPayload(vote.Payload)
-	if err != nil {
-		return err
-	}
-	adapter, err := destination.AuthorizationAdapter()
+	payload, _, err := w.decodeDirectPayload(vote.Payload)
 	if err != nil {
 		return err
 	}
@@ -222,11 +225,57 @@ func (w *Worker) acceptILNCheckpointVote(vote ilnCheckpointVote) error {
 	if route == nil {
 		return fmt.Errorf("unknown canonical XITA Direct-BLS route")
 	}
-	ctx, err := w.verifyDirectILNEvidence(route, payload.MessageID, payload.SourceBlockNumber)
+	sourceTx, err := parseILNSourceTxLocator(vote.SourceTxHash)
 	if err != nil {
 		return err
 	}
+	ctx, err := w.verifyDirectILNEvidenceWithTx(route, payload.MessageID, payload.SourceBlockNumber, sourceTx)
+	if err != nil {
+		return err
+	}
+	return w.acceptVerifiedILNCheckpointVote(vote, payload, ctx)
+}
+
+func parseILNSourceTxLocator(value string) (types.Hash, error) {
+	if value == "" {
+		return types.ZeroHash, nil
+	}
+	if len(value) != 66 || !strings.HasPrefix(value, "0x") || !observerHexLower(value[2:]) {
+		return types.ZeroHash, fmt.Errorf("invalid Direct-BLS source transaction locator")
+	}
+	hash := types.StringToHash(value)
+	if hash == types.ZeroHash {
+		return hash, fmt.Errorf("empty Direct-BLS source transaction locator")
+	}
+	return hash, nil
+}
+
+// Legacy journal entries can recover the locator from the matching queued
+// request. As on the wire, the locator remains untrusted until proof checks.
+func (w *Worker) localILNVoteSourceTx(vote ilnCheckpointVote, route *evmInterchain.CheckpointRoute, payload protocol.XITADirectMessage) (types.Hash, error) {
+	if vote.SourceTxHash != "" {
+		return parseILNSourceTxLocator(vote.SourceTxHash)
+	}
+	path := filepath.Join(w.ilnDir(), "quorum-requests", route.Name, payload.MessageID.String()+".json")
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) > 2048 {
+		return types.ZeroHash, nil
+	}
+	var request requestedILNQuorum
+	if json.Unmarshal(raw, &request) != nil || request.Route != route.Name ||
+		request.MessageID != payload.MessageID.String() || request.SourceBlockNumber != payload.SourceBlockNumber {
+		return types.ZeroHash, nil
+	}
+	return parseILNSourceTxLocator(request.SourceTxHash)
+}
+
+func (w *Worker) acceptVerifiedILNCheckpointVote(vote ilnCheckpointVote, payload protocol.XITADirectMessage, ctx *directILNEvidence) error {
+	route := ctx.route
 	canonical := w.directILNPayload(ctx)
+	adapter, err := validateAuthorizationSet(ctx.destination, ctx.set)
+	if err != nil {
+		return err
+	}
 	packed, err := adapter.EncodeDirect(canonical)
 	if err != nil || !bytes.Equal(packed, vote.Payload) {
 		return fmt.Errorf("received Direct-BLS vote disagrees with independent source receipt, destination ISM or current validator set")
@@ -511,6 +560,7 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
 		hash := crypto.Keccak256Hash(vote.Payload)
 		payload, _, err := w.decodeDirectPayload(vote.Payload)
 		if err != nil {
+			w.removeILNLocalVote(hash)
 			continue
 		}
 		w.mu.Lock()
@@ -535,8 +585,15 @@ func (w *Worker) rebroadcastILNCheckpointVotes() {
 			w.removeILNLocalVote(hash)
 			continue
 		}
+		sourceTx, err := w.localILNVoteSourceTx(vote, route, payload)
+		if err != nil {
+			continue
+		}
+		if sourceTx != types.ZeroHash {
+			vote.SourceTxHash = sourceTx.String()
+		}
 		if set.SetID != payload.SetID {
-			if err := w.signDirectILNMessage(route, payload.MessageID, payload.SourceBlockNumber); err != nil {
+			if err := w.signDirectILNMessageWithTx(route, payload.MessageID, payload.SourceBlockNumber, sourceTx); err != nil {
 				w.logger.Debug("Direct-BLS message awaits current validator set",
 					"route", route.Name, "err", err)
 			} else if w.hasDurableILNSuccessorVote(vote, set.SetID) {

@@ -26,6 +26,7 @@ type Destination struct {
 	RPCURL                     string
 	RPCURLs                    []string
 	IndependentOperatorIDs     []string
+	ReceiptWitnessRPCs         []policy.ReceiptWitnessRPC
 	// FinalityRule is copied from the immutable release policy. Runtime checks
 	// always re-resolve the rule by ChainID, never from this mutable field.
 	FinalityRule              policy.FinalityRule
@@ -44,6 +45,7 @@ func makeDestination(p policy.ChainPolicy) (*Destination, error) {
 		ILNRegistryActivationBlock: p.SourceActivationBlock,
 		RPCURLs:                    append([]string(nil), p.RPCURLs...),
 		IndependentOperatorIDs:     append([]string(nil), p.IndependentOperatorIDs...),
+		ReceiptWitnessRPCs:         append([]policy.ReceiptWitnessRPC(nil), p.ReceiptWitnessRPCs...),
 		FinalityRule:               p.Finality, VerifierFormat: p.VerifierFormat, SignatureScheme: p.SignatureScheme,
 		MembershipValiditySeconds: 300, ExecutorStepDelaySeconds: 10,
 	}

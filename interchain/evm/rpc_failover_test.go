@@ -8,6 +8,7 @@ import (
  "strings"
  "sync/atomic"
  "testing"
+ "time"
  "github.com/stretchr/testify/require"
     "github.com/xgr-network/xgr-node/types"
 )
@@ -152,4 +153,64 @@ func TestGetLogs429SurvivesSuccessfulSafeHeadPreflight(t *testing.T){
  twice:=p.readConsecutive
  p.mu.Unlock()
  require.Equal(t,uint32(2),twice)
+}
+
+func TestRPCProviderPlanQuotaAndForbiddenCooldown(t *testing.T){
+ for _,tc:=range []struct{name,message string; min time.Duration}{
+  {"onerpc","You've reached the usage limit for your current plan",29*time.Minute},
+  {"explicit_quota","quota exceeded",29*time.Minute},
+  {"forbidden_receipt","eth_getTransactionReceipt HTTP 403",9*time.Minute},
+ }{
+  t.Run(tc.name,func(t *testing.T){
+   endpoint:="https://"+tc.name+".invalid/rpc"
+   d:=&Destination{Name:"bsc",ChainID:56,Domain:56,
+    RPCURLs:[]string{endpoint}}
+   rpcRecordFailure(d,endpoint,fmt.Errorf("%s",tc.message),true)
+   require.ErrorContains(t,rpcCooldown(d,endpoint),"cooldown")
+   state:=rpcProviderState(d,endpoint)
+   state.mu.Lock()
+   until:=state.retryAfter
+   limited:=state.rateLimited
+   state.mu.Unlock()
+   require.Greater(t,time.Until(until),tc.min)
+   if tc.name=="onerpc"{require.Positive(t,limited)}
+   // Verified chain ID and finalized head do not erase downstream quota.
+   rpcRecordReady(d,endpoint)
+   require.ErrorContains(t,rpcCooldown(d,endpoint),"cooldown")
+   // Other providers remain usable for independent witness verification.
+   other:="https://healthy-"+tc.name+".invalid/rpc"
+   require.NoError(t,rpcCooldown(d,other))
+  })
+ }
+}
+
+func TestCanonicalFinalityHeightRateLimitSkipsFurtherProviderCalls(t *testing.T) {
+ var calls atomic.Int32
+ server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  calls.Add(1)
+  var request struct {
+   ID json.RawMessage
+   Method string
+   Params []json.RawMessage
+  }
+  if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+   http.Error(w, "bad request", http.StatusBadRequest)
+   return
+  }
+  switch {
+  case request.Method == "eth_chainId":
+   fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x38"}`, request.ID)
+  case request.Method == "eth_getBlockByNumber" && len(request.Params) > 0 && string(request.Params[0]) == `"finalized"`:
+   fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, request.ID, testFinalityBlock(138, "0x"+strings.Repeat("1", 64)))
+  default:
+   w.WriteHeader(http.StatusTooManyRequests)
+  }
+ }))
+ defer server.Close()
+ destination := &Destination{Name: "bsc", ChainID: 56, Domain: 56, RPCURL: server.URL}
+ _, err := newVerifiedRPCClient(destination)
+ require.ErrorContains(t, err, "HTTP 429")
+ _, err = newVerifiedRPCClient(destination)
+ require.ErrorContains(t, err, "cooldown")
+ require.Equal(t, int32(3), calls.Load(), "tagged-head success must not conceal a numeric-block rate limit")
 }

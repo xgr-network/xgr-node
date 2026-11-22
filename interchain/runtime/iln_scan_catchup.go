@@ -14,6 +14,12 @@ import (
 const (
     directILNMaxWindowsPerPoll = 4
     directILNRemoteWorkBudget = uint64(2048)
+    directILNSharedRemoteWorkBudget = 256 + (directILNMaxWindowsPerPoll-1)*directILNSharedRemoteMaxWindow
+    directILNSharedRemoteMaxWindow = uint64(1000)
+    // Every external EVM source can finish a confirmed backlog within a bounded
+    // poll. At the safe head, the loop exits early without unnecessary RPCs.
+    directILNRemoteCatchupMaxWindowsPerPoll = 8
+    directILNRemoteCatchupWorkBudget = 256 + (directILNRemoteCatchupMaxWindowsPerPoll-1)*directILNSharedRemoteMaxWindow
     directILNNativeWorkBudget = uint64(4000)
     directILNRemoteMaxWindow = uint64(512)
     directILNNativeMaxWindow = uint64(1000)
@@ -28,6 +34,18 @@ type directILNScanWindowReader func(cursor uint64, exists bool, window uint64) (
 type directILNScanRetry struct {
     until time.Time
     failures uint8
+}
+
+// directILNSharedObserverLimits expands the shared discovery scan for any
+// external EVM chain with a confirmed, not-yet-scanned source head. There is
+// NO arbitrary backlog threshold: the last few thousand blocks are scanned
+// in the same poll when provider limits allow. The scanner exits at the safe
+// head, so a caught-up source performs no speculative extra RPC reads.
+// The first window remains 256 blocks; the native XGR path is unchanged.
+func directILNSharedObserverLimits(chainID, remaining uint64) (int, uint64) {
+    if chainID == 1643 {return directILNMaxWindowsPerPoll,directILNNativeWorkBudget}
+    if remaining > 0 {return directILNRemoteCatchupMaxWindowsPerPoll,directILNRemoteCatchupWorkBudget}
+    return directILNMaxWindowsPerPoll,directILNSharedRemoteWorkBudget
 }
 
 // directILNWindow expands the catch-up window according to the previously
