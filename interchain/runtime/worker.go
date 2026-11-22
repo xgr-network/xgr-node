@@ -2,8 +2,9 @@ package runtime
 
 import (
 	"bytes"
+	"context"
+	stdECDSA "crypto/ecdsa"
 	"encoding/hex"
- "context"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -23,6 +24,7 @@ import (
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
 	stakingcontract "github.com/xgr-network/xgr-node/contracts/staking"
 	"github.com/xgr-network/xgr-node/crypto"
+	"github.com/xgr-network/xgr-node/interchain/authorization"
 	evmInterchain "github.com/xgr-network/xgr-node/interchain/evm"
 	"github.com/xgr-network/xgr-node/network"
 	"github.com/xgr-network/xgr-node/secrets"
@@ -30,20 +32,20 @@ import (
 )
 
 const (
-	TopicID                    = "/xgr/interchain/direct-bls/1.0.0"
-	defaultPollInterval        = 2 * time.Second // local state / gossip, no periodic external RPC
+	TopicID             = "/xgr/interchain/direct-bls/1.0.0"
+	defaultPollInterval = 2 * time.Second // local state / gossip, no periodic external RPC
 	// XGR v3.2.1: external RPC traffic must not follow the fast 2s loop.
 	// The XITA finalized indexer submits source-tx-pinned untrusted hints via
 	// xgr_requestILNQuorumWithSourceTx. Keep independent RPC-native polling as
 	// a slow censorship/outage fallback, never a signing trust assumption.
 	ilnExternalCheckpointInterval = 10 * time.Minute
-	ilnExternalCatchupInterval = 60 * time.Second
+	ilnExternalCatchupInterval    = 60 * time.Second
 	ilnExternalDiscoveryInterval  = 5 * time.Minute
 	ilnExternalMembershipInterval = 60 * time.Second
 	ilnExternalRetryInterval      = 30 * time.Second
 	ilnLocalHealthInterval        = 10 * time.Second
-	maximumMembershipLifetime  = 10 * time.Minute
-	requestRebroadcastInterval = 10 * time.Second
+	maximumMembershipLifetime     = 10 * time.Minute
+	requestRebroadcastInterval    = 10 * time.Second
 )
 
 type StateReader interface {
@@ -68,15 +70,15 @@ type localResult struct {
 }
 
 type wireEnvelope struct {
-	Type               string                  `json:"type"`
-	Req                *wireRequest            `json:"request,omitempty"`
-	Vote               *wireVote               `json:"vote,omitempty"`
-	ILNCheckpointVote  *ilnCheckpointVote `json:"ilnCheckpointVote,omitempty"`
-    ILNCompletedQuorum *ilnCheckpointAttestation `json:"ilnCompletedQuorum,omitempty"`
-    ILNRouteNotice *ilnRouteNoticeWire `json:"ilnRouteNotice,omitempty"`
-	ILNQuorumRequest   *requestedILNQuorum     `json:"ilnQuorumRequest,omitempty"`
-	GovernanceProposal *governanceProposalWire  `json:"governanceProposal,omitempty"`
-	GovernanceVote     *governanceVote         `json:"governanceVote,omitempty"`
+	Type               string                    `json:"type"`
+	Req                *wireRequest              `json:"request,omitempty"`
+	Vote               *wireVote                 `json:"vote,omitempty"`
+	ILNCheckpointVote  *ilnCheckpointVote        `json:"ilnCheckpointVote,omitempty"`
+	ILNCompletedQuorum *ilnCheckpointAttestation `json:"ilnCompletedQuorum,omitempty"`
+	ILNRouteNotice     *ilnRouteNoticeWire       `json:"ilnRouteNotice,omitempty"`
+	ILNQuorumRequest   *requestedILNQuorum       `json:"ilnQuorumRequest,omitempty"`
+	GovernanceProposal *governanceProposalWire   `json:"governanceProposal,omitempty"`
+	GovernanceVote     *governanceVote           `json:"governanceVote,omitempty"`
 }
 
 type wireRequest struct {
@@ -95,7 +97,7 @@ type wireVote struct {
 
 type requestState struct {
 	request         wireRequest
-	payload         protocol.MembershipPayload
+	payload         authorization.Membership
 	firstSeen       time.Time
 	lastBroadcast   time.Time
 	localRequestIDs map[string]struct{}
@@ -103,35 +105,36 @@ type requestState struct {
 }
 
 type Worker struct {
-	logger       hclog.Logger
-	state        StateReader
-	network      *network.Server
-	secrets      secrets.SecretsManager
-	dataDir         string
-	destinations    map[string]*evmInterchain.Destination
-	routes          map[string]*evmInterchain.CheckpointRoute
+	logger             hclog.Logger
+	state              StateReader
+	network            *network.Server
+	secrets            secrets.SecretsManager
+	dataDir            string
+	destinations       map[string]*evmInterchain.Destination
+	routes             map[string]*evmInterchain.CheckpointRoute
 	ilnRestoredSources map[string]bool
 	// Last independently verified per-route observations for local-only health.
 	ilnRouteHealthByName map[string]ilnRouteHealth
 	// Accessed only by the interchain worker loop, never from gossip handlers.
 	ilnLastCheckpointPoll time.Time
 	// One-minute catch-up applies only to external sources with known backlog.
-	ilnLastCatchupPoll time.Time
-    ilnDirectScanRetries map[string]directILNScanRetry
+	ilnLastCatchupPoll    time.Time
+	ilnDirectScanRetries  map[string]directILNScanRetry
 	ilnLastDiscoveryPoll  time.Time
 	ilnLastMembershipPoll time.Time
 	ilnLastRetryPoll      time.Time
 	ilnLastHealthWrite    time.Time
-    ilnRouteLastPublished map[string]time.Time
-    ilnRouteNoticeChecks singleflight.Group
-    ilnRouteFilesMu sync.Mutex
-    ilnRouteNoticeCache map[string]verifiedILNNotice
-    ilnRouteLastSeen map[peer.ID]time.Time
+	ilnRouteLastPublished map[string]time.Time
+	ilnRouteNoticeChecks  singleflight.Group
+	ilnRouteFilesMu       sync.Mutex
+	ilnRouteNoticeCache   map[string]verifiedILNNotice
+	ilnRouteLastSeen      map[peer.ID]time.Time
 
-	txKey       ethgo.Key
-	localAddr   types.Address
-	blsRaw      []byte
-	blsPubKey   []byte
+	ecdsaKey  *stdECDSA.PrivateKey
+	txKey     ethgo.Key
+	localAddr types.Address
+	blsRaw    []byte
+	blsPubKey []byte
 
 	topic   *network.Topic
 	closeCh chan struct{}
@@ -141,17 +144,17 @@ type Worker struct {
 	// Message-scoped source verification backpressure, shared by every ILN
 	// signing entry point. Never protect this with w.mu: verification performs
 	// independently locked vote and network operations.
-	ilnRetryMu sync.Mutex
-	ilnRetryInFlight map[string]bool
-	mu               sync.Mutex
-	requests         map[types.Hash]*requestState
-	reserveWarned    map[string]bool
-	ilnLocalVotes              map[types.Hash]*ilnLocalVoteState
-    ilnCompletedPublished map[string]time.Time
-    ilnCompletedInbound map[peer.ID]ilnCompleteInboundBucket
-	ilnCheckpoints              map[types.Hash]*ilnCheckpointState
-	governance              map[types.Hash]*governanceState
-	governanceExecuteCh chan governanceExecuteRequest
+	ilnRetryMu                sync.Mutex
+	ilnRetryInFlight          map[string]bool
+	mu                        sync.Mutex
+	requests                  map[types.Hash]*requestState
+	reserveWarned             map[string]bool
+	ilnLocalVotes             map[types.Hash]*ilnLocalVoteState
+	ilnCompletedPublished     map[string]time.Time
+	ilnCompletedInbound       map[peer.ID]ilnCompleteInboundBucket
+	ilnCheckpoints            map[types.Hash]*ilnCheckpointState
+	governance                map[types.Hash]*governanceState
+	governanceExecuteCh       chan governanceExecuteRequest
 	governanceExecuteInFlight map[string]struct{}
 }
 
@@ -187,17 +190,35 @@ func New(
 		return nil, fmt.Errorf("parse validator ECDSA key: %w", err)
 	}
 
-	blsRaw, err := secretsManager.GetSecret(secrets.ValidatorBLSKey)
+	ecdsaKey, err := crypto.BytesToECDSAPrivateKey(ecdsaRaw)
 	if err != nil {
-		return nil, fmt.Errorf("load validator BLS key: %w", err)
+		return nil, fmt.Errorf("parse validator signing key: %w", err)
 	}
-	blsSecret, err := crypto.BytesToBLSSecretKey(blsRaw)
-	if err != nil {
-		return nil, fmt.Errorf("parse validator BLS key: %w", err)
-	}
-	blsPubKey, err := crypto.BLSSecretKeyToPubkeyBytes(blsSecret)
-	if err != nil {
-		return nil, fmt.Errorf("derive validator BLS public key: %w", err)
+	var blsRaw, blsPubKey []byte
+	for _, d := range destinations {
+		if d == nil {
+			continue
+		}
+		adapter, err := d.AuthorizationAdapter()
+		if err != nil {
+			return nil, err
+		}
+		if adapter.Scheme() != authorization.SchemeBLS {
+			continue
+		}
+		blsRaw, err = secretsManager.GetSecret(secrets.ValidatorBLSKey)
+		if err != nil {
+			return nil, fmt.Errorf("load validator BLS key: %w", err)
+		}
+		blsSecret, err := crypto.BytesToBLSSecretKey(blsRaw)
+		if err != nil {
+			return nil, fmt.Errorf("parse validator BLS key: %w", err)
+		}
+		blsPubKey, err = crypto.BLSSecretKeyToPubkeyBytes(blsSecret)
+		if err != nil {
+			return nil, fmt.Errorf("derive validator BLS public key: %w", err)
+		}
+		break
 	}
 
 	byName := make(map[string]*evmInterchain.Destination, len(destinations))
@@ -242,28 +263,29 @@ func New(
 		routesByName[route.Name] = route
 	}
 	return &Worker{
-		logger:       logger.Named("interchain"),
-		state:        state,
-		network:      networkServer,
-		secrets:      secretsManager,
-		dataDir:         dataDir,
-		destinations:    byName,
-		routes:          routesByName,
-		txKey:        txKey,
-		localAddr:    types.Address(txKey.Address()),
-		blsRaw:       blsRaw,
-		blsPubKey:    blsPubKey,
-		closeCh:       make(chan struct{}),
-		requests:         make(map[types.Hash]*requestState),
-		reserveWarned:    make(map[string]bool),
-		ilnLocalVotes:                make(map[types.Hash]*ilnLocalVoteState),
-        ilnCompletedPublished: make(map[string]time.Time),
-        ilnCompletedInbound: make(map[peer.ID]ilnCompleteInboundBucket),
-		ilnCheckpoints: make(map[types.Hash]*ilnCheckpointState),
-        ilnRouteLastPublished: make(map[string]time.Time),
-        ilnRouteLastSeen: make(map[peer.ID]time.Time),
-		governance:                   make(map[types.Hash]*governanceState),
-		governanceExecuteCh: make(chan governanceExecuteRequest,1),
+		logger:                    logger.Named("interchain"),
+		state:                     state,
+		network:                   networkServer,
+		secrets:                   secretsManager,
+		dataDir:                   dataDir,
+		destinations:              byName,
+		routes:                    routesByName,
+		ecdsaKey:                  ecdsaKey,
+		txKey:                     txKey,
+		localAddr:                 types.Address(txKey.Address()),
+		blsRaw:                    blsRaw,
+		blsPubKey:                 blsPubKey,
+		closeCh:                   make(chan struct{}),
+		requests:                  make(map[types.Hash]*requestState),
+		reserveWarned:             make(map[string]bool),
+		ilnLocalVotes:             make(map[types.Hash]*ilnLocalVoteState),
+		ilnCompletedPublished:     make(map[string]time.Time),
+		ilnCompletedInbound:       make(map[peer.ID]ilnCompleteInboundBucket),
+		ilnCheckpoints:            make(map[types.Hash]*ilnCheckpointState),
+		ilnRouteLastPublished:     make(map[string]time.Time),
+		ilnRouteLastSeen:          make(map[peer.ID]time.Time),
+		governance:                make(map[types.Hash]*governanceState),
+		governanceExecuteCh:       make(chan governanceExecuteRequest, 1),
 		governanceExecuteInFlight: make(map[string]struct{}),
 	}, nil
 }
@@ -312,8 +334,10 @@ func (w *Worker) Start() error {
 	}
 	// Static route aliases must also be available for public RPC requests,
 	// including on a node that is currently not an eligible ILN signer.
-	for _,route := range w.routes {
-		if err := w.registerILNRPCRoute(route); err != nil { return err }
+	for _, route := range w.routes {
+		if err := w.registerILNRPCRoute(route); err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(w.ilnVoteDir(), 0o770); err != nil {
 		return err
@@ -337,12 +361,14 @@ func (w *Worker) Start() error {
 		return err
 	}
 
-	rpcContext,rpcCancel:=context.WithCancel(context.Background())
-	w.rpcCancel=rpcCancel
-	for _,destination:=range w.destinations{destination.SetILNRPCScope(rpcContext)}
+	rpcContext, rpcCancel := context.WithCancel(context.Background())
+	w.rpcCancel = rpcCancel
+	for _, destination := range w.destinations {
+		destination.SetILNRPCScope(rpcContext)
+	}
 	w.wg.Add(5)
-    go w.heartbeatLoop()
-    go w.quorumHintLoop()
+	go w.heartbeatLoop()
+	go w.quorumHintLoop()
 	go w.storageMaintenanceLoop()
 	go w.governanceExecuteLoop()
 	go w.loop()
@@ -355,7 +381,9 @@ func (w *Worker) Close() {
 	default:
 		close(w.closeCh)
 	}
-	if w.rpcCancel!=nil{w.rpcCancel()}
+	if w.rpcCancel != nil {
+		w.rpcCancel()
+	}
 	w.wg.Wait()
 	_ = os.Remove(w.heartbeatPath())
 	if w.topic != nil {
@@ -390,9 +418,11 @@ func (w *Worker) loop() {
 // dueILNPeriodicPolling updates a loop-local schedule before performing a
 // potentially failing RPC operation. A 429 must never cause a 2-second retry
 // storm. On-demand quorum and membership requests bypass this background gate.
-func dueILNPeriodicPolling(now time.Time,last *time.Time,interval time.Duration)bool{
-	if !last.IsZero()&&now.Sub(*last)<interval{return false}
-	*last=now
+func dueILNPeriodicPolling(now time.Time, last *time.Time, interval time.Duration) bool {
+	if !last.IsZero() && now.Sub(*last) < interval {
+		return false
+	}
+	*last = now
 	return true
 }
 
@@ -416,8 +446,8 @@ func (w *Worker) tick() {
 	if err := w.processLocalGovernanceRequests(); err != nil {
 		w.logger.Warn("process local ILN governance requests failed", "err", err)
 	}
-	now:=time.Now()
-	if dueILNPeriodicPolling(now,&w.ilnLastMembershipPoll,ilnExternalMembershipInterval) {
+	now := time.Now()
+	if dueILNPeriodicPolling(now, &w.ilnLastMembershipPoll, ilnExternalMembershipInterval) {
 		for _, destination := range w.destinations {
 			poll, err := evmInterchain.PollMembershipRegistry(destination, w.localAddr)
 			if err != nil {
@@ -438,62 +468,72 @@ func (w *Worker) tick() {
 			}
 		}
 	}
-	if dueILNPeriodicPolling(now,&w.ilnLastDiscoveryPoll,ilnExternalDiscoveryInterval) {
+	if dueILNPeriodicPolling(now, &w.ilnLastDiscoveryPoll, ilnExternalDiscoveryInterval) {
 		w.discoverILNRoutes()
 		w.publishVerifiedILNRoutes()
 	}
 	// The full independent fallback scanner remains on its ten-minute cadence.
 	// During catch-up, poll only external sources with a locally observed lag.
-	fullScan:=dueILNPeriodicPolling(now,&w.ilnLastCheckpointPoll,ilnExternalCheckpointInterval)
-	catchupScan:=false
+	fullScan := dueILNPeriodicPolling(now, &w.ilnLastCheckpointPoll, ilnExternalCheckpointInterval)
+	catchupScan := false
 	if fullScan {
-		w.ilnLastCatchupPoll=now
+		w.ilnLastCatchupPoll = now
 	} else if w.hasILNExternalObserverBacklog() {
-		catchupScan=dueILNPeriodicPolling(now,&w.ilnLastCatchupPoll,ilnExternalCatchupInterval)
+		catchupScan = dueILNPeriodicPolling(now, &w.ilnLastCatchupPoll, ilnExternalCatchupInterval)
 	}
-	if fullScan||catchupScan {
+	if fullScan || catchupScan {
 		w.mu.Lock()
-		activeRoutes:=make([]*evmInterchain.CheckpointRoute,0,len(w.routes))
-		for _,route:=range w.routes{activeRoutes=append(activeRoutes,route)}
-		w.mu.Unlock()
-		ready:=make([]*evmInterchain.CheckpointRoute,0,len(activeRoutes))
-		for _,route:=range activeRoutes{
-			if !fullScan&&!w.ilnSourceHasExternalObserverBacklog(route.SourceNetwork){continue}
-			if w.directILNScanMayRun(route,now){ready=append(ready,route)}
+		activeRoutes := make([]*evmInterchain.CheckpointRoute, 0, len(w.routes))
+		for _, route := range w.routes {
+			activeRoutes = append(activeRoutes, route)
 		}
-		if len(ready)>0 {
-			failures:=w.scanILNObserverRoutes(ready)
-			w.finishILNObserverScanBackoff(ready,failures,time.Now())
-			for _,route:=range ready{
-				if err:=failures[route.Name];err!=nil {
-					w.recordILNDirectScanFailure(route,err)
+		w.mu.Unlock()
+		ready := make([]*evmInterchain.CheckpointRoute, 0, len(activeRoutes))
+		for _, route := range activeRoutes {
+			if !fullScan && !w.ilnSourceHasExternalObserverBacklog(route.SourceNetwork) {
+				continue
+			}
+			if w.directILNScanMayRun(route, now) {
+				ready = append(ready, route)
+			}
+		}
+		if len(ready) > 0 {
+			failures := w.scanILNObserverRoutes(ready)
+			w.finishILNObserverScanBackoff(ready, failures, time.Now())
+			for _, route := range ready {
+				if err := failures[route.Name]; err != nil {
+					w.recordILNDirectScanFailure(route, err)
 					w.logger.Debug("Direct BLS source observation pending",
-						"route",route.Name,"err",err)
+						"route", route.Name, "err", err)
 				}
 			}
 		}
 	}
-	if dueILNPeriodicPolling(now,&w.ilnLastHealthWrite,ilnLocalHealthInterval) {
+	if dueILNPeriodicPolling(now, &w.ilnLastHealthWrite, ilnLocalHealthInterval) {
 		// v3.2.1: purely local persisted observations; never query Base/XGR.
 		w.writeILNIndexerHealth()
 	}
 	w.rebroadcastPendingRequests()
-	if dueILNPeriodicPolling(now,&w.ilnLastRetryPoll,ilnExternalRetryInterval) {
+	if dueILNPeriodicPolling(now, &w.ilnLastRetryPoll, ilnExternalRetryInterval) {
 		// Pending votes/message repair may require remote reads. They MUST NOT
 		// retry every 2s when the remote chain rate-limits a validator.
 		w.rebroadcastILNCheckpointVotes()
-        w.rebroadcastILNCompletedQuorums()
+		w.rebroadcastILNCompletedQuorums()
 		w.trySubmissions()
 	}
 	w.rebroadcastGovernance()
 }
 
-func (w *Worker) requestDir() string { return filepath.Join(w.dataDir, "interchain", "requests") }
-func (w *Worker) resultDir() string  { return filepath.Join(w.dataDir, "interchain", "results") }
-func (w *Worker) pendingDir() string { return filepath.Join(w.dataDir, "interchain", "pending") }
+func (w *Worker) requestDir() string           { return filepath.Join(w.dataDir, "interchain", "requests") }
+func (w *Worker) resultDir() string            { return filepath.Join(w.dataDir, "interchain", "results") }
+func (w *Worker) pendingDir() string           { return filepath.Join(w.dataDir, "interchain", "pending") }
 func (w *Worker) pendingPath(id string) string { return filepath.Join(w.pendingDir(), id+".json") }
-func (w *Worker) attestationDir() string { return filepath.Join(w.dataDir, "interchain", "attestations") }
-func (w *Worker) heartbeatPath() string { return filepath.Join(w.dataDir, "interchain", "worker.heartbeat") }
+func (w *Worker) attestationDir() string {
+	return filepath.Join(w.dataDir, "interchain", "attestations")
+}
+func (w *Worker) heartbeatPath() string {
+	return filepath.Join(w.dataDir, "interchain", "worker.heartbeat")
+}
 
 func (w *Worker) persistLocalPending(id string, req localRequest) error {
 	raw, err := json.Marshal(req)
@@ -566,7 +606,7 @@ func (w *Worker) attachLocalToPending(id, chain string, setID uint64, action pro
 			continue
 		}
 		if state.request.Chain == chain &&
-			state.payload.SetID == setID &&
+			state.payload.ExpectedSetID == setID &&
 			state.payload.Action == action &&
 			state.payload.Validator == validator &&
 			bytes.Equal(state.payload.BLSPublicKey, blsKey) {
@@ -589,7 +629,7 @@ func (w *Worker) hasPendingMembership(chain string, setID uint64, action protoco
 			continue
 		}
 		if state.request.Chain == chain &&
-			state.payload.SetID == setID &&
+			state.payload.ExpectedSetID == setID &&
 			state.payload.Action == action &&
 			state.payload.Validator == validator {
 			return true
@@ -600,19 +640,19 @@ func (w *Worker) hasPendingMembership(chain string, setID uint64, action protoco
 
 // The worker heartbeat must not depend on slow external EVM RPCs in tick().
 func (w *Worker) heartbeatLoop() {
-    defer w.wg.Done()
-    ticker:=time.NewTicker(2*time.Second)
-    defer ticker.Stop()
-    for {
-        select {
-        case <-w.closeCh:
-            return
-        case <-ticker.C:
-            if err:=w.touchHeartbeat();err!=nil{
-                w.logger.Warn("update interchain worker heartbeat failed","err",err)
-            }
-        }
-    }
+	defer w.wg.Done()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-w.closeCh:
+			return
+		case <-ticker.C:
+			if err := w.touchHeartbeat(); err != nil {
+				w.logger.Warn("update interchain worker heartbeat failed", "err", err)
+			}
+		}
+	}
 }
 
 func (w *Worker) touchHeartbeat() error {
@@ -662,108 +702,90 @@ func (w *Worker) startLocalRequest(id string, req localRequest) error {
 	if destination == nil {
 		return fmt.Errorf("destination %q is not configured on the validator node", req.Chain)
 	}
-
+	adapter, err := destination.AuthorizationAdapter()
+	if err != nil {
+		return err
+	}
+	if w.state == nil || !w.state.IsSynchronized() {
+		return fmt.Errorf("interchain membership signing is paused while XGR node is synchronizing")
+	}
 	info, err := w.state.ValidatorInfo(w.localAddr)
 	if err != nil {
 		return err
 	}
-	if !info.Exists {
+	if info == nil || !info.Exists {
 		return fmt.Errorf("local validator is not registered in XGR PoS")
 	}
 	if req.Active && !info.Active {
 		return fmt.Errorf("local validator is not active in XGR PoS")
 	}
-	if !bytes.Equal(info.BLSPubKey, w.blsPubKey) {
-		return fmt.Errorf("local BLS key does not match XGR staking state")
+	localKey := w.localVerificationKey(adapter)
+	if !validatorIdentityMatches(adapter, w.localAddr, info, localKey) {
+		return fmt.Errorf("local signing key does not match XGR staking identity")
 	}
-
-	set, err := evmInterchain.GetValidatorSet(destination)
+	set, err := getMembershipValidatorSet(destination)
 	if err != nil {
+		return err
+	}
+	if _, err := validateAuthorizationSet(destination, set); err != nil {
 		return err
 	}
 	currentIndex := indexOf(set.Validators, w.localAddr)
 	currentActive := currentIndex >= 0
-	currentIdentityMatches := currentActive && bytes.Equal(set.BLSPublicKeys[currentIndex], w.blsPubKey)
+	currentIdentityMatches := currentActive && bytes.Equal(set.AuthorizationSet().PublicKeys[currentIndex], localKey)
 	if (!req.Active && !currentActive) || (req.Active && currentIdentityMatches) {
-		return w.completeLocalResult(id, localResult{
-			Done: true, Validator: w.localAddr.String(), Active: req.Active, Changed: false, SetID: set.SetID,
-		})
+		return w.completeLocalResult(id, localResult{Done: true, Validator: w.localAddr.String(), Active: req.Active, Changed: false, SetID: set.SetID})
 	}
 	if req.Active && currentActive && !currentIdentityMatches {
-		return fmt.Errorf("destination still contains the validator with an old BLS key; wait for forced removal before re-activation")
+		return fmt.Errorf("destination still contains an old validator signing identity; wait for forced removal before re-activation")
 	}
-
 	action := protocol.ActionRemoveValidator
 	if req.Active {
 		action = protocol.ActionAddValidator
 	}
-	if w.attachLocalToPending(id, destination.Name, set.SetID, action, w.localAddr, w.blsPubKey) {
+	pendingKey := localKey
+	if adapter.Scheme() == authorization.SchemeECDSA {
+		pendingKey = nil
+	}
+	if w.attachLocalToPending(id, destination.Name, set.SetID, action, w.localAddr, pendingKey) {
 		return nil
 	}
-	eip2537Key, err := crypto.BLSPublicKeyToEIP2537(w.blsPubKey)
-	if err != nil {
-		return err
-	}
-	payload := protocol.MembershipPayload{
-		OriginChainID:     w.state.OriginChainID(),
-		DestinationDomain: destination.Domain,
-		SetID:             set.SetID,
-		ValidUntil:        uint64(time.Now().Add(time.Duration(destination.MembershipValiditySeconds) * time.Second).Unix()),
-		Action:            action,
-		Validator:           w.localAddr,
-		BLSPublicKey:        w.blsPubKey,
-		BLSPublicKeyEIP2537: eip2537Key,
-	}
-	blsKey, err := crypto.BytesToBLSSecretKey(w.blsRaw)
+	payload, err := w.membershipPayload(destination, adapter, set.SetID, action, w.localAddr, localKey)
 	if err != nil {
 		return err
 	}
 	if req.Active {
-		// Registry V3 requires the candidate's BLS key ownership to be proven
-		// on the destination before the unchanged membership quorum request.
-		bootstrap, err := protocol.MarshalBootstrapPayload(
-			payload.OriginChainID, payload.DestinationDomain, payload.Validator,
-			payload.BLSPublicKey, payload.BLSPublicKeyEIP2537,
-		)
+		proof, err := adapter.SignPossession(w.authorizationKeys(), payload)
 		if err != nil {
-			return fmt.Errorf("build Registry V3 candidate possession payload: %w", err)
+			return fmt.Errorf("sign candidate possession: %w", err)
 		}
-		proof, err := crypto.SignByBLS(blsKey, bootstrap)
-		if err != nil {
-			return fmt.Errorf("sign Registry V3 candidate possession payload: %w", err)
+		if err := evmInterchain.EnsureValidatorPossessionAuthorization(destination, w.txKey, payload, proof); err != nil {
+			return fmt.Errorf("register candidate possession: %w", err)
 		}
-		if err := evmInterchain.EnsureValidatorPossession(destination, w.txKey, payload, proof); err != nil {
-			return fmt.Errorf("register Registry V3 candidate possession: %w", err)
-		}
-		// A prior PoP transaction must never shorten quorum-signing validity.
-		// Fail closed if another membership change happened during registration.
-		latestSet, err := evmInterchain.GetValidatorSet(destination)
+		latestSet, err := getMembershipValidatorSet(destination)
 		if err != nil {
 			return fmt.Errorf("recheck validator set after possession: %w", err)
 		}
-		if latestSet.SetID != payload.SetID {
+		if latestSet.SetID != payload.ExpectedSetID {
 			return fmt.Errorf("validator set changed during possession registration: retry set-active")
 		}
-		payload.ValidUntil = uint64(time.Now().Add(
-			time.Duration(destination.MembershipValiditySeconds) * time.Second).Unix())
+		payload.ValidUntil = uint64(time.Now().Add(time.Duration(destination.MembershipValiditySeconds) * time.Second).Unix())
 	}
-	rawPayload, err := payload.MarshalBinary()
+	rawPayload, err := adapter.EncodeMembership(payload)
 	if err != nil {
 		return err
 	}
-	selfSig, err := crypto.SignByBLS(blsKey, rawPayload)
-	if err != nil {
-		return err
+	if !w.state.IsSynchronized() {
+		return fmt.Errorf("interchain membership signing lost XGR synchronization")
 	}
-
-	reqWire := wireRequest{
-		Chain:              destination.Name,
-		Payload:            rawPayload,
-		CandidateSignature: selfSig,
-	}
+	reqWire := wireRequest{Chain: destination.Name, Payload: rawPayload}
 	if action == protocol.ActionRemoveValidator && !info.Active {
 		reqWire.Forced = true
-		reqWire.CandidateSignature = nil
+	} else {
+		reqWire.CandidateSignature, err = adapter.SignMembership(w.authorizationKeys(), payload, time.Now())
+		if err != nil {
+			return err
+		}
 	}
 	if err := w.acceptRequest(reqWire); err != nil {
 		return err
@@ -777,7 +799,6 @@ func (w *Worker) startLocalRequest(id string, req localRequest) error {
 		state.localRequestIDs[id] = struct{}{}
 	}
 	w.mu.Unlock()
-	// Do not rely on libp2p self-delivery for the local validator's own vote.
 	if err := w.vote(reqWire); err != nil {
 		return err
 	}
@@ -806,32 +827,28 @@ func (w *Worker) checkLocalReserve(destination *evmInterchain.Destination, detai
 }
 
 func (w *Worker) detectForcedRemovals(destination *evmInterchain.Destination, set *evmInterchain.ValidatorSet) error {
+	adapter, err := validateAuthorizationSet(destination, set)
+	if err != nil {
+		return err
+	}
+
 	for idx, validator := range set.Validators {
 		info, err := w.state.ValidatorInfo(validator)
 		if err != nil {
 			return err
 		}
-		if info.Exists && info.Active && bytes.Equal(info.BLSPubKey, set.BLSPublicKeys[idx]) {
+		key := set.AuthorizationSet().PublicKeys[idx]
+		if info != nil && info.Active && validatorIdentityMatches(adapter, validator, info, key) {
 			continue
 		}
 		if w.hasPendingMembership(destination.Name, set.SetID, protocol.ActionRemoveValidator, validator) {
 			continue
 		}
-		eip2537Key, err := crypto.BLSPublicKeyToEIP2537(set.BLSPublicKeys[idx])
+		payload, err := w.membershipPayload(destination, adapter, set.SetID, protocol.ActionRemoveValidator, validator, key)
 		if err != nil {
 			return err
 		}
-		payload := protocol.MembershipPayload{
-			OriginChainID:     w.state.OriginChainID(),
-			DestinationDomain: destination.Domain,
-			SetID:             set.SetID,
-			ValidUntil:        uint64(time.Now().Add(time.Duration(destination.MembershipValiditySeconds) * time.Second).Unix()),
-			Action:            protocol.ActionRemoveValidator,
-			Validator:           validator,
-			BLSPublicKey:        set.BLSPublicKeys[idx],
-			BLSPublicKeyEIP2537: eip2537Key,
-		}
-		raw, err := payload.MarshalBinary()
+		raw, err := adapter.EncodeMembership(payload)
 		if err != nil {
 			return err
 		}
@@ -839,7 +856,6 @@ func (w *Worker) detectForcedRemovals(destination *evmInterchain.Destination, se
 		if err := w.acceptRequest(req); err != nil {
 			continue
 		}
-		// Sign locally immediately; remote delivery is only for the other validators.
 		_ = w.vote(req)
 		_ = w.publish(wireEnvelope{Type: "request", Req: &req})
 	}
@@ -847,11 +863,13 @@ func (w *Worker) detectForcedRemovals(destination *evmInterchain.Destination, se
 }
 
 func (w *Worker) handleWire(raw []byte) error {
-    return w.handleWireFrom(raw,"")
+	return w.handleWireFrom(raw, "")
 }
 func (w *Worker) handleWireFrom(raw []byte, from peer.ID) error {
-    if len(raw)>128<<10 {return fmt.Errorf("oversized interchain gossip frame")}
-    var envelope wireEnvelope
+	if len(raw) > 128<<10 {
+		return fmt.Errorf("oversized interchain gossip frame")
+	}
+	var envelope wireEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return err
 	}
@@ -872,21 +890,31 @@ func (w *Worker) handleWireFrom(raw []byte, from peer.ID) error {
 	case "checkpoint_vote":
 		return fmt.Errorf("legacy v3.1.1 checkpoint votes are disabled in v3.1.3")
 	case "iln_quorum_request":
-		if envelope.ILNQuorumRequest == nil { return fmt.Errorf("missing ILN quorum request") }
+		if envelope.ILNQuorumRequest == nil {
+			return fmt.Errorf("missing ILN quorum request")
+		}
 		return w.acceptRequestedILNQuorum(*envelope.ILNQuorumRequest)
 	case "iln_route_notice":
-        if envelope.ILNRouteNotice==nil{return fmt.Errorf("missing ILN route notice")}
-        if from==""{return fmt.Errorf("ILN route notice requires authenticated peer")}
-        return w.acceptVerifiedILNRouteNotice(from,*envelope.ILNRouteNotice)
-    case "iln_checkpoint_vote":
-        if envelope.ILNCheckpointVote == nil {
+		if envelope.ILNRouteNotice == nil {
+			return fmt.Errorf("missing ILN route notice")
+		}
+		if from == "" {
+			return fmt.Errorf("ILN route notice requires authenticated peer")
+		}
+		return w.acceptVerifiedILNRouteNotice(from, *envelope.ILNRouteNotice)
+	case "iln_checkpoint_vote":
+		if envelope.ILNCheckpointVote == nil {
 			return fmt.Errorf("missing ILN checkpoint vote")
 		}
 		return w.acceptILNCheckpointVote(*envelope.ILNCheckpointVote)
-    case "iln_completed_quorum":
-        if envelope.ILNCompletedQuorum==nil{return fmt.Errorf("missing completed Direct-BLS quorum")}
-        if !w.allowILNCompletedQuorumFrom(from){return fmt.Errorf("rate limited Direct-BLS completed quorum gossip")}
-        return w.acceptILNCompletedQuorum(*envelope.ILNCompletedQuorum)
+	case "iln_completed_quorum":
+		if envelope.ILNCompletedQuorum == nil {
+			return fmt.Errorf("missing completed Direct-BLS quorum")
+		}
+		if !w.allowILNCompletedQuorumFrom(from) {
+			return fmt.Errorf("rate limited Direct-BLS completed quorum gossip")
+		}
+		return w.acceptILNCompletedQuorum(*envelope.ILNCompletedQuorum)
 	case "governance_proposal":
 		if envelope.GovernanceProposal == nil {
 			return fmt.Errorf("missing governance proposal")
@@ -908,9 +936,16 @@ func (w *Worker) acceptRequest(req wireRequest) error {
 		return fmt.Errorf("destination %q is not configured", req.Chain)
 	}
 
-	var payload protocol.MembershipPayload
-	if err := payload.UnmarshalBinary(req.Payload); err != nil {
+	adapter, err := destination.AuthorizationAdapter()
+	if err != nil {
 		return err
+	}
+	payload, err := adapter.DecodeMembership(req.Payload)
+	if err != nil {
+		return err
+	}
+	if adapter.Scheme() == authorization.SchemeECDSA && payload.Registry != types.StringToAddress(destination.RegistryAddress) {
+		return fmt.Errorf("membership registry binding mismatch")
 	}
 	if payload.OriginChainID != w.state.OriginChainID() {
 		return fmt.Errorf("origin chain id mismatch")
@@ -926,11 +961,14 @@ func (w *Worker) acceptRequest(req wireRequest) error {
 		return fmt.Errorf("interchain membership request validity exceeds maximum lifetime")
 	}
 
-	set, err := evmInterchain.GetValidatorSet(destination)
+	set, err := getMembershipValidatorSet(destination)
 	if err != nil {
 		return err
 	}
-	if set.SetID != payload.SetID {
+	if _, err := validateAuthorizationSet(destination, set); err != nil {
+		return err
+	}
+	if set.SetID != payload.ExpectedSetID {
 		return fmt.Errorf("stale request set id")
 	}
 
@@ -940,16 +978,16 @@ func (w *Worker) acceptRequest(req wireRequest) error {
 	}
 	switch payload.Action {
 	case protocol.ActionAddValidator:
-		if !info.Exists || !info.Active {
+		if info == nil || !info.Exists || !info.Active {
 			return fmt.Errorf("activation candidate is not active in XGR PoS")
 		}
-		if !bytes.Equal(info.BLSPubKey, payload.BLSPublicKey) {
+		if !validatorIdentityMatches(adapter, payload.Validator, info, membershipVerificationKey(adapter, payload)) {
 			return fmt.Errorf("activation candidate BLS key mismatch")
 		}
 		if len(req.CandidateSignature) == 0 {
-			return fmt.Errorf("activation request lacks candidate proof of BLS key control")
+			return fmt.Errorf("activation request lacks candidate proof of key control")
 		}
-		if err := crypto.VerifyBLSSignatureFromBytes(payload.BLSPublicKey, req.CandidateSignature, req.Payload); err != nil {
+		if err := adapter.VerifyMembershipVote(candidateSet(adapter, payload), 0, payload, req.CandidateSignature); err != nil {
 			return fmt.Errorf("invalid activation candidate signature: %w", err)
 		}
 	case protocol.ActionRemoveValidator:
@@ -960,10 +998,10 @@ func (w *Worker) acceptRequest(req wireRequest) error {
 		if idx < 0 {
 			return fmt.Errorf("removal target is not in current interchain set")
 		}
-		if !bytes.Equal(set.BLSPublicKeys[idx], payload.BLSPublicKey) {
+		if !bytes.Equal(set.AuthorizationSet().PublicKeys[idx], membershipVerificationKey(adapter, payload)) {
 			return fmt.Errorf("removal target BLS key differs from destination set")
 		}
-		xgrEligible := info.Exists && info.Active && bytes.Equal(info.BLSPubKey, payload.BLSPublicKey)
+		xgrEligible := info != nil && info.Active && validatorIdentityMatches(adapter, payload.Validator, info, membershipVerificationKey(adapter, payload))
 		if xgrEligible {
 			if req.Forced {
 				return fmt.Errorf("forced removal target remains eligible in XGR PoS")
@@ -971,7 +1009,7 @@ func (w *Worker) acceptRequest(req wireRequest) error {
 			if len(req.CandidateSignature) == 0 {
 				return fmt.Errorf("voluntary removal lacks validator signature")
 			}
-			if err := crypto.VerifyBLSSignatureFromBytes(payload.BLSPublicKey, req.CandidateSignature, req.Payload); err != nil {
+			if err := adapter.VerifyMembershipVote(candidateSet(adapter, payload), 0, payload, req.CandidateSignature); err != nil {
 				return fmt.Errorf("invalid voluntary removal signature: %w", err)
 			}
 		} else if !req.Forced {
@@ -998,24 +1036,55 @@ func (w *Worker) interchainSignerEligible(set *evmInterchain.ValidatorSet, valid
 		return false, nil
 	}
 	idx := indexOf(set.Validators, validator)
+	keys := set.AuthorizationSet().PublicKeys
 	if idx < 0 {
 		return false, nil
+	}
+	if idx >= len(keys) {
+		return false, fmt.Errorf("validator set has no matching verification key")
+	}
+	scheme := set.Scheme
+	if scheme == "" {
+		scheme = authorization.SchemeBLS
+	}
+	adapter, err := authorization.ForScheme(scheme)
+	if err != nil {
+		return false, err
 	}
 	info, err := w.state.ValidatorInfo(validator)
 	if err != nil {
 		return false, err
 	}
-	return info.Exists && info.Active && bytes.Equal(info.BLSPubKey, set.BLSPublicKeys[idx]), nil
+	return info != nil && info.Active && validatorIdentityMatches(adapter, validator, info, keys[idx]), nil
 }
 
 func (w *Worker) vote(req wireRequest) error {
-	if !w.state.IsSynchronized() {
+	if w.state == nil || !w.state.IsSynchronized() {
 		return nil
 	}
 	destination := w.destinations[req.Chain]
-	set, err := evmInterchain.GetValidatorSet(destination)
+	adapter, err := destination.AuthorizationAdapter()
 	if err != nil {
 		return err
+	}
+	// Every signing entry reuses the same complete consent/eligibility checks;
+	// a peer request or an expired in-memory record is never signing authority.
+	if err := w.acceptRequest(req); err != nil {
+		return err
+	}
+	payload, err := adapter.DecodeMembership(req.Payload)
+	if err != nil {
+		return err
+	}
+	set, err := getMembershipValidatorSet(destination)
+	if err != nil {
+		return err
+	}
+	if _, err := validateAuthorizationSet(destination, set); err != nil {
+		return err
+	}
+	if set.SetID != payload.ExpectedSetID {
+		return fmt.Errorf("membership set rotated before signing")
 	}
 	localIndex := indexOf(set.Validators, w.localAddr)
 	if localIndex < 0 {
@@ -1028,15 +1097,13 @@ func (w *Worker) vote(req wireRequest) error {
 	if !eligible {
 		return nil
 	}
-	if !bytes.Equal(set.BLSPublicKeys[localIndex], w.blsPubKey) {
-		return fmt.Errorf("destination BLS identity differs from local XGR BLS identity")
+	if !bytes.Equal(set.AuthorizationSet().PublicKeys[localIndex], w.localVerificationKey(adapter)) {
+		return fmt.Errorf("destination signing identity differs from local validator identity")
 	}
-
-	blsKey, err := crypto.BytesToBLSSecretKey(w.blsRaw)
-	if err != nil {
-		return err
+	if !w.state.IsSynchronized() {
+		return fmt.Errorf("membership signing lost XGR synchronization")
 	}
-	sig, err := crypto.SignByBLS(blsKey, req.Payload)
+	sig, err := adapter.SignMembership(w.authorizationKeys(), payload, time.Now())
 	if err != nil {
 		return err
 	}
@@ -1060,11 +1127,14 @@ func (w *Worker) acceptVote(vote wireVote) error {
 	if rs == nil {
 		return nil
 	}
+	if rs.request.Chain != vote.Chain {
+		return fmt.Errorf("membership vote destination differs from accepted request")
+	}
 	if !bytes.Equal(rs.request.Payload, vote.Payload) {
 		return fmt.Errorf("vote payload mismatch")
 	}
 
-	set, err := evmInterchain.GetValidatorSet(destination)
+	set, err := getMembershipValidatorSet(destination)
 	if err != nil {
 		return err
 	}
@@ -1079,7 +1149,14 @@ func (w *Worker) acceptVote(vote wireVote) error {
 	if !eligible {
 		return fmt.Errorf("vote signer is not currently eligible for interchain signing")
 	}
-	if err := crypto.VerifyBLSSignatureFromBytes(set.BLSPublicKeys[index], vote.Signature, vote.Payload); err != nil {
+	adapter, err := validateAuthorizationSet(destination, set)
+	if err != nil {
+		return err
+	}
+	if rs.payload.ExpectedSetID != set.SetID || rs.payload.ValidUntil < uint64(time.Now().Unix()) {
+		return fmt.Errorf("stale or expired membership vote")
+	}
+	if err := adapter.VerifyMembershipVote(set.AuthorizationSet(), index, rs.payload, vote.Signature); err != nil {
 		return fmt.Errorf("invalid interchain vote: %w", err)
 	}
 
@@ -1128,11 +1205,11 @@ func (w *Worker) trySubmit(hash types.Hash) error {
 		return nil
 	}
 	destination := w.destinations[request.Chain]
-	set, err := evmInterchain.GetValidatorSet(destination)
+	set, err := getMembershipValidatorSet(destination)
 	if err != nil {
 		return err
 	}
-	if set.SetID != payload.SetID {
+	if set.SetID != payload.ExpectedSetID {
 		return w.finishStale(hash, request, payload, destination)
 	}
 
@@ -1152,7 +1229,11 @@ func (w *Worker) trySubmit(hash types.Hash) error {
 		votes = append(votes, protocol.Vote{ValidatorIndex: idx, Signature: sig})
 	}
 	sort.Slice(votes, func(i, j int) bool { return votes[i].ValidatorIndex < votes[j].ValidatorIndex })
-	bitmap, aggregate, err := protocol.AggregateVotes(set.BLSPublicKeys, votes, request.Payload)
+	adapter, err := validateAuthorizationSet(destination, set)
+	if err != nil {
+		return err
+	}
+	proof, err := adapter.AssembleMembershipQuorum(set.AuthorizationSet(), votes, payload)
 	if err != nil {
 		return err
 	}
@@ -1162,7 +1243,7 @@ func (w *Worker) trySubmit(hash types.Hash) error {
 		return err
 	}
 	if payload.Action == protocol.ActionAddValidator {
-		if !info.Exists || !info.Active || !bytes.Equal(info.BLSPubKey, payload.BLSPublicKey) {
+		if info == nil || !info.Active || !validatorIdentityMatches(adapter, payload.Validator, info, membershipVerificationKey(adapter, payload)) {
 			return fmt.Errorf("activation candidate lost XGR PoS eligibility before submission")
 		}
 		// The candidate funds its own activation reserve and destination gas.
@@ -1170,7 +1251,7 @@ func (w *Worker) trySubmit(hash types.Hash) error {
 			return nil
 		}
 	} else {
-		xgrEligible := info.Exists && info.Active && bytes.Equal(info.BLSPubKey, payload.BLSPublicKey)
+		xgrEligible := info != nil && info.Active && validatorIdentityMatches(adapter, payload.Validator, info, membershipVerificationKey(adapter, payload))
 		if request.Forced && xgrEligible {
 			return fmt.Errorf("forced removal target regained XGR PoS eligibility before submission")
 		}
@@ -1189,8 +1270,10 @@ func (w *Worker) trySubmit(hash types.Hash) error {
 
 	reserve := big.NewInt(0)
 	if payload.Action == protocol.ActionAddValidator {
-		reserve,err = evmInterchain.MinimumDeactivationReserve(destination)
-        if err!=nil{return fmt.Errorf("read on-chain activation reserve: %w",err)}
+		reserve, err = evmInterchain.MinimumDeactivationReserve(destination)
+		if err != nil {
+			return fmt.Errorf("read on-chain activation reserve: %w", err)
+		}
 		balance, err := destinationBalance(destination, w.txKey.Address())
 		if err != nil {
 			return err
@@ -1200,7 +1283,7 @@ func (w *Worker) trySubmit(hash types.Hash) error {
 		}
 	}
 
-	result, err := evmInterchain.SubmitMembership(destination, w.txKey, payload, bitmap, aggregate, reserve)
+	result, err := evmInterchain.SubmitMembershipAuthorization(destination, w.txKey, payload, proof, reserve)
 	if err != nil {
 		return err
 	}
@@ -1251,7 +1334,7 @@ func (w *Worker) executorRank(set *evmInterchain.ValidatorSet, target types.Addr
 	return -1, nil
 }
 
-func (w *Worker) finishStale(hash types.Hash, _ wireRequest, payload protocol.MembershipPayload, destination *evmInterchain.Destination) error {
+func (w *Worker) finishStale(hash types.Hash, _ wireRequest, payload authorization.Membership, destination *evmInterchain.Destination) error {
 	status, err := evmInterchain.GetValidatorStatusForDestination(destination, payload.Validator)
 	if err != nil {
 		return err
@@ -1262,7 +1345,15 @@ func (w *Worker) finishStale(hash types.Hash, _ wireRequest, payload protocol.Me
 		if detailErr != nil {
 			return detailErr
 		}
-		desiredReached = details.Active && bytes.Equal(details.BLSPublicKey, payload.BLSPublicKey)
+		adapter, adapterErr := destination.AuthorizationAdapter()
+		if adapterErr != nil {
+			return adapterErr
+		}
+		key := details.VerificationKey
+		if key == nil && adapter.Scheme() == authorization.SchemeBLS {
+			key = details.BLSPublicKey
+		}
+		desiredReached = details.Active && bytes.Equal(key, membershipVerificationKey(adapter, payload))
 	}
 
 	w.mu.Lock()
@@ -1357,7 +1448,7 @@ func indexOf(values []types.Address, value types.Address) int {
 }
 
 func destinationBalance(destination *evmInterchain.Destination, address ethgo.Address) (*big.Int, error) {
- return evmInterchain.GetDestinationGasBalance(destination,address)
+	return evmInterchain.GetDestinationGasBalance(destination, address)
 }
 
 func stringsTrim(value string) string {

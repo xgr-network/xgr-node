@@ -45,17 +45,18 @@ func TestAcceptGovernanceProposalDoesNotAutoSign(t *testing.T) {
 				validator: {Exists: true, Active: true, BLSPubKey: append([]byte(nil), pub...)},
 			},
 		},
-		dataDir:      t.TempDir(),
-		localAddr:    validator,
-		blsRaw:       []byte(hex.EncodeToString(rawKey)),
-		blsPubKey:    pub,
+		dataDir:   t.TempDir(),
+		localAddr: validator,
+		blsRaw:    []byte(hex.EncodeToString(rawKey)),
+		blsPubKey: pub,
 		destinations: map[string]*evm.Destination{"xgr": destination, "base": &evm.Destination{
 			Name:               "base",
+			VerifierFormat:     evm.VerifierFormatEIP2537,
 			ChainID:            8453,
 			Domain:             8453,
 			ILNRegistryAddress: "0x5555555555555555555555555555555555555555",
 		}},
-		governance:   make(map[types.Hash]*governanceState),
+		governance: make(map[types.Hash]*governanceState),
 	}
 
 	proposal := testGovernanceProposal()
@@ -98,17 +99,18 @@ func TestGovernanceExplicitApprovalCreatesVoteAndQuorum(t *testing.T) {
 				validator: {Exists: true, Active: true, BLSPubKey: append([]byte(nil), pub...)},
 			},
 		},
-		dataDir:      dataDir,
-		localAddr:    validator,
-		blsRaw:       []byte(hex.EncodeToString(rawKey)),
-		blsPubKey:    pub,
+		dataDir:   dataDir,
+		localAddr: validator,
+		blsRaw:    []byte(hex.EncodeToString(rawKey)),
+		blsPubKey: pub,
 		destinations: map[string]*evm.Destination{"xgr": destination, "base": &evm.Destination{
 			Name:               "base",
+			VerifierFormat:     evm.VerifierFormatEIP2537,
 			ChainID:            8453,
 			Domain:             8453,
 			ILNRegistryAddress: "0x5555555555555555555555555555555555555555",
 		}},
-		governance:   make(map[types.Hash]*governanceState),
+		governance: make(map[types.Hash]*governanceState),
 	}
 
 	proposal := testGovernanceProposal()
@@ -144,11 +146,12 @@ func TestGovernanceRejectsStaleSetID(t *testing.T) {
 		dataDir: t.TempDir(),
 		destinations: map[string]*evm.Destination{"xgr": destination, "base": &evm.Destination{
 			Name:               "base",
+			VerifierFormat:     evm.VerifierFormatEIP2537,
 			ChainID:            8453,
 			Domain:             8453,
 			ILNRegistryAddress: "0x5555555555555555555555555555555555555555",
 		}},
-		governance:   make(map[types.Hash]*governanceState),
+		governance: make(map[types.Hash]*governanceState),
 	}
 
 	raw, err := testGovernanceProposal().MarshalBinary()
@@ -160,12 +163,12 @@ func TestGovernanceRejectsStaleSetID(t *testing.T) {
 
 func testGovernanceProposal() protocol.ILNSourceFeeProposal {
 	return protocol.ILNSourceFeeProposal{
-		Registry:   types.StringToAddress("0x5555555555555555555555555555555555555555"),
-		SetID:      7,
-		Nonce:      1,
-		ValidUntil: uint64(time.Now().Add(5 * time.Minute).Unix()),
-		SourceChainID:8453,
-		SourceDomain:8453,
-		ValidatorFeeWei:big.NewInt(1),
+		Registry:        types.StringToAddress("0x5555555555555555555555555555555555555555"),
+		SetID:           7,
+		Nonce:           1,
+		ValidUntil:      uint64(time.Now().Add(5 * time.Minute).Unix()),
+		SourceChainID:   8453,
+		SourceDomain:    8453,
+		ValidatorFeeWei: big.NewInt(1),
 	}
 }

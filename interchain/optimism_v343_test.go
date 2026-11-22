@@ -32,7 +32,7 @@ func TestV343OptimismReceiptPinnedAndSafeOnly(t *testing.T) {
  require.Equal(t,p,byID)
  active,err:=ActivePolicies()
  require.NoError(t,err)
- require.Len(t,active,5)
+ require.Len(t,active,6)
  require.Equal(t,"optimism",active[4].Name)
 }
 

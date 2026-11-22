@@ -11,6 +11,7 @@ import (
 
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
 	"github.com/xgr-network/xgr-node/crypto"
+	"github.com/xgr-network/xgr-node/interchain/authorization"
 	"github.com/xgr-network/xgr-node/txrelayer"
 	"github.com/xgr-network/xgr-node/types"
 )
@@ -20,6 +21,11 @@ import (
 var possessionABI = abi.MustNewABI(`[
 	{"inputs":[{"name":"validator","type":"address"},{"name":"blsKey","type":"bytes"},{"name":"blsKeyEIP2537","type":"bytes"},{"name":"possessionProof","type":"bytes"}],"name":"provePossession","outputs":[],"stateMutability":"nonpayable","type":"function"},
 	{"inputs":[{"name":"keyHash","type":"bytes32"}],"name":"possessionVerified","outputs":[{"name":"","type":"bool"}],"stateMutability":"view","type":"function"}
+]`)
+
+var ecdsaPossessionABI = abi.MustNewABI(`[
+ {"name":"provePossession","type":"function","stateMutability":"nonpayable","inputs":[{"name":"validator","type":"address"},{"name":"proof","type":"bytes"}],"outputs":[]},
+ {"name":"possessionVerified","type":"function","stateMutability":"view","inputs":[{"name":"validator","type":"address"}],"outputs":[{"name":"","type":"bool"}]}
 ]`)
 
 // The following ABI is solely a local encoder for Solidity's
@@ -45,36 +51,119 @@ func possessionKeyHash(payload protocol.MembershipPayload) (types.Hash, error) {
 	return crypto.Keccak256Hash(encoded), nil
 }
 
-// readPossessionVerified never treats unavailable ABI or RPC reads as false
-// proof authorization. A missing V3 mapping is an integration error.
+// readPossessionVerified retains the V3 getter for existing BLS callers.
 func readPossessionVerified(destination *Destination, payload protocol.MembershipPayload) (bool, error) {
-	if destination.ChainID!=1643 { if err:=VerifyDestinationChainID(destination);err!=nil{return false,err} }
-	hash, err := possessionKeyHash(payload)
+	adapter, err := destination.AuthorizationAdapter()
 	if err != nil {
 		return false, err
 	}
-	method := possessionABI.Methods["possessionVerified"]
-	if method == nil {
-		return false, fmt.Errorf("registry V3 ABI missing possessionVerified")
+	if adapter.Scheme() != authorization.SchemeBLS {
+		return false, fmt.Errorf("BLS possession API requires BLS configuration")
 	}
-	encoded, err := method.Inputs.Encode(map[string]interface{}{
-		"keyHash": [32]byte(hash),
+	return readPossessionVerifiedAuthorization(destination, authorization.Membership{
+		Validator: payload.Validator, BLSPublicKey: payload.BLSPublicKey,
+		BLSPublicKeyEIP2537: payload.BLSPublicKeyEIP2537,
 	})
+}
+
+// An unavailable mapping or malformed response never counts as unverified
+// possession: it is an integration error and prevents transaction submission.
+func readPossessionVerifiedAuthorization(destination *Destination, payload authorization.Membership) (bool, error) {
+	adapter, err := destination.AuthorizationAdapter()
 	if err != nil {
-		return false, fmt.Errorf("encode V3 possession getter: %w", err)
+		return false, err
 	}
-	decoded,err:=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),append(method.ID(),encoded...))
- if err!=nil{return false,fmt.Errorf("query V3 possession: %w",err)}
+	if destination.ChainID != 1643 {
+		if err := VerifyDestinationChainID(destination); err != nil {
+			return false, err
+		}
+	}
+	method := possessionABI.Methods["possessionVerified"]
+	var values map[string]interface{}
+	if adapter.Scheme() == authorization.SchemeBLS {
+		hash, err := possessionKeyHash(payload.BLS())
+		if err != nil {
+			return false, err
+		}
+		values = map[string]interface{}{"keyHash": [32]byte(hash)}
+	} else {
+		method = ecdsaPossessionABI.Methods["possessionVerified"]
+		values = map[string]interface{}{"validator": ethgo.Address(payload.Validator)}
+	}
+	if method == nil {
+		return false, fmt.Errorf("registry ABI missing possessionVerified")
+	}
+	encoded, err := method.Inputs.Encode(values)
+	if err != nil {
+		return false, fmt.Errorf("encode possession getter: %w", err)
+	}
+	decoded, err := DestinationCall(destination, types.StringToAddress(destination.RegistryAddress), append(method.ID(), encoded...))
+	if err != nil {
+		return false, fmt.Errorf("query possession: %w", err)
+	}
 	if len(decoded) != 32 || !bytes.Equal(decoded[:31], make([]byte, 31)) || decoded[31] > 1 {
-		return false, fmt.Errorf("malformed V3 possession flag")
+		return false, fmt.Errorf("malformed possession flag")
 	}
 	return decoded[31] == 1, nil
 }
 
-// EnsureValidatorPossession is idempotent *after* an on-chain confirmation.
-// The node independently supplies the candidate's BLS proof; no relayer
-// private key or per-token route setting is involved.
-func EnsureValidatorPossession(destination *Destination, txKey ethgo.Key, payload protocol.MembershipPayload, compressedProof []byte) error {
+// EncodePossessionCalldata validates the candidate proof against the configured
+// scheme before selecting the corresponding on-chain ABI. No key is generated
+// or loaded here: the local validator supplies the already-created proof.
+func EncodePossessionCalldata(destination *Destination, payload authorization.Membership, proof []byte) ([]byte, error) {
+	adapter, err := validateMembershipDestination(destination, payload)
+	if err != nil {
+		return nil, err
+	}
+	if err := adapter.VerifyPossession(payload, proof); err != nil {
+		return nil, fmt.Errorf("invalid candidate possession proof: %w", err)
+	}
+	method := possessionABI.Methods["provePossession"]
+	values := map[string]interface{}{"validator": ethgo.Address(payload.Validator)}
+	if adapter.Scheme() == authorization.SchemeBLS {
+		formatted, err := FormatAggregateSignature(destination, proof)
+		if err != nil {
+			return nil, err
+		}
+		values["blsKey"] = payload.BLSPublicKey
+		values["blsKeyEIP2537"] = payload.BLSPublicKeyEIP2537
+		values["possessionProof"] = formatted
+	} else {
+		method = ecdsaPossessionABI.Methods["provePossession"]
+		values["proof"] = proof
+	}
+	if method == nil {
+		return nil, fmt.Errorf("registry ABI missing provePossession")
+	}
+	encoded, err := method.Inputs.Encode(values)
+	if err != nil {
+		return nil, fmt.Errorf("encode possession: %w", err)
+	}
+	return append(append([]byte(nil), method.ID()...), encoded...), nil
+}
+
+// EnsureValidatorPossession preserves the BLS entrypoint while sharing the
+// same candidate, deployment, transaction and post-state checks.
+func EnsureValidatorPossession(destination *Destination, txKey ethgo.Key, payload protocol.MembershipPayload, proof []byte) error {
+	adapter, err := destination.AuthorizationAdapter()
+	if err != nil {
+		return err
+	}
+	if adapter.Scheme() != authorization.SchemeBLS {
+		return fmt.Errorf("BLS possession API requires BLS configuration")
+	}
+	return EnsureValidatorPossessionAuthorization(destination, txKey, authorization.Membership{
+		OriginChainID: payload.OriginChainID, DestinationDomain: payload.DestinationDomain,
+		ExpectedSetID: payload.SetID, ValidUntil: payload.ValidUntil, Action: payload.Action,
+		Validator: payload.Validator, BLSPublicKey: payload.BLSPublicKey,
+		BLSPublicKeyEIP2537: payload.BLSPublicKeyEIP2537,
+	}, proof)
+}
+
+// EnsureValidatorPossessionAuthorization is idempotent only after on-chain
+// confirmation. Admission uses the candidate's existing validator transaction
+// key; permissionless contract calls do not substitute an executor identity.
+func EnsureValidatorPossessionAuthorization(destination *Destination, txKey ethgo.Key, payload authorization.Membership, proof []byte) error {
 	if txKey == nil {
 		return fmt.Errorf("destination executor key missing")
 	}
@@ -85,58 +174,46 @@ func EnsureValidatorPossession(destination *Destination, txKey ethgo.Key, payloa
 		return fmt.Errorf("destination executor is not the local validator candidate")
 	}
 	if payload.Action != protocol.ActionAddValidator {
-		return fmt.Errorf("V3 possession only applies to validator ADD")
+		return fmt.Errorf("validator possession only applies to validator ADD")
 	}
 	if err := destination.ValidateActivation(); err != nil {
 		return err
 	}
-	bootstrap, err := protocol.MarshalBootstrapPayload(
-		payload.OriginChainID, payload.DestinationDomain,
-		payload.Validator, payload.BLSPublicKey, payload.BLSPublicKeyEIP2537,
-	)
+	calldata, err := EncodePossessionCalldata(destination, payload, proof)
 	if err != nil {
 		return err
 	}
-	if err := crypto.VerifyBLSSignatureFromBytes(payload.BLSPublicKey, compressedProof, bootstrap); err != nil {
-		return fmt.Errorf("invalid candidate V3 BLS possession proof: %w", err)
-	}
-	verified, err := readPossessionVerified(destination, payload)
+	verified, err := readPossessionVerifiedAuthorization(destination, payload)
 	if err != nil {
 		return err
 	}
 	if verified {
 		return nil
 	}
-	formatted, err := FormatAggregateSignature(destination, compressedProof)
-	if err != nil {
-		return err
+
+	if destination.ChainID == 1643 {
+		to := types.StringToAddress(destination.RegistryAddress)
+		receipt, err := DestinationSubmit(destination, txKey, to, calldata, big.NewInt(0))
+		if err != nil {
+			return err
+		}
+		if receipt == nil {
+			return fmt.Errorf("native XGR possession receipt unavailable")
+		}
+		verified, err = readPossessionVerifiedAuthorization(destination, payload)
+		if err != nil {
+			return err
+		}
+		if !verified {
+			return fmt.Errorf("native XGR possession not recorded")
+		}
+		return nil
 	}
-	method := possessionABI.Methods["provePossession"]
-	if method == nil {
-		return fmt.Errorf("registry V3 ABI missing provePossession")
+	verifiedRPCURL, endpointErr := selectVerifiedRPCURL(destination)
+	if endpointErr != nil {
+		return endpointErr
 	}
-	encoded, err := method.Inputs.Encode(map[string]interface{}{
-		"validator":       ethgo.Address(payload.Validator),
-		"blsKey":          payload.BLSPublicKey,
-		"blsKeyEIP2537":   payload.BLSPublicKeyEIP2537,
-		"possessionProof": formatted,
-	})
-	if err != nil {
-		return fmt.Errorf("encode V3 possession: %w", err)
-	}
-    if destination.ChainID==1643 {
-        to:=types.StringToAddress(destination.RegistryAddress)
-        receipt,err:=DestinationSubmit(destination,txKey,to,append(method.ID(),encoded...),big.NewInt(0))
-        if err!=nil{return err}
-        if receipt==nil{return fmt.Errorf("native XGR possession receipt unavailable")}
-        verified,err=readPossessionVerified(destination,payload)
-        if err!=nil{return err}
-        if !verified{return fmt.Errorf("native XGR possession not recorded")}
-        return nil
-    }
-	verifiedRPCURL,endpointErr := selectVerifiedRPCURL(destination)
- if endpointErr!=nil{return endpointErr}
- relayer, err := txrelayer.NewTxRelayer(
+	relayer, err := txrelayer.NewTxRelayer(
 		txrelayer.WithIPAddress(verifiedRPCURL),
 		txrelayer.WithReceiptTimeout(500*time.Millisecond),
 	)
@@ -146,7 +223,7 @@ func EnsureValidatorPossession(destination *Destination, txKey ethgo.Key, payloa
 	to := ethgo.Address(types.StringToAddress(destination.RegistryAddress))
 	tx := &ethgo.Transaction{
 		From: txKey.Address(), To: &to,
-		Input: append(method.ID(), encoded...),
+		Input: calldata,
 		Value: big.NewInt(0), Type: ethgo.TransactionDynamicFee,
 	}
 	if _, err := prepareAndCheckGas(relayer.Client(), tx, txKey.Address()); err != nil {
@@ -154,20 +231,20 @@ func EnsureValidatorPossession(destination *Destination, txKey ethgo.Key, payloa
 	}
 	receipt, err := relayer.SendTransaction(tx, txKey)
 	if err != nil {
-		return fmt.Errorf("submit V3 possession transaction: %w", err)
+		return fmt.Errorf("submit validator possession transaction: %w", err)
 	}
 	if receipt == nil || receipt.Status != uint64(types.ReceiptSuccess) {
-		return fmt.Errorf("V3 possession transaction reverted")
+		return fmt.Errorf("validator possession transaction reverted")
 	}
 	if err := waitForFinality(destination, receipt); err != nil {
 		return err
 	}
-	verified, err = readPossessionVerified(destination, payload)
+	verified, err = readPossessionVerifiedAuthorization(destination, payload)
 	if err != nil {
 		return err
 	}
 	if !verified {
-		return fmt.Errorf("V3 possession not recorded after confirmed receipt")
+		return fmt.Errorf("validator possession not recorded after confirmed receipt")
 	}
 	return nil
 }

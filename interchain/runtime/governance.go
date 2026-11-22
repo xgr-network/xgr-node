@@ -57,30 +57,32 @@ type localGovernanceResult struct {
 }
 
 type GovernanceProposalView struct {
- ProposalID string
- SetID uint64
- Nonce uint64
- ValidUntil uint64
- SourceChainID uint64
- SourceDomain uint32
- Registry types.Address
- ValidatorFeeWei string
- Payload string
+	ProposalID      string
+	SetID           uint64
+	Nonce           uint64
+	ValidUntil      uint64
+	SourceChainID   uint64
+	SourceDomain    uint32
+	Registry        types.Address
+	ValidatorFeeWei string
+	Payload         string
 }
 type governanceQuorum struct {
- Version string `json:"version"`
- ProposalID string `json:"proposalId"`
- SourceChainID uint64 `json:"sourceChainId"`
- SourceDomain uint32 `json:"sourceDomain"`
- Registry string `json:"registry"`
- ValidatorFeeWei string `json:"validatorFeeWei"`
- SetID uint64 `json:"setId"`
- Nonce uint64 `json:"nonce"`
- ValidUntil uint64 `json:"validUntil"`
- Payload string `json:"payload"`
- SignerBitmap string `json:"signerBitmap"`
- AggregateSignature string `json:"aggregateSignature"`
- AggregateSignatureCompressed string `json:"aggregateSignatureCompressed"`
+	Version                      string `json:"version"`
+	ProposalID                   string `json:"proposalId"`
+	SourceChainID                uint64 `json:"sourceChainId"`
+	SourceDomain                 uint32 `json:"sourceDomain"`
+	Registry                     string `json:"registry"`
+	ValidatorFeeWei              string `json:"validatorFeeWei"`
+	SetID                        uint64 `json:"setId"`
+	Nonce                        uint64 `json:"nonce"`
+	ValidUntil                   uint64 `json:"validUntil"`
+	Payload                      string `json:"payload"`
+	SignerBitmap                 string `json:"signerBitmap"`
+	AggregateSignature           string `json:"aggregateSignature,omitempty"`
+	AggregateSignatureCompressed string `json:"aggregateSignatureCompressed,omitempty"`
+	SignatureScheme              string `json:"signatureScheme,omitempty"`
+	Signatures                   string `json:"signatures,omitempty"`
 }
 
 var getGovernanceValidatorSet = evmInterchain.GetValidatorSet
@@ -178,15 +180,17 @@ func (w *Worker) createGovernanceVote(id types.Hash) (*governanceVote, error) {
 	if !eligible {
 		return nil, fmt.Errorf("local validator is not eligible for interchain governance signing")
 	}
-	if !bytes.Equal(set.BLSPublicKeys[index], w.blsPubKey) {
-		return nil, fmt.Errorf("governance validator BLS identity differs from local XGR BLS identity")
-	}
-
-	blsKey, err := crypto.BytesToBLSSecretKey(w.blsRaw)
+	adapter, err := validateAuthorizationSet(source, set)
 	if err != nil {
 		return nil, err
 	}
-	signature, err := crypto.SignByBLS(blsKey, raw)
+	if !bytes.Equal(set.AuthorizationSet().PublicKeys[index], w.localVerificationKey(adapter)) {
+		return nil, fmt.Errorf("governance signing identity differs from local validator identity")
+	}
+	if !w.state.IsSynchronized() {
+		return nil, fmt.Errorf("governance signing lost XGR synchronization")
+	}
+	signature, err := adapter.SignSourceFee(w.authorizationKeys(), proposal)
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +289,11 @@ func (w *Worker) acceptGovernanceVote(vote governanceVote) error {
 	if !eligible {
 		return fmt.Errorf("ILN source-fee governance signer is not currently eligible")
 	}
-	if err := crypto.VerifyBLSSignatureFromBytes(set.BLSPublicKeys[index], vote.Signature, vote.Payload); err != nil {
+	adapter, err := validateAuthorizationSet(source, set)
+	if err != nil {
+		return err
+	}
+	if err := adapter.VerifySourceFeeVote(set.AuthorizationSet(), index, proposal, vote.Signature); err != nil {
 		return fmt.Errorf("invalid ILN source-fee governance vote: %w", err)
 	}
 
@@ -343,11 +351,19 @@ func (w *Worker) finalizeGovernanceQuorum(
 	sort.Slice(votes, func(i, j int) bool {
 		return votes[i].ValidatorIndex < votes[j].ValidatorIndex
 	})
-	bitmap, aggregate, err := protocol.AggregateVotes(set.BLSPublicKeys, votes, raw)
+	source, err := w.governanceSource(proposal)
 	if err != nil {
 		return err
 	}
-	eipSignature, err := crypto.BLSSignatureToEIP2537(aggregate)
+	adapter, err := validateAuthorizationSet(source, set)
+	if err != nil {
+		return err
+	}
+	proof, err := adapter.AssembleSourceFeeQuorum(set.AuthorizationSet(), votes, proposal)
+	if err != nil {
+		return err
+	}
+	scheme, expanded, compressed, signatures, err := encodeProofArchive(adapter, proof)
 	if err != nil {
 		return err
 	}
@@ -363,14 +379,16 @@ func (w *Worker) finalizeGovernanceQuorum(
 		Nonce:                        proposal.Nonce,
 		ValidUntil:                   proposal.ValidUntil,
 		Payload:                      "0x" + hex.EncodeToString(raw),
-		SignerBitmap:                 "0x" + hex.EncodeToString(bitmap.Bytes()),
-		AggregateSignature:           "0x" + hex.EncodeToString(eipSignature),
-		AggregateSignatureCompressed: "0x" + hex.EncodeToString(aggregate),
+		SignerBitmap:                 "0x" + hex.EncodeToString(proof.Bitmap),
+		AggregateSignature:           expanded,
+		AggregateSignatureCompressed: compressed,
+		SignatureScheme:              scheme, Signatures: signatures,
 	}
 	return w.writeGovernanceQuorum(quorum)
 }
 
-func governanceFeeString(proposal protocol.ILNSourceFeeProposal) string { return proposal.ValidatorFeeWei.String()
+func governanceFeeString(proposal protocol.ILNSourceFeeProposal) string {
+	return proposal.ValidatorFeeWei.String()
 }
 
 func (w *Worker) governanceSource(
@@ -519,15 +537,15 @@ func ReadGovernanceProposal(dataDir, proposalID string) (*GovernanceProposalView
 		fee = proposal.ValidatorFeeWei.String()
 	}
 	return &GovernanceProposalView{
-		ProposalID:        id.String(),
-		SetID:             proposal.SetID,
-		Nonce:             proposal.Nonce,
-		ValidUntil:        proposal.ValidUntil,
-		SourceChainID:     proposal.SourceChainID,
-		SourceDomain:      proposal.SourceDomain,
-		Registry:          proposal.Registry,
-		ValidatorFeeWei:   fee,
-		Payload:           "0x" + hex.EncodeToString(raw),
+		ProposalID:      id.String(),
+		SetID:           proposal.SetID,
+		Nonce:           proposal.Nonce,
+		ValidUntil:      proposal.ValidUntil,
+		SourceChainID:   proposal.SourceChainID,
+		SourceDomain:    proposal.SourceDomain,
+		Registry:        proposal.Registry,
+		ValidatorFeeWei: fee,
+		Payload:         "0x" + hex.EncodeToString(raw),
 	}, nil
 }
 
@@ -602,7 +620,6 @@ func (w *Worker) rebroadcastGovernance() {
 	}
 }
 
-
 func (w *Worker) processLocalGovernanceRequests() error {
 	entries, err := os.ReadDir(w.governanceRequestDir())
 	if err != nil {
@@ -662,16 +679,20 @@ func (w *Worker) processLocalGovernanceRequests() error {
 				break
 			}
 			w.mu.Lock()
-			_,inFlight := w.governanceExecuteInFlight[id]
-			if !inFlight { w.governanceExecuteInFlight[id]=struct{}{} }
+			_, inFlight := w.governanceExecuteInFlight[id]
+			if !inFlight {
+				w.governanceExecuteInFlight[id] = struct{}{}
+			}
 			w.mu.Unlock()
-			if inFlight { continue }
+			if inFlight {
+				continue
+			}
 			select {
-			case w.governanceExecuteCh <- governanceExecuteRequest{id:id,proposalID:req.ProposalID}:
+			case w.governanceExecuteCh <- governanceExecuteRequest{id: id, proposalID: req.ProposalID}:
 				continue
 			default:
 				w.mu.Lock()
-				delete(w.governanceExecuteInFlight,id)
+				delete(w.governanceExecuteInFlight, id)
 				w.mu.Unlock()
 				continue
 			}

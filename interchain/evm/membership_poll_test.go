@@ -12,18 +12,23 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/umbracle/ethgo"
+	"github.com/xgr-network/xgr-node/crypto"
 	"github.com/xgr-network/xgr-node/types"
 )
 
 func TestMembershipPollRPCBudget(t *testing.T) {
 	address := types.StringToAddress("0x1111111111111111111111111111111111111111")
+	secret, err := crypto.GenerateBLSKey()
+	require.NoError(t, err)
+	publicKey, err := crypto.BLSSecretKeyToPubkeyBytes(secret)
+	require.NoError(t, err)
 	responses := map[string]string{}
 	for method, outputs := range map[string]map[string]interface{}{
 		"getValidatorSet": {
-			"validators": []ethgo.Address{ethgo.Address(address)}, "blsPublicKeys": [][]byte{{1}}, "currentSetId": uint64(7),
+			"validators": []ethgo.Address{ethgo.Address(address)}, "blsPublicKeys": [][]byte{publicKey}, "currentSetId": uint64(7),
 		},
 		"minimumDeactivationReserveWei": {"0": big.NewInt(10)},
-		"getValidator":                  {"active": true, "blsPublicKey": []byte{1}, "reserveWei": big.NewInt(12)},
+		"getValidator":                  {"active": true, "blsPublicKey": publicKey, "reserveWei": big.NewInt(12)},
 	} {
 		abi := registryABI.Methods[method]
 		raw, err := abi.Outputs.Encode(outputs)

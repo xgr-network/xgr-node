@@ -10,10 +10,10 @@ import (
 
 	"github.com/umbracle/ethgo"
 	"github.com/umbracle/ethgo/abi"
-	
 
 	protocol "github.com/xgr-network/xgr-node/consensus/ibft/interchain"
 	"github.com/xgr-network/xgr-node/crypto"
+	"github.com/xgr-network/xgr-node/interchain/authorization"
 	"github.com/xgr-network/xgr-node/txrelayer"
 	"github.com/xgr-network/xgr-node/types"
 )
@@ -30,9 +30,24 @@ const registryJSONABI = `[
 var registryABI = abi.MustNewABI(registryJSONABI)
 
 type ValidatorSet struct {
-	Validators    []types.Address
+	Validators []types.Address
+	// Scheme comes from the verified destination configuration, never key length.
+	Scheme           string
+	VerificationKeys [][]byte
+	// BLSPublicKeys is retained for existing BLS callers. ECDSA reads leave it nil.
 	BLSPublicKeys [][]byte
 	SetID         uint64
+}
+
+func (s *ValidatorSet) AuthorizationSet() authorization.Set {
+	if s == nil {
+		return authorization.Set{}
+	}
+	keys := s.VerificationKeys
+	if keys == nil && (s.Scheme == "" || s.Scheme == authorization.SchemeBLS) {
+		keys = s.BLSPublicKeys
+	}
+	return authorization.Set{Validators: s.Validators, PublicKeys: keys, SetID: s.SetID}
 }
 
 type SubmitResult struct {
@@ -43,17 +58,24 @@ type SubmitResult struct {
 }
 
 type ValidatorDetails struct {
-	Active       bool
-	BLSPublicKey []byte
-	ReserveWei   *big.Int
+	Active          bool
+	Scheme          string
+	VerificationKey []byte
+	BLSPublicKey    []byte
+	ReserveWei      *big.Int
 }
 
 func VerifyDestinationChainID(destination *Destination) error {
 	if destination == nil {
 		return fmt.Errorf("destination is nil")
 	}
-	if err := destination.ValidateMembershipRead(); err != nil {return err}
-    if destination.ChainID==1643 {_,err:=destination.nativeAccess();return err}
+	if err := destination.ValidateMembershipRead(); err != nil {
+		return err
+	}
+	if destination.ChainID == 1643 {
+		_, err := destination.nativeAccess()
+		return err
+	}
 
 	client, err := newVerifiedRPCClient(destination)
 	if err != nil {
@@ -63,32 +85,38 @@ func VerifyDestinationChainID(destination *Destination) error {
 	return nil
 }
 
-func GetDestinationGasBalance(destination *Destination, address ethgo.Address) (*big.Int,error) {
- if err:=destination.ValidateMembershipRead();err!=nil{return nil,err}
- if destination.ChainID==1643{
-  backend,err:=destination.nativeAccess()
-  if err!=nil{return nil,err}
-  return backend.NativeXGRBalance(types.Address(address))
- }
- client,err:=newVerifiedRPCClient(destination)
- if err!=nil{return nil,err}
- defer client.Close()
- balance,err:=ilnRPCBalance(client,address,ethgo.Latest)
- if err!=nil{
-  recordInterchainRPCReadFailure(destination)
-  return nil,fmt.Errorf("destination gas balance RPC failed: %w",err)
- }
- return balance,nil
+func GetDestinationGasBalance(destination *Destination, address ethgo.Address) (*big.Int, error) {
+	if err := destination.ValidateMembershipRead(); err != nil {
+		return nil, err
+	}
+	if destination.ChainID == 1643 {
+		backend, err := destination.nativeAccess()
+		if err != nil {
+			return nil, err
+		}
+		return backend.NativeXGRBalance(types.Address(address))
+	}
+	client, err := newVerifiedRPCClient(destination)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	balance, err := ilnRPCBalance(client, address, ethgo.Latest)
+	if err != nil {
+		recordInterchainRPCReadFailure(destination)
+		return nil, fmt.Errorf("destination gas balance RPC failed: %w", err)
+	}
+	return balance, nil
 }
 
 func GetValidatorSet(destination *Destination) (*ValidatorSet, error) {
 	if err := destination.ValidateMembershipRead(); err != nil {
 		return nil, err
 	}
-	return readValidatorSet(types.StringToAddress(destination.RegistryAddress), destinationRegistryView(destination))
+	return readValidatorSet(destination, types.StringToAddress(destination.RegistryAddress), destinationRegistryView(destination))
 }
 
-func readValidatorSet(registry types.Address, view ILNView) (*ValidatorSet, error) {
+func readValidatorSet(destination *Destination, registry types.Address, view ILNView) (*ValidatorSet, error) {
 	method := registryABI.Methods["getValidatorSet"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing getValidatorSet")
@@ -97,6 +125,11 @@ func readValidatorSet(registry types.Address, view ILNView) (*ValidatorSet, erro
 	if err != nil {
 		return nil, fmt.Errorf("call getValidatorSet: %w", err)
 	}
+	return decodeRegistryValidatorSet(destination, decodedRaw)
+}
+
+func decodeRegistryValidatorSet(destination *Destination, decodedRaw []byte) (*ValidatorSet, error) {
+	method := registryABI.Methods["getValidatorSet"]
 	decoded, err := method.Outputs.Decode(decodedRaw)
 	if err != nil {
 		return nil, fmt.Errorf("decode getValidatorSet: %w", err)
@@ -135,23 +168,40 @@ func readValidatorSet(registry types.Address, view ILNView) (*ValidatorSet, erro
 		return nil, fmt.Errorf("decode getValidatorSet: validator/key length mismatch %d/%d", len(addresses), len(keys))
 	}
 
-	return &ValidatorSet{Validators: addresses, BLSPublicKeys: keys, SetID: setID}, nil
+	adapter, err := destination.AuthorizationAdapter()
+	if err != nil {
+		return nil, err
+	}
+	set := &ValidatorSet{Validators: addresses, VerificationKeys: keys, Scheme: adapter.Scheme(), SetID: setID}
+	if err := adapter.ValidateSet(set.AuthorizationSet()); err != nil {
+		return nil, fmt.Errorf("invalid destination registry validator set: %w", err)
+	}
+	if adapter.Scheme() == authorization.SchemeBLS {
+		set.BLSPublicKeys = keys
+	}
+	return set, nil
 }
 
 func GetValidatorStatusForDestination(destination *Destination, validator types.Address) (*ValidatorStatus, error) {
- if err:=destination.ValidateMembershipRead();err!=nil{return nil,err}
- input:=encodeGetValidatorStatusCall(validator)
- raw,err:=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),input)
- if err!=nil{return nil,fmt.Errorf("read destination ValidatorRegistry status: %w",err)}
- return decodeValidatorStatusResult("0x"+hex.EncodeToString(raw))
+	if err := destination.ValidateMembershipRead(); err != nil {
+		return nil, err
+	}
+	input := encodeGetValidatorStatusCall(validator)
+	raw, err := DestinationCall(destination, types.StringToAddress(destination.RegistryAddress), input)
+	if err != nil {
+		return nil, fmt.Errorf("read destination ValidatorRegistry status: %w", err)
+	}
+	return decodeValidatorStatusResult("0x" + hex.EncodeToString(raw))
 }
 
 func GetValidator(destination *Destination, validator types.Address) (*ValidatorDetails, error) {
-	if err := destination.ValidateMembershipRead(); err != nil { return nil, err }
-	return readValidator(types.StringToAddress(destination.RegistryAddress), validator, destinationRegistryView(destination))
+	if err := destination.ValidateMembershipRead(); err != nil {
+		return nil, err
+	}
+	return readValidator(destination, types.StringToAddress(destination.RegistryAddress), validator, destinationRegistryView(destination))
 }
 
-func readValidator(registry, validator types.Address, view ILNView) (*ValidatorDetails, error) {
+func readValidator(destination *Destination, registry, validator types.Address, view ILNView) (*ValidatorDetails, error) {
 	method := registryABI.Methods["getValidator"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing getValidator")
@@ -198,15 +248,33 @@ func readValidator(registry, validator types.Address, view ILNView) (*ValidatorD
 	if !ok || reserve == nil || reserve.Sign() < 0 {
 		return nil, fmt.Errorf("decode getValidator: invalid reserve")
 	}
-	return &ValidatorDetails{
-		Active:       active,
-		BLSPublicKey: append([]byte(nil), key...),
-		ReserveWei:   new(big.Int).Set(reserve),
-	}, nil
+	adapter, err := destination.AuthorizationAdapter()
+	if err != nil {
+		return nil, err
+	}
+	// An inactive, never-admitted BLS validator has no key. V5 represents every
+	// queried identity by its canonical address even when it is inactive.
+	if active || len(key) > 0 {
+		if err := adapter.ValidateSet(authorization.Set{Validators: []types.Address{validator}, PublicKeys: [][]byte{key}, SetID: 1}); err != nil {
+			return nil, fmt.Errorf("invalid registry validator identity: %w", err)
+		}
+	}
+	details := &ValidatorDetails{
+		Active:          active,
+		Scheme:          adapter.Scheme(),
+		VerificationKey: append([]byte(nil), key...),
+		ReserveWei:      new(big.Int).Set(reserve),
+	}
+	if adapter.Scheme() == authorization.SchemeBLS {
+		details.BLSPublicKey = append([]byte(nil), key...)
+	}
+	return details, nil
 }
 
 func MinimumDeactivationReserve(destination *Destination) (*big.Int, error) {
-	if err := destination.ValidateMembershipRead(); err != nil { return nil, err }
+	if err := destination.ValidateMembershipRead(); err != nil {
+		return nil, err
+	}
 	return readMinimumDeactivationReserve(types.StringToAddress(destination.RegistryAddress), destinationRegistryView(destination))
 }
 
@@ -242,13 +310,17 @@ func readMinimumDeactivationReserve(registry types.Address, view ILNView) (*big.
 }
 
 func MaximumExecutorReimbursement(destination *Destination) (*big.Int, error) {
-	if err := destination.ValidateMembershipRead(); err != nil { return nil, err }
+	if err := destination.ValidateMembershipRead(); err != nil {
+		return nil, err
+	}
 	method := registryABI.Methods["maxExecutorReimbursementWei"]
 	if method == nil {
 		return nil, fmt.Errorf("registry ABI missing maxExecutorReimbursementWei")
 	}
-	b,err:=DestinationCall(destination,types.StringToAddress(destination.RegistryAddress),method.ID())
- if err!=nil{return nil,fmt.Errorf("call maxExecutorReimbursementWei: %w",err)}
+	b, err := DestinationCall(destination, types.StringToAddress(destination.RegistryAddress), method.ID())
+	if err != nil {
+		return nil, fmt.Errorf("call maxExecutorReimbursementWei: %w", err)
+	}
 	decoded, err := method.Outputs.Decode(b)
 	if err != nil {
 		return nil, err
@@ -271,53 +343,73 @@ func MaximumExecutorReimbursement(destination *Destination) (*big.Int, error) {
 	return new(big.Int).Set(capWei), nil
 }
 
-// SubmitMembership sends the single destination-chain state-changing transaction.
-// ADD locks reserveWei in the registry. REMOVE is non-payable and consumes the
-// target validator's already-locked reserve for executor reimbursement.
+// SubmitMembership is the compatibility entrypoint for existing BLS callers.
+// The shared submission lifecycle is SubmitMembershipAuthorization.
 func SubmitMembership(
-	destination *Destination,
-	key ethgo.Key,
-	payload protocol.MembershipPayload,
-	signerBitmap *big.Int,
-	aggregateSignature []byte,
-	reserveWei *big.Int,
+	destination *Destination, key ethgo.Key, payload protocol.MembershipPayload,
+	bitmap *big.Int, signature []byte, reserveWei *big.Int,
+) (*SubmitResult, error) {
+	adapter, err := destination.AuthorizationAdapter()
+	if err != nil {
+		return nil, err
+	}
+	if adapter.Scheme() != authorization.SchemeBLS {
+		return nil, fmt.Errorf("BLS membership API cannot submit an ECDSA authorization")
+	}
+	if bitmap == nil || bitmap.Sign() <= 0 {
+		return nil, fmt.Errorf("signer bitmap is empty")
+	}
+	membership := authorization.Membership{
+		OriginChainID: payload.OriginChainID, DestinationDomain: payload.DestinationDomain,
+		ExpectedSetID: payload.SetID, ValidUntil: payload.ValidUntil, Action: payload.Action,
+		Validator: payload.Validator, BLSPublicKey: payload.BLSPublicKey,
+		BLSPublicKeyEIP2537: payload.BLSPublicKeyEIP2537,
+	}
+	return SubmitMembershipAuthorization(destination, key, membership,
+		authorization.Proof{Bitmap: bitmap.Bytes(), Signature: signature}, reserveWei)
+}
+
+// SubmitMembershipAuthorization shares V3 membership, reserve, executor and
+// receipt checks across explicitly configured cryptographic adapters. ADD
+// locks the candidate's reserve; REMOVE never attaches transaction value.
+func SubmitMembershipAuthorization(
+	destination *Destination, key ethgo.Key, payload authorization.Membership,
+	proof authorization.Proof, reserveWei *big.Int,
 ) (*SubmitResult, error) {
 	if key == nil {
 		return nil, fmt.Errorf("destination transaction key is nil")
 	}
-	if signerBitmap == nil || signerBitmap.Sign() <= 0 {
+	if len(proof.Bitmap) == 0 {
 		return nil, fmt.Errorf("signer bitmap is empty")
 	}
-	if len(aggregateSignature) == 0 {
-		return nil, fmt.Errorf("aggregate signature is empty")
+	if len(proof.Signature) == 0 {
+		return nil, fmt.Errorf("quorum signature is empty")
 	}
 	if err := destination.ValidateSubmission(); err != nil {
 		return nil, err
 	}
-	if destination.ChainID!=1643 {
-        if err:=VerifyDestinationChainID(destination);err!=nil{return nil,err}
-    }
-	if payload.DestinationDomain != destination.Domain {
-		return nil, fmt.Errorf("payload destination domain mismatch: payload=%d configured=%d", payload.DestinationDomain, destination.Domain)
+	if destination.ChainID != 1643 {
+		if err := VerifyDestinationChainID(destination); err != nil {
+			return nil, err
+		}
 	}
-
-	if payload.ValidUntil < uint64(time.Now().Unix()) {
-		return nil, fmt.Errorf("membership payload expired before destination submission")
-	}
-	message, err := payload.MarshalBinary()
+	adapter, err := validateMembershipDestination(destination, payload)
 	if err != nil {
 		return nil, err
+	}
+	if payload.ValidUntil < uint64(time.Now().Unix()) {
+		return nil, fmt.Errorf("membership payload expired before destination submission")
 	}
 
 	currentSet, err := GetValidatorSet(destination)
 	if err != nil {
 		return nil, err
 	}
-	if currentSet.SetID != payload.SetID {
-		return nil, fmt.Errorf("stale destination set id before submission: payload=%d current=%d", payload.SetID, currentSet.SetID)
+	if currentSet.SetID != payload.ExpectedSetID {
+		return nil, fmt.Errorf("stale destination set id before submission: payload=%d current=%d", payload.ExpectedSetID, currentSet.SetID)
 	}
-	if err := protocol.VerifyAggregatedQuorum(currentSet.BLSPublicKeys, signerBitmap, aggregateSignature, message); err != nil {
-		return nil, fmt.Errorf("local aggregate quorum preflight failed: %w", err)
+	if err := adapter.VerifyMembershipQuorum(currentSet.AuthorizationSet(), payload, proof); err != nil {
+		return nil, fmt.Errorf("local membership quorum preflight failed: %w", err)
 	}
 
 	value := big.NewInt(0)
@@ -345,65 +437,66 @@ func SubmitMembership(
 		return nil, fmt.Errorf("unsupported membership action %d", payload.Action)
 	}
 
-	formattedSignature, err := FormatAggregateSignature(destination, aggregateSignature)
+	calldata, err := EncodeMembershipCalldata(destination, payload, proof)
 	if err != nil {
 		return nil, err
 	}
 
-	method := registryABI.Methods["applyMembership"]
-	if method == nil {
-		return nil, fmt.Errorf("registry ABI missing applyMembership")
+	if destination.ChainID == 1643 {
+		backend, err := destination.nativeAccess()
+		if err != nil {
+			return nil, err
+		}
+		to := types.StringToAddress(destination.RegistryAddress)
+		gasCost, err := backend.NativeXGREstimateCost(types.Address(key.Address()), to, calldata, value)
+		if err != nil {
+			return nil, err
+		}
+		if payload.Action == protocol.ActionRemoveValidator {
+			details, err := GetValidator(destination, payload.Validator)
+			if err != nil {
+				return nil, err
+			}
+			capWei, err := MaximumExecutorReimbursement(destination)
+			if err != nil {
+				return nil, err
+			}
+			available := new(big.Int).Set(details.ReserveWei)
+			if capWei.Cmp(available) < 0 {
+				available.Set(capWei)
+			}
+			if gasCost.Cmp(available) > 0 {
+				return nil, fmt.Errorf("native removal gas cost exceeds reimbursement")
+			}
+		}
+		balance, err := backend.NativeXGRBalance(types.Address(key.Address()))
+		if err != nil {
+			return nil, err
+		}
+		required := new(big.Int).Add(gasCost, value)
+		if balance.Cmp(required) < 0 {
+			return nil, fmt.Errorf("insufficient native XGR executor funds")
+		}
+		receipt, err := DestinationSubmit(destination, key, to, calldata, value)
+		if err != nil {
+			return nil, err
+		}
+		status, err := GetValidatorStatusForDestination(destination, payload.Validator)
+		if err != nil {
+			return nil, err
+		}
+		wantActive := payload.Action == protocol.ActionAddValidator
+		if status.Active != wantActive || status.SetID != payload.ExpectedSetID+1 {
+			return nil, fmt.Errorf("native XGR membership post-state mismatch")
+		}
+		return &SubmitResult{TxHash: receipt.TransactionHash.String(), SetID: status.SetID,
+			Active: status.Active, Receipt: receipt}, nil
 	}
-	input, err := method.Inputs.Encode(map[string]interface{}{
-		"transition": map[string]interface{}{
-			"expectedSetId":       new(big.Int).SetUint64(payload.SetID),
-			"validUntil":          new(big.Int).SetUint64(payload.ValidUntil),
-			"action":              uint8(payload.Action),
-			"validator":           ethgo.Address(payload.Validator),
-			"blsPublicKey":        payload.BLSPublicKey,
-			"blsPublicKeyEIP2537": payload.BLSPublicKeyEIP2537,
-		},
-		"signerBitmap":       signerBitmap.Bytes(),
-		"aggregateSignature": formattedSignature,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("encode applyMembership: %w", err)
+	verifiedRPCURL, endpointErr := selectVerifiedRPCURL(destination)
+	if endpointErr != nil {
+		return nil, endpointErr
 	}
-
-    if destination.ChainID==1643 {
-        backend,err:=destination.nativeAccess()
-        if err!=nil{return nil,err}
-        to:=types.StringToAddress(destination.RegistryAddress)
-        calldata:=append(append([]byte(nil),method.ID()...),input...)
-        gasCost,err:=backend.NativeXGREstimateCost(types.Address(key.Address()),to,calldata,value)
-        if err!=nil{return nil,err}
-        if payload.Action==protocol.ActionRemoveValidator {
-            details,err:=GetValidator(destination,payload.Validator)
-            if err!=nil{return nil,err}
-            capWei,err:=MaximumExecutorReimbursement(destination)
-            if err!=nil{return nil,err}
-            available:=new(big.Int).Set(details.ReserveWei)
-            if capWei.Cmp(available)<0{available.Set(capWei)}
-            if gasCost.Cmp(available)>0{return nil,fmt.Errorf("native removal gas cost exceeds reimbursement")}
-        }
-        balance,err:=backend.NativeXGRBalance(types.Address(key.Address()))
-        if err!=nil{return nil,err}
-        required:=new(big.Int).Add(gasCost,value)
-        if balance.Cmp(required)<0{return nil,fmt.Errorf("insufficient native XGR executor funds")}
-        receipt,err:=DestinationSubmit(destination,key,to,calldata,value)
-        if err!=nil{return nil,err}
-        status,err:=GetValidatorStatusForDestination(destination,payload.Validator)
-        if err!=nil{return nil,err}
-        wantActive:=payload.Action==protocol.ActionAddValidator
-        if status.Active!=wantActive||status.SetID!=payload.SetID+1{
-            return nil,fmt.Errorf("native XGR membership post-state mismatch")
-        }
-        return &SubmitResult{TxHash:receipt.TransactionHash.String(),SetID:status.SetID,
-            Active:status.Active,Receipt:receipt},nil
-    }
-	verifiedRPCURL,endpointErr := selectVerifiedRPCURL(destination)
- if endpointErr!=nil{return nil,endpointErr}
- relayer, err := txrelayer.NewTxRelayer(
+	relayer, err := txrelayer.NewTxRelayer(
 		txrelayer.WithIPAddress(verifiedRPCURL),
 		txrelayer.WithReceiptTimeout(500*time.Millisecond),
 	)
@@ -414,7 +507,7 @@ func SubmitMembership(
 	tx := &ethgo.Transaction{
 		From:  key.Address(),
 		To:    &to,
-		Input: append(method.ID(), input...),
+		Input: calldata,
 		Value: value,
 		Type:  ethgo.TransactionDynamicFee,
 	}
@@ -461,8 +554,8 @@ func SubmitMembership(
 	if status.Active != wantActive {
 		return nil, fmt.Errorf("destination post-state mismatch: active=%t want=%t", status.Active, wantActive)
 	}
-	if status.SetID != payload.SetID+1 {
-		return nil, fmt.Errorf("destination set id did not advance exactly once: got=%d want=%d", status.SetID, payload.SetID+1)
+	if status.SetID != payload.ExpectedSetID+1 {
+		return nil, fmt.Errorf("destination set id did not advance exactly once: got=%d want=%d", status.SetID, payload.ExpectedSetID+1)
 	}
 
 	return &SubmitResult{
@@ -478,7 +571,7 @@ func prepareAndCheckGas(client ilnRPCClient, tx *ethgo.Transaction, sender ethgo
 		return nil, fmt.Errorf("destination gas preflight requires client and transaction")
 	}
 
-	estimate, err := ilnRPCEstimateGas(client,&ethgo.CallMsg{
+	estimate, err := ilnRPCEstimateGas(client, &ethgo.CallMsg{
 		From:  sender,
 		To:    tx.To,
 		Data:  tx.Input,
@@ -496,7 +589,7 @@ func prepareAndCheckGas(client ilnRPCClient, tx *ethgo.Transaction, sender ethgo
 
 	var feeCeiling *big.Int
 	priority, priorityErr := ilnRPCPriority(client)
-	feeHistory, historyErr := ilnRPCFeeHistory(client,1, ethgo.Latest, nil)
+	feeHistory, historyErr := ilnRPCFeeHistory(client, 1, ethgo.Latest, nil)
 	if priorityErr == nil && historyErr == nil && priority != nil &&
 		feeHistory != nil && len(feeHistory.BaseFee) > 0 &&
 		feeHistory.BaseFee[len(feeHistory.BaseFee)-1] != nil {
@@ -532,7 +625,7 @@ func prepareAndCheckGas(client ilnRPCClient, tx *ethgo.Transaction, sender ethgo
 		required.Add(required, tx.Value)
 	}
 
-	balance, err := ilnRPCBalance(client,sender, ethgo.Latest)
+	balance, err := ilnRPCBalance(client, sender, ethgo.Latest)
 	if err != nil {
 		return nil, fmt.Errorf("query destination gas balance: %w", err)
 	}
@@ -647,6 +740,9 @@ func decodeRPCHex(value string) ([]byte, error) {
 func FormatAggregateSignature(destination *Destination, aggregateSignature []byte) ([]byte, error) {
 	if destination == nil {
 		return nil, fmt.Errorf("destination is nil")
+	}
+	if destination.SignatureScheme != "" && destination.SignatureScheme != authorization.SchemeBLS {
+		return nil, fmt.Errorf("BLS aggregate signature formatter requires BLS configuration")
 	}
 	format := destination.VerifierFormat
 	if format == "" {

@@ -54,12 +54,12 @@ func PollMembershipRegistry(destination *Destination, validator types.Address) (
 
 	registry := types.StringToAddress(destination.RegistryAddress)
 	var poll MembershipPoll
-	poll.Set, poll.SetError = readValidatorSet(registry, view)
+	poll.Set, poll.SetError = readValidatorSet(destination, registry, view)
 	poll.Minimum, poll.ReserveError = readMinimumDeactivationReserve(registry, view)
 	if poll.ReserveError != nil {
 		poll.ReserveError = fmt.Errorf("read on-chain deactivation minimum: %w", poll.ReserveError)
 		return poll, nil
 	}
-	poll.Local, poll.ReserveError = readValidator(registry, validator, view)
+	poll.Local, poll.ReserveError = readValidator(destination, registry, validator, view)
 	return poll, nil
 }
