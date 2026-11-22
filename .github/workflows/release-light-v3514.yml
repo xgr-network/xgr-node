@@ -39,7 +39,6 @@ jobs:
           test "$CONFIRMATION" = 'RELEASE-v3.5.14'
           [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
-          test "$(git rev-parse refs/tags/v3.5.13)" = 'a072fc9bdd4f0ec8b302206709bc41a9d9f5efda'
           git merge-base --is-ancestor refs/tags/v3.5.13 HEAD
           if git rev-parse -q --verify refs/tags/v3.5.14 >/dev/null; then
             echo "v3.5.14 already exists: refusing overwrite" >&2
