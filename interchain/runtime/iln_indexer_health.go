@@ -64,11 +64,16 @@ func (w *Worker) hasILNExternalObserverBacklog() bool {
  return false
 }
 
-func (w *Worker) ilnRouteHasExternalObserverBacklog(route *evm.CheckpointRoute) bool {
- if w==nil{return false}
+// Include ALL gateways from a lagging source in the shared scan, including
+// any sibling route already caught up. Never split its source discovery view.
+func (w *Worker) ilnSourceHasExternalObserverBacklog(sourceName string) bool {
+ if w==nil||sourceName==""{return false}
  w.mu.Lock()
  defer w.mu.Unlock()
- return w.ilnRouteHasExternalObserverBacklogLocked(route)
+ for _,route:=range w.routes {
+  if route!=nil&&route.SourceNetwork==sourceName&&w.ilnRouteHasExternalObserverBacklogLocked(route){return true}
+ }
+ return false
 }
 
 // Caller must hold w.mu. Previously observed lag remains actionable on a
